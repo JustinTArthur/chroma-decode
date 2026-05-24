@@ -21,6 +21,8 @@ chromadec_sources = files(
   'decoders/palcolour/transform_pal.cpp',
   'decoders/palcolour/transform_pal_2d.cpp',
   'decoders/palcolour/transform_pal_3d.cpp',
+  'decoders/comb/comb.cpp',
+  'decoders/comb/ntsc_decoder.cpp',
   'output/component_frame.cpp',
   'output/output_writer.cpp',
   'output/frame_canvas.cpp',

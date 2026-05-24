@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     ntscdecoder.cpp
@@ -24,53 +25,48 @@
 
 ************************************************************************/
 
-#include "ntscdecoder.h"
+#include "ntsc_decoder.h"
 
-#include "decoderpool.h"
+#include "../../common/log.h"
+
+namespace chd::decoders::comb {
 
 NtscDecoder::NtscDecoder(const Comb::Configuration &combConfig)
 {
     config.combConfig = combConfig;
 }
 
-bool NtscDecoder::configure(const LdDecodeMetaData::VideoParameters &videoParameters) {
+bool NtscDecoder::configure(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters) {
     // Ensure the source video is NTSC
-    if (videoParameters.system != NTSC) {
-        qCritical() << "This decoder is for NTSC video sources only";
+    if (videoParameters.system != chd::metadata::NTSC) {
+        chd::log::error() << "This decoder is for NTSC video sources only";
         return false;
     }
 
     config.videoParameters = videoParameters;
 
+    // Configure the Comb instance now that we know the video parameters.
+    comb.updateConfiguration(config.videoParameters, config.combConfig);
+
     return true;
 }
 
-qint32 NtscDecoder::getLookBehind() const
+int32_t NtscDecoder::getLookBehind() const
 {
     return config.combConfig.getLookBehind();
 }
 
-qint32 NtscDecoder::getLookAhead() const
+int32_t NtscDecoder::getLookAhead() const
 {
     return config.combConfig.getLookAhead();
 }
 
-QThread *NtscDecoder::makeThread(QAtomicInt& abort, DecoderPool& decoderPool)
-{
-    return new NtscThread(abort, decoderPool, config);
-}
-
-NtscThread::NtscThread(QAtomicInt& _abort, DecoderPool &_decoderPool,
-                       const NtscDecoder::Configuration &_config, QObject *parent)
-    : DecoderThread(_abort, _decoderPool, parent), config(_config)
-{
-    // Configure NTSC decoder
-    comb.updateConfiguration(config.videoParameters, config.combConfig);
-}
-
-void NtscThread::decodeFrames(const QVector<SourceField> &inputFields, qint32 startIndex, qint32 endIndex,
-                              QVector<ComponentFrame> &componentFrames)
+void NtscDecoder::decodeFrames(const std::vector<chd::decoders::SourceField> &inputFields,
+                               int32_t startIndex, int32_t endIndex,
+                               std::vector<chd::output::ComponentFrame> &componentFrames)
 {
     // Decode fields to frames
     comb.decodeFrames(inputFields, startIndex, endIndex, componentFrames);
 }
+
+}  // namespace chd::decoders::comb
