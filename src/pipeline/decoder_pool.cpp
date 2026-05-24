@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     decoderpool.cpp
@@ -24,12 +25,70 @@
 
 ************************************************************************/
 
-#include "decoderpool.h"
+#include "decoder_pool.h"
 
-DecoderPool::DecoderPool(Decoder &_decoder, QString _inputFileName,
-                         LdDecodeMetaData &_ldDecodeMetaData,
-                         OutputWriter::Configuration &_outputConfig, QString _outputFileName,
-                         qint32 _startFrame, qint32 _length, qint32 _maxThreads)
+#include <algorithm>
+#include <thread>
+
+#include "../common/log.h"
+#include "../output/component_frame.h"
+
+namespace chd::pipeline {
+
+namespace {
+template <typename T>
+T qMin(T a, T b) { return std::min(a, b); }
+template <typename T>
+T qMax(T a, T b) { return std::max(a, b); }
+
+// Worker loop driving one Decoder synchronously: pulls a batch of input
+// fields from the pool, calls Decoder::decodeFrames on them, converts the
+// resulting ComponentFrames to OutputFrames via the shared OutputWriter,
+// and pushes them back to the pool. Replaces the legacy DecoderThread::run.
+void workerLoop(DecoderPool *pool) {
+    auto &decoder = pool->getDecoder();
+    auto &outputWriter = pool->getOutputWriter();
+    auto &abort = pool->getAbort();
+
+    while (!abort.load()) {
+        int32_t startFrameNumber = 0;
+        int32_t startIndex = 0;
+        int32_t endIndex = 0;
+        std::vector<chd::decoders::SourceField> inputFields;
+
+        if (!pool->getInputFrames(startFrameNumber, inputFields, startIndex, endIndex)) {
+            // End of input
+            return;
+        }
+
+        const int32_t numFrames = (endIndex - startIndex) / 2;
+        std::vector<chd::output::ComponentFrame> componentFrames(numFrames);
+
+        try {
+            decoder.decodeFrames(inputFields, startIndex, endIndex, componentFrames);
+        } catch (const std::exception &e) {
+            chd::log::error() << "Decoder worker failed:" << e.what();
+            abort.store(true);
+            return;
+        }
+
+        std::vector<chd::output::OutputFrame> outputFrames(numFrames);
+        for (int32_t i = 0; i < numFrames; i++) {
+            outputWriter.convert(componentFrames[i], outputFrames[i]);
+        }
+
+        if (!pool->putOutputFrames(startFrameNumber, outputFrames)) {
+            abort.store(true);
+            return;
+        }
+    }
+}
+}  // namespace
+
+DecoderPool::DecoderPool(chd::decoders::Decoder &_decoder, std::string _inputFileName,
+                         chd::metadata::LdDecodeMetaData &_ldDecodeMetaData,
+                         chd::output::OutputWriter::Configuration &_outputConfig, std::string _outputFileName,
+                         int32_t _startFrame, int32_t _length, int32_t _maxThreads)
     : decoder(_decoder), inputFileName(_inputFileName),
       outputConfig(_outputConfig), outputFileName(_outputFileName),
       startFrame(_startFrame), length(_length), maxThreads(_maxThreads),
@@ -37,11 +96,11 @@ DecoderPool::DecoderPool(Decoder &_decoder, QString _inputFileName,
 {
 }
 
-Decoder& DecoderPool::getDecoder() { return decoder; }
+chd::decoders::Decoder& DecoderPool::getDecoder() { return decoder; }
 
 bool DecoderPool::process()
 {
-    LdDecodeMetaData::VideoParameters videoParameters = ldDecodeMetaData.getVideoParameters();
+    chd::metadata::LdDecodeMetaData::VideoParameters videoParameters = ldDecodeMetaData.getVideoParameters();
 
     // Configure the OutputWriter, adjusting videoParameters
     outputWriter.updateConfiguration(videoParameters, outputConfig);
@@ -59,7 +118,7 @@ bool DecoderPool::process()
     // Open the source video file
     if (!sourceVideo.open(inputFileName, videoParameters.fieldWidth * videoParameters.fieldHeight)) {
         // Could not open source video file
-        qInfo() << "Unable to open ld-decode video file";
+        chd::log::info() << "Unable to open ld-decode video file";
         return false;
     }
 
@@ -67,7 +126,7 @@ bool DecoderPool::process()
     if (startFrame == -1) startFrame = 1;
 
     if (startFrame > ldDecodeMetaData.getNumberOfFrames()) {
-        qInfo() << "Specified start frame is out of bounds, only" << ldDecodeMetaData.getNumberOfFrames() << "frames available";
+        chd::log::info() << "Specified start frame is out of bounds, only" << ldDecodeMetaData.getNumberOfFrames() << "frames available";
         return false;
     }
 
@@ -76,64 +135,58 @@ bool DecoderPool::process()
         length = ldDecodeMetaData.getNumberOfFrames() - (startFrame - 1);
     } else {
         if (length + (startFrame - 1) > ldDecodeMetaData.getNumberOfFrames()) {
-            qInfo() << "Specified length of" << length << "exceeds the number of available frames, setting to" << ldDecodeMetaData.getNumberOfFrames() - (startFrame - 1);
+            chd::log::info() << "Specified length of" << length << "exceeds the number of available frames, setting to" << ldDecodeMetaData.getNumberOfFrames() - (startFrame - 1);
             length = ldDecodeMetaData.getNumberOfFrames() - (startFrame - 1);
         }
     }
 
-    // Open the output file
+    // Open the output file. Stdout is not supported here (chroma-decode
+    // is a library; the consumer can pipe a regular file path).
     if (outputFileName == "-") {
-        // No output filename, use stdout instead
-        if (!targetVideo.open(stdout, QIODevice::WriteOnly)) {
-            // Failed to open stdout
-            qCritical() << "Could not open stdout for output";
-            sourceVideo.close();
-            return false;
-        }
-        qInfo() << "Writing output to stdout";
-    } else {
-        // Open output file
-        targetVideo.setFileName(outputFileName);
-        if (!targetVideo.open(QIODevice::WriteOnly)) {
-            // Failed to open output file
-            qCritical() << "Could not open" << outputFileName << "for output";
-            sourceVideo.close();
-            return false;
-        }
+        chd::log::error() << "Stdout output is not supported by libchromadec";
+        sourceVideo.close();
+        return false;
     }
-
-    // Write the stream header (if there is one)
-    const QByteArray streamHeader = outputWriter.getStreamHeader();
-    if (streamHeader.size() != 0 && targetVideo.write(streamHeader) == -1) {
-        qCritical() << "Writing to the output video file failed";
+    targetVideo.open(outputFileName, std::ios::binary);
+    if (!targetVideo.is_open()) {
+        chd::log::error() << "Could not open" << outputFileName << "for output";
+        sourceVideo.close();
         return false;
     }
 
-    qInfo() << "Using" << maxThreads << "threads";
-    qInfo() << "Processing from start frame #" << startFrame << "with a length of" << length << "frames";
+    // Write the stream header (if there is one)
+    const std::string streamHeader = outputWriter.getStreamHeader();
+    if (!streamHeader.empty()) {
+        targetVideo.write(streamHeader.data(), streamHeader.size());
+        if (!targetVideo.good()) {
+            chd::log::error() << "Writing to the output video file failed";
+            return false;
+        }
+    }
+
+    chd::log::info() << "Using" << maxThreads << "threads";
+    chd::log::info() << "Processing from start frame #" << startFrame << "with a length of" << length << "frames";
 
     // Initialise processing state
     inputFrameNumber = startFrame;
     outputFrameNumber = startFrame;
     lastFrameNumber = length + (startFrame - 1);
-    totalTimer.start();
+    totalTimerStart = std::chrono::steady_clock::now();
 
     // Start a vector of filtering threads to process the video
-    QVector<QThread *> threads;
-    threads.resize(maxThreads);
-    for (qint32 i = 0; i < maxThreads; i++) {
-        threads[i] = decoder.makeThread(abort, *this);
-        threads[i]->start(QThread::LowPriority);
+    std::vector<std::thread> threads;
+    threads.reserve(maxThreads);
+    for (int32_t i = 0; i < maxThreads; i++) {
+        threads.emplace_back(workerLoop, this);
     }
 
     // Wait for the workers to finish
-    for (qint32 i = 0; i < maxThreads; i++) {
-        threads[i]->wait();
-        delete threads[i];
+    for (auto &t : threads) {
+        t.join();
     }
 
     // Did any of the threads abort?
-    if (abort) {
+    if (abort.load()) {
         sourceVideo.close();
         targetVideo.close();
         return false;
@@ -142,14 +195,15 @@ bool DecoderPool::process()
     // Check we've processed all the frames, now the workers have finished
     if (inputFrameNumber != (lastFrameNumber + 1) || outputFrameNumber != (lastFrameNumber + 1)
         || !pendingOutputFrames.empty()) {
-        qCritical() << "Incorrect state at end of processing";
+        chd::log::error() << "Incorrect state at end of processing";
         sourceVideo.close();
         targetVideo.close();
         return false;
     }
 
-    double totalSecs = (static_cast<double>(totalTimer.elapsed()) / 1000.0);
-    qInfo() << "Processing complete -" << length << "frames in" << totalSecs << "seconds (" <<
+    const auto elapsed = std::chrono::steady_clock::now() - totalTimerStart;
+    const double totalSecs = std::chrono::duration<double>(elapsed).count();
+    chd::log::info() << "Processing complete -" << length << "frames in" << totalSecs << "seconds (" <<
                length / totalSecs << "FPS )";
 
     // Close the source video
@@ -161,18 +215,18 @@ bool DecoderPool::process()
     return true;
 }
 
-bool DecoderPool::getInputFrames(qint32 &startFrameNumber, QVector<SourceField> &fields, qint32 &startIndex, qint32 &endIndex)
+bool DecoderPool::getInputFrames(int32_t &startFrameNumber, std::vector<chd::decoders::SourceField> &fields, int32_t &startIndex, int32_t &endIndex)
 {
-    QMutexLocker locker(&inputMutex);
+    std::lock_guard<std::mutex> locker(inputMutex);
 
     // Work out a reasonable batch size to provide work for all threads.
     // This assumes that the synchronisation to get a new batch is less
     // expensive than computing a single frame, so a batch size of 1 is
     // reasonable.
-    const qint32 maxBatchSize = qMin(DEFAULT_BATCH_SIZE, qMax(1, length / maxThreads));
+    const int32_t maxBatchSize = qMin(DEFAULT_BATCH_SIZE, qMax(1, length / maxThreads));
 
     // Work out how many frames will be in this batch
-    qint32 batchFrames = qMin(maxBatchSize, lastFrameNumber + 1 - inputFrameNumber);
+    int32_t batchFrames = qMin(maxBatchSize, lastFrameNumber + 1 - inputFrameNumber);
     if (batchFrames == 0) {
         // No more input frames
         return false;
@@ -183,19 +237,19 @@ bool DecoderPool::getInputFrames(qint32 &startFrameNumber, QVector<SourceField> 
     inputFrameNumber += batchFrames;
 
     // Load the fields
-    SourceField::loadFields(sourceVideo, ldDecodeMetaData,
+    chd::decoders::SourceField::loadFields(sourceVideo, ldDecodeMetaData,
                             startFrameNumber, batchFrames, decoderLookBehind, decoderLookAhead,
                             fields, startIndex, endIndex);
 
     return true;
 }
 
-bool DecoderPool::putOutputFrames(qint32 startFrameNumber, const QVector<OutputFrame> &outputFrames)
+bool DecoderPool::putOutputFrames(int32_t startFrameNumber, const std::vector<chd::output::OutputFrame> &outputFrames)
 {
-    QMutexLocker locker(&outputMutex);
+    std::lock_guard<std::mutex> locker(outputMutex);
 
-    for (qint32 i = 0; i < outputFrames.size(); i++) {
-        if (!putOutputFrame(startFrameNumber + i, outputFrames[i])) {
+    for (size_t i = 0; i < outputFrames.size(); i++) {
+        if (!putOutputFrame(startFrameNumber + static_cast<int32_t>(i), outputFrames[i])) {
             return false;
         }
     }
@@ -211,38 +265,46 @@ bool DecoderPool::putOutputFrames(qint32 startFrameNumber, const QVector<OutputF
 // whether we can now write some of them out.
 //
 // Returns true on success, false on failure.
-bool DecoderPool::putOutputFrame(qint32 frameNumber, const OutputFrame &outputFrame)
+bool DecoderPool::putOutputFrame(int32_t frameNumber, const chd::output::OutputFrame &outputFrame)
 {
     // Put this frame into the map
     pendingOutputFrames[frameNumber] = outputFrame;
 
     // Write out as many frames as possible
-    while (pendingOutputFrames.contains(outputFrameNumber)) {
-        const OutputFrame& outputData = pendingOutputFrames.value(outputFrameNumber);
+    while (pendingOutputFrames.count(outputFrameNumber) > 0) {
+        const chd::output::OutputFrame& outputData = pendingOutputFrames[outputFrameNumber];
 
         // Write the frame header (if there is one)
-        const QByteArray frameHeader = outputWriter.getFrameHeader();
-        if (frameHeader.size() != 0 && targetVideo.write(frameHeader) == -1) {
-            qCritical() << "Writing to the output video file failed";
-            return false;
+        const std::string frameHeader = outputWriter.getFrameHeader();
+        if (!frameHeader.empty()) {
+            targetVideo.write(frameHeader.data(), frameHeader.size());
+            if (!targetVideo.good()) {
+                chd::log::error() << "Writing to the output video file failed";
+                return false;
+            }
         }
 
         // Write the frame data
-        if (targetVideo.write(reinterpret_cast<const char *>(outputData.data()), outputData.size() * 2) == -1) {
-            qCritical() << "Writing to the output video file failed";
+        targetVideo.write(reinterpret_cast<const char *>(outputData.data()), outputData.size() * 2);
+        if (!targetVideo.good()) {
+            chd::log::error() << "Writing to the output video file failed";
             return false;
         }
 
-        pendingOutputFrames.remove(outputFrameNumber);
+        pendingOutputFrames.erase(outputFrameNumber);
         outputFrameNumber++;
 
-        const qint32 outputCount = outputFrameNumber - startFrame;
+        const int32_t outputCount = outputFrameNumber - startFrame;
         if ((outputCount % 32) == 0) {
             // Show an update to the user
-            double fps = outputCount / (static_cast<double>(totalTimer.elapsed()) / 1000.0);
-            qInfo() << outputCount << "frames processed -" << fps << "FPS";
+            const auto elapsed = std::chrono::steady_clock::now() - totalTimerStart;
+            const double secs = std::chrono::duration<double>(elapsed).count();
+            const double fps = outputCount / secs;
+            chd::log::info() << outputCount << "frames processed -" << fps << "FPS";
         }
     }
 
     return true;
 }
+
+}  // namespace chd::pipeline

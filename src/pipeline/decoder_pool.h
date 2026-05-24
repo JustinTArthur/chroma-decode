@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     decoderpool.h
@@ -22,42 +23,45 @@
 
 ************************************************************************/
 
-#ifndef DECODERPOOL_H
-#define DECODERPOOL_H
+#ifndef CHD_PIPELINE_DECODER_POOL_H
+#define CHD_PIPELINE_DECODER_POOL_H
 
-#include <QObject>
-#include <QAtomicInt>
-#include <QElapsedTimer>
-#include <QMap>
-#include <QMutex>
-#include <QThread>
-#include <QVector>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <fstream>
+#include <map>
+#include <mutex>
+#include <string>
+#include <vector>
 
-#include "lddecodemetadata.h"
-#include "sourcevideo.h"
+#include "../metadata/core.h"
+#include "../reader/tbc_source.h"
 
-#include "decoder.h"
-#include "outputwriter.h"
-#include "sourcefield.h"
+#include "../decoders/decoder_base.h"
+#include "../decoders/source_field.h"
+#include "../output/output_writer.h"
+
+namespace chd::pipeline {
 
 class DecoderPool
 {
 public:
-    explicit DecoderPool(Decoder &decoder, QString inputFileName,
-                         LdDecodeMetaData &ldDecodeMetaData,
-                         OutputWriter::Configuration &outputConfig, QString outputFileName,
-                         qint32 startFrame, qint32 length, qint32 maxThreads);
+    explicit DecoderPool(chd::decoders::Decoder &decoder, std::string inputFileName,
+                         chd::metadata::LdDecodeMetaData &ldDecodeMetaData,
+                         chd::output::OutputWriter::Configuration &outputConfig, std::string outputFileName,
+                         int32_t startFrame, int32_t length, int32_t maxThreads);
 
     // Decode fields to frames as specified by the constructor args.
     // Returns true on success; on failure, prints a message and returns false.
     bool process();
 
     // For worker threads: get the configured OutputWriter
-    OutputWriter &getOutputWriter() {
+    chd::output::OutputWriter &getOutputWriter() {
         return outputWriter;
     }
-	
-	Decoder& getDecoder();
+
+	chd::decoders::Decoder& getDecoder();
 
     // For worker threads: get the next batch of data from the input file.
     //
@@ -73,7 +77,7 @@ public:
     //
     // Returns true if a frame was returned, false if the end of the input has
     // been reached.
-    bool getInputFrames(qint32 &startFrameNumber, QVector<SourceField> &fields, qint32 &startIndex, qint32 &endIndex);
+    bool getInputFrames(int32_t &startFrameNumber, std::vector<chd::decoders::SourceField> &fields, int32_t &startIndex, int32_t &endIndex);
 
     // For worker threads: return decoded frames to write to the output file.
     //
@@ -81,43 +85,48 @@ public:
     // with the first frame being startFrameNumber.
     //
     // Returns true on success, false on failure.
-    bool putOutputFrames(qint32 startFrameNumber, const QVector<OutputFrame> &outputFrames);
+    bool putOutputFrames(int32_t startFrameNumber, const std::vector<chd::output::OutputFrame> &outputFrames);
+
+    // For worker threads: shared abort flag (set true to ask workers to stop).
+    std::atomic<bool> &getAbort() { return abort; }
 
 private:
-    bool putOutputFrame(qint32 frameNumber, const OutputFrame &outputFrame);
+    bool putOutputFrame(int32_t frameNumber, const chd::output::OutputFrame &outputFrame);
 
     // Default batch size, in frames
-    static constexpr qint32 DEFAULT_BATCH_SIZE = 16;
+    static constexpr int32_t DEFAULT_BATCH_SIZE = 16;
 
     // Parameters
-    Decoder &decoder;
-    QString inputFileName;
-    OutputWriter::Configuration outputConfig;
-    QString outputFileName;
-    qint32 startFrame;
-    qint32 length;
-    qint32 maxThreads;
+    chd::decoders::Decoder &decoder;
+    std::string inputFileName;
+    chd::output::OutputWriter::Configuration outputConfig;
+    std::string outputFileName;
+    int32_t startFrame;
+    int32_t length;
+    int32_t maxThreads;
 
     // Atomic abort flag shared by worker threads; workers watch this, and shut
     // down as soon as possible if it becomes true
-    QAtomicInt abort;
+    std::atomic<bool> abort;
 
     // Input stream information (all guarded by inputMutex while threads are running)
-    QMutex inputMutex;
-    qint32 decoderLookBehind;
-    qint32 decoderLookAhead;
-    qint32 inputFrameNumber;
-    qint32 lastFrameNumber;
-    LdDecodeMetaData &ldDecodeMetaData;
-    SourceVideo sourceVideo;
+    std::mutex inputMutex;
+    int32_t decoderLookBehind;
+    int32_t decoderLookAhead;
+    int32_t inputFrameNumber;
+    int32_t lastFrameNumber;
+    chd::metadata::LdDecodeMetaData &ldDecodeMetaData;
+    chd::reader::SourceVideo sourceVideo;
 
     // Output stream information (all guarded by outputMutex while threads are running)
-    QMutex outputMutex;
-    qint32 outputFrameNumber;
-    QMap<qint32, OutputFrame> pendingOutputFrames;
-    OutputWriter outputWriter;
-    QFile targetVideo;
-    QElapsedTimer totalTimer;
+    std::mutex outputMutex;
+    int32_t outputFrameNumber;
+    std::map<int32_t, chd::output::OutputFrame> pendingOutputFrames;
+    chd::output::OutputWriter outputWriter;
+    std::ofstream targetVideo;
+    std::chrono::steady_clock::time_point totalTimerStart;
 };
 
-#endif // DECODERPOOL_H
+}  // namespace chd::pipeline
+
+#endif  // CHD_PIPELINE_DECODER_POOL_H
