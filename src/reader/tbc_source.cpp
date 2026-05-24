@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     sourcevideo.cpp
@@ -22,10 +23,14 @@
 
 ************************************************************************/
 
-#include "sourcevideo.h"
+#include "tbc_source.h"
 
-#include <cstdio>
-#include "tbc/logging.h"
+#include <algorithm>
+#include <stdexcept>
+
+#include "../common/log.h"
+
+namespace chd::reader {
 
 // Class constructor
 SourceVideo::SourceVideo()
@@ -37,9 +42,6 @@ SourceVideo::SourceVideo()
     fieldLength = -1;
     fieldByteLength = -1;
     fieldLineLength = -1;
-
-    // Set up the cache
-    fieldCache.setMaxCost(100);
 }
 
 SourceVideo::~SourceVideo()
@@ -51,43 +53,42 @@ SourceVideo::~SourceVideo()
 
 // Open an input video data file. If filename is "-", read from stdin.
 // Returns true on success.
-bool SourceVideo::open(QString filename, qint32 _fieldLength, qint32 _fieldLineLength)
+bool SourceVideo::open(std::string filename, int32_t _fieldLength, int32_t _fieldLineLength)
 {
     fieldLength = _fieldLength;
     fieldByteLength = _fieldLength * 2;
     if (_fieldLineLength != -1) {
         fieldLineLength = _fieldLineLength * 2;
     } else fieldLineLength = -1;
-    tbcDebugStream() << "SourceVideo::open(): Called with field byte length =" << fieldByteLength;
+    chd::log::debug() << "SourceVideo::open(): Called with field byte length =" << fieldByteLength;
 
     if (isSourceVideoOpen) {
         // Video file is already open, close it
-        qInfo() << "A source video input file is already open, cannot open a new one";
+        chd::log::info() << "A source video input file is already open, cannot open a new one";
         return false;
     }
 
     // Open the source video file
-    inputFile.setFileName(filename);
     if (filename == "-") {
-        if (!inputFile.open(stdin, QIODevice::ReadOnly)) {
-            // Failed to open stdin
-            qWarning() << "Could not open stdin as source video input file";
-            return false;
-        }
-
-        // When reading from stdin, we don't know how long the input will be
-        availableFields = -1;
+        // Reading from stdin is not supported through std::ifstream; the
+        // caller must use a pipe or a regular file path.
+        chd::log::warn() << "Could not open stdin as source video input file";
+        return false;
     } else {
-        if (!inputFile.open(QIODevice::ReadOnly)) {
+        inputFile.open(filename, std::ios::binary);
+        if (!inputFile.is_open()) {
             // Failed to open named input file
-            qWarning() << "Could not open" << filename << "as source video input file";
+            chd::log::warn() << "Could not open" << filename << "as source video input file";
             return false;
         }
 
         // File open successful - configure source video parameters
-        qint64 tAvailableFields = (inputFile.size() / fieldByteLength);
-        availableFields = static_cast<qint32>(tAvailableFields);
-        tbcDebugStream() << "SourceVideo::open(): Successful -" << availableFields << "fields available";
+        inputFile.seekg(0, std::ios::end);
+        const int64_t fileSize = inputFile.tellg();
+        inputFile.seekg(0, std::ios::beg);
+        int64_t tAvailableFields = (fileSize / fieldByteLength);
+        availableFields = static_cast<int32_t>(tAvailableFields);
+        chd::log::debug() << "SourceVideo::open(): Successful -" << availableFields << "fields available";
     }
 
     // Initialise cache
@@ -103,16 +104,16 @@ bool SourceVideo::open(QString filename, qint32 _fieldLength, qint32 _fieldLineL
 void SourceVideo::close()
 {
     if (!isSourceVideoOpen) {
-        tbcDebugStream() << "SourceVideo::close(): Called but no source video input file is open";
+        chd::log::debug() << "SourceVideo::close(): Called but no source video input file is open";
         return;
     }
 
-    tbcDebugStream() << "SourceVideo::close(): Called, closing the source video file and emptying the frame cache";
+    chd::log::debug() << "SourceVideo::close(): Called, closing the source video file and emptying the frame cache";
     inputFile.close();
     isSourceVideoOpen = false;
     inputFilePos = -1;
 
-    tbcDebugStream() << "SourceVideo::close(): Source video input file closed";
+    chd::log::debug() << "SourceVideo::close(): Source video input file closed";
 }
 
 // Get the validity of the source video file
@@ -123,13 +124,13 @@ bool SourceVideo::isSourceValid()
 
 // Get the number of fields available from the source video file.
 // Returns -1 if the length is unknown (e.g. we're reading from stdin).
-qint32 SourceVideo::getNumberOfAvailableFields()
+int32_t SourceVideo::getNumberOfAvailableFields()
 {
     return availableFields;
 }
 
 // Get the number of samples in a field
-qint32 SourceVideo::getFieldLength()
+int32_t SourceVideo::getFieldLength()
 {
     return fieldLength;
 }
@@ -138,27 +139,28 @@ qint32 SourceVideo::getFieldLength()
 
 // Method to retrieve a range of field lines from a single video field.
 // If startFieldLine and endFieldLine are both -1, read the whole field.
-SourceVideo::Data SourceVideo::getVideoField(qint32 fieldNumber, qint32 startFieldLine, qint32 endFieldLine)
+SourceVideo::Data SourceVideo::getVideoField(int32_t fieldNumber, int32_t startFieldLine, int32_t endFieldLine)
 {
     // Adjust the field number to index from zero
     fieldNumber--;
 
     // Ensure source video is open
-    if (!isSourceVideoOpen) qFatal("Application requested TBC field before opening TBC file - Fatal error");
+    if (!isSourceVideoOpen) throw std::runtime_error("Application requested TBC field before opening TBC file - Fatal error");
 
     // Calculate the position of the require field line data
-    qint64 requiredStartPosition = static_cast<qint64>(fieldByteLength) * static_cast<qint64>(fieldNumber);
-    qint64 requiredReadLength;
+    int64_t requiredStartPosition = static_cast<int64_t>(fieldByteLength) * static_cast<int64_t>(fieldNumber);
+    int64_t requiredReadLength;
 
     if (startFieldLine == -1 && endFieldLine == -1) {
         // Read the whole field
 
         // Check the cache (we only cache whole fields)
-        if (fieldCache.contains(fieldNumber)) {
-            return *fieldCache.object(fieldNumber);
+        auto it = fieldCache.find(fieldNumber);
+        if (it != fieldCache.end()) {
+            return it->second;
         }
 
-        requiredReadLength = static_cast<qint64>(fieldByteLength);
+        requiredReadLength = static_cast<int64_t>(fieldByteLength);
     } else {
         // Read a range of lines
 
@@ -167,38 +169,42 @@ SourceVideo::Data SourceVideo::getVideoField(qint32 fieldNumber, qint32 startFie
         endFieldLine--;
 
         // Verify the required range
-        if (fieldLineLength == -1) qFatal("Application did not set field line length when opening TBC file");
-        if (startFieldLine < 0) qFatal("Application requested out-of-bounds field line");
+        if (fieldLineLength == -1) throw std::runtime_error("Application did not set field line length when opening TBC file");
+        if (startFieldLine < 0) throw std::runtime_error("Application requested out-of-bounds field line");
 
-        requiredStartPosition += static_cast<qint64>(fieldLineLength) * static_cast<qint64>(startFieldLine);
-        requiredReadLength = static_cast<qint64>(endFieldLine - startFieldLine + 1) * static_cast<qint64>(fieldLineLength);
+        requiredStartPosition += static_cast<int64_t>(fieldLineLength) * static_cast<int64_t>(startFieldLine);
+        requiredReadLength = static_cast<int64_t>(endFieldLine - startFieldLine + 1) * static_cast<int64_t>(fieldLineLength);
     }
 
     // Check the requested field and lines are valid
     if (availableFields != -1
         && (requiredStartPosition < 0
-            || requiredStartPosition + requiredReadLength > (static_cast<qint64>(fieldByteLength) * availableFields))) {
-        qFatal("Application requested field line range that exceeds the boundaries of the input TBC file");
+            || requiredStartPosition + requiredReadLength > (static_cast<int64_t>(fieldByteLength) * availableFields))) {
+        throw std::runtime_error("Application requested field line range that exceeds the boundaries of the input TBC file");
     }
 
     // Resize the output buffer
-    outputFieldData.resize(static_cast<qint32>(requiredReadLength) / 2);
+    outputFieldData.resize(static_cast<int32_t>(requiredReadLength) / 2);
 
     // Seek to the correct file position (if not already there)
     if (inputFilePos != requiredStartPosition) {
-        if (!inputFile.seek(requiredStartPosition)) {
+        inputFile.clear();
+        inputFile.seekg(requiredStartPosition);
+        if (!inputFile.good()) {
             // Seek failed
 
             if (inputFilePos > requiredStartPosition) {
-                qFatal("Could not seek backwards to required field position in input TBC file");
+                throw std::runtime_error("Could not seek backwards to required field position in input TBC file");
             } else {
                 // Seeking forwards -- try reading and discarding data instead
-                qint64 discardBytes = requiredStartPosition - inputFilePos;
+                inputFile.clear();
+                int64_t discardBytes = requiredStartPosition - inputFilePos;
                 while (discardBytes > 0) {
-                    qint64 readBytes = inputFile.read(reinterpret_cast<char *>(outputFieldData.data()),
-                                                      qMin(discardBytes, static_cast<qint64>(outputFieldData.size() * 2)));
+                    int64_t chunk = std::min(discardBytes, static_cast<int64_t>(outputFieldData.size() * 2));
+                    inputFile.read(reinterpret_cast<char *>(outputFieldData.data()), chunk);
+                    int64_t readBytes = inputFile.gcount();
                     if (readBytes <= 0) {
-                        qFatal("Could not seek or read forwards to required field position in input TBC file");
+                        throw std::runtime_error("Could not seek or read forwards to required field position in input TBC file");
                     }
                     discardBytes -= readBytes;
                 }
@@ -208,11 +214,12 @@ SourceVideo::Data SourceVideo::getVideoField(qint32 fieldNumber, qint32 startFie
     }
 
     // Read the field lines from the input
-    qint64 totalReceivedBytes = 0;
-    qint64 receivedBytes = 0;
+    int64_t totalReceivedBytes = 0;
+    int64_t receivedBytes = 0;
     do {
-        receivedBytes = inputFile.read(reinterpret_cast<char *>(outputFieldData.data()) + totalReceivedBytes,
-                                       requiredReadLength - totalReceivedBytes);
+        inputFile.read(reinterpret_cast<char *>(outputFieldData.data()) + totalReceivedBytes,
+                       requiredReadLength - totalReceivedBytes);
+        receivedBytes = inputFile.gcount();
         if (receivedBytes > 0) {
             totalReceivedBytes += receivedBytes;
             inputFilePos += receivedBytes;
@@ -220,16 +227,18 @@ SourceVideo::Data SourceVideo::getVideoField(qint32 fieldNumber, qint32 startFie
     } while (receivedBytes > 0 && totalReceivedBytes < requiredReadLength);
 
     // Verify read was ok
-    if (totalReceivedBytes != requiredReadLength) qFatal("Could not read field data from input TBC file");
+    if (totalReceivedBytes != requiredReadLength) throw std::runtime_error("Could not read field data from input TBC file");
 
     if (startFieldLine == -1 && endFieldLine == -1) {
         // Insert the field data into the cache
-        fieldCache.insert(fieldNumber, new Data(outputFieldData), 1);
+        fieldCache.emplace(fieldNumber, outputFieldData);
     }
 
     // Return the data
     return outputFieldData;
 }
+
+}  // namespace chd::reader
 
 
 

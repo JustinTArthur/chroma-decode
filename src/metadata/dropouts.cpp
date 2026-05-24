@@ -10,13 +10,15 @@
 
 #include "dropouts.h"
 
-#include "sqliteio.h"
+#include "ld_metadata_sqlite.h"
 
 #include <cassert>
-#include <QSqlQuery>
-#include "tbc/logging.h"
 
-DropOuts::DropOuts(const QVector<qint32> &startx, const QVector<qint32> &endx, const QVector<qint32> &fieldLine)
+#include "../common/log.h"
+
+namespace chd::metadata {
+
+DropOuts::DropOuts(const std::vector<int32_t> &startx, const std::vector<int32_t> &endx, const std::vector<int32_t> &fieldLine)
     : m_startx(startx), m_endx(endx), m_fieldLine(fieldLine)
 {
 }
@@ -42,11 +44,11 @@ DropOuts& DropOuts::operator=(const DropOuts &inDropouts)
 }
 
 // Append a dropout
-void DropOuts::append(const qint32 startx, const qint32 endx, const qint32 fieldLine)
+void DropOuts::append(const int32_t startx, const int32_t endx, const int32_t fieldLine)
 {
-    m_startx.append(startx);
-    m_endx.append(endx);
-    m_fieldLine.append(fieldLine);
+    m_startx.push_back(startx);
+    m_endx.push_back(endx);
+    m_fieldLine.push_back(fieldLine);
 }
 
 void DropOuts::reserve(int size)
@@ -57,7 +59,7 @@ void DropOuts::reserve(int size)
 }
 
 // Resize the size of the DropOuts record
-void DropOuts::resize(qint32 size)
+void DropOuts::resize(int32_t size)
 {
     m_startx.resize(size);
     m_endx.resize(size);
@@ -79,16 +81,16 @@ void DropOuts::clear()
 // caller is aware of the restriction (used in ld-diffdod only at the moment)
 void DropOuts::concatenate(const bool verbose)
 {
-    qint32 sizeAtStart = m_startx.size();
+    int32_t sizeAtStart = m_startx.size();
 
     // This variable controls the minimum allowed gap between dropouts
     // if the gap between the end of the last dropout and the start of
     // the next is less than minimumGap, the two dropouts will be
     // concatenated together
-    qint32 minimumGap = 50;
+    int32_t minimumGap = 50;
 
     // Start from dropout 1 as 0 has no previous dropout
-    qint32 i = 1;
+    int32_t i = 1;
 
     while (i < m_startx.size()) {
         // Is the current dropout on the same frame line as the last?
@@ -98,9 +100,9 @@ void DropOuts::concatenate(const bool verbose)
                 m_endx[i - 1] = m_endx[i];
 
                 // Remove the current dropout
-                m_startx.removeAt(i);
-                m_endx.removeAt(i);
-                m_fieldLine.removeAt(i);
+                m_startx.erase(m_startx.begin() + i);
+                m_endx.erase(m_endx.begin() + i);
+                m_fieldLine.erase(m_fieldLine.begin() + i);
             }
         }
 
@@ -108,20 +110,7 @@ void DropOuts::concatenate(const bool verbose)
         i++;
     }
 
-    if(verbose){tbcDebugStream() << "Concatenated dropouts: was" << sizeAtStart << "now" << m_startx.size() << "dropouts";}
-}
-
-// Custom debug streaming operator
-QDebug operator<<(QDebug dbg, DropOuts &dropOuts)
-{
-    dbg.nospace() << "Dropout object contains " << dropOuts.size() << " entries:\n";
-
-    for (qint32 i = 0; i < dropOuts.size(); i++) {
-        dbg.nospace() << "  [" << i << "] startx = " << dropOuts.startx(i) <<
-                         " - endx = " << dropOuts.endx(i) << " - line = " << dropOuts.fieldLine(i) << "\n";
-    }
-
-    return dbg.maybeSpace();
+    if(verbose){chd::log::debug() << "Concatenated dropouts: was" << sizeAtStart << "now" << m_startx.size() << "dropouts";}
 }
 
 // Read DropOuts from SQLite
@@ -129,7 +118,7 @@ void DropOuts::read(SqliteReader &reader, int captureId, int fieldId)
 {
     clear();
 
-    QSqlQuery dropoutsQuery;
+    SqliteQuery dropoutsQuery;
     if (reader.readFieldDropouts(captureId, fieldId, dropoutsQuery)) {
         while (dropoutsQuery.next()) {
             int startx = dropoutsQuery.value("startx").toInt();
@@ -147,5 +136,7 @@ void DropOuts::write(SqliteWriter &writer, int captureId, int fieldId) const
         writer.writeFieldDropouts(captureId, fieldId, startx(i), endx(i), fieldLine(i));
     }
 }
+
+}  // namespace chd::metadata
 
 

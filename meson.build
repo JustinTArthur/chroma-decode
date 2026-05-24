@@ -16,8 +16,10 @@ cc  = meson.get_compiler('c')
 # ── Dependencies ──────────────────────────────────────────────────────────────
 threads_dep = dependency('threads')
 
-# Optional at the skeleton stage: real decoders pick these up later.
-sqlite3_dep = dependency('sqlite3', required: false)
+# SQLite3 is required: the TBC metadata sidecars
+# live in SQLite files (`*.tbc.db`) and chd_video_open_composite cannot work without
+# the skeleton's `required: false` is upgraded here.
+sqlite3_dep = dependency('sqlite3', required: true)
 fftw3_dep   = dependency('fftw3',   required: false)
 
 # ONNX Runtime discovery: pkg-config first, then -Donnxruntime_root fallback.

@@ -10,16 +10,17 @@
  * This file is part of ld-decode-tools.
  ******************************************************************************/
 
-#ifndef LDDECODEMETADATA_H
-#define LDDECODEMETADATA_H
+#ifndef CHD_METADATA_CORE_H
+#define CHD_METADATA_CORE_H
 
-#include <QString>
-#include <QVector>
-#include <QTemporaryFile>
-#include <QDebug>
 #include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
 
 #include "dropouts.h"
+
+namespace chd::metadata {
 
 class SqliteReader;
 class SqliteWriter;
@@ -32,7 +33,7 @@ enum VideoSystem {
     PAL_M,      // 525-line PAL
 };
 
-bool parseVideoSystemName(QString name, VideoSystem &system);
+bool parseVideoSystemName(std::string name, VideoSystem &system);
 
 class LdDecodeMetaData
 {
@@ -41,7 +42,7 @@ public:
     // VBI Metadata definition
     struct Vbi {
         bool inUse = false;
-        std::array<qint32, 3> vbiData { 0, 0, 0 };
+        std::array<int32_t, 3> vbiData { 0, 0, 0 };
 
         void read(SqliteReader &reader, int captureId, int fieldId);
         void write(SqliteWriter &writer, int captureId, int fieldId) const;
@@ -51,30 +52,30 @@ public:
     struct VideoParameters {
         // -- Members stored in the metadata --
 
-        qint32 numberOfSequentialFields = -1;
+        int32_t numberOfSequentialFields = -1;
 
         VideoSystem system = NTSC;
         bool isSubcarrierLocked = false;
         bool isWidescreen = false;
 
-        qint32 colourBurstStart = -1;
-        qint32 colourBurstEnd = -1;
-        qint32 activeVideoStart = -1;
-        qint32 activeVideoEnd = -1;
+        int32_t colourBurstStart = -1;
+        int32_t colourBurstEnd = -1;
+        int32_t activeVideoStart = -1;
+        int32_t activeVideoEnd = -1;
 
-        qint32 white16bIre = -1;
-        qint32 black16bIre = -1;
-        qint32 blanking16bIre = -1;
+        int32_t white16bIre = -1;
+        int32_t black16bIre = -1;
+        int32_t blanking16bIre = -1;
 
-        qint32 fieldWidth = -1;
-        qint32 fieldHeight = -1;
+        int32_t fieldWidth = -1;
+        int32_t fieldHeight = -1;
         double sampleRate = -1.0;
 
         bool isMapped = false;
-        QString tapeFormat = "";
+        std::string tapeFormat = "";
 
-        QString gitBranch;
-        QString gitCommit;
+        std::string gitBranch;
+        std::string gitCommit;
 
         // -- Members set by the library --
 
@@ -87,10 +88,10 @@ public:
         // should cover the active lines in both fields of a frame.
         // These are half-open ranges, where lines are numbered sequentially
         // from 1 within each field or interlaced frame.
-        qint32 firstActiveFieldLine = -1;
-        qint32 lastActiveFieldLine = -1;
-        qint32 firstActiveFrameLine = -1;
-        qint32 lastActiveFrameLine = -1;
+        int32_t firstActiveFieldLine = -1;
+        int32_t lastActiveFieldLine = -1;
+        int32_t firstActiveFrameLine = -1;
+        int32_t lastActiveFrameLine = -1;
 
         // Flags if our data has been initialized yet
         bool isValid = false;
@@ -102,10 +103,10 @@ public:
     // Specification for customising the range of active lines in VideoParameters.
     // -1 for any of these means to use the default for the standard.
     struct LineParameters {
-        qint32 firstActiveFieldLine = -1;
-        qint32 lastActiveFieldLine = -1;
-        qint32 firstActiveFrameLine = -1;
-        qint32 lastActiveFrameLine = -1;
+        int32_t firstActiveFieldLine = -1;
+        int32_t lastActiveFieldLine = -1;
+        int32_t firstActiveFrameLine = -1;
+        int32_t lastActiveFrameLine = -1;
 
         void applyTo(VideoParameters &videoParameters);
     };
@@ -125,10 +126,10 @@ public:
     struct Ntsc {
         bool inUse = false;
         bool isFmCodeDataValid = false;
-        qint32 fmCodeData = 0;
+        int32_t fmCodeData = 0;
         bool fieldFlag = false;
         bool isVideoIdDataValid = false;
-        qint32 videoIdData = 0;
+        int32_t videoIdData = 0;
         bool whiteFlag = false;
 
         void read(SqliteReader &reader, int captureId, int fieldId, ClosedCaption &closedCaption);
@@ -141,7 +142,7 @@ public:
 
         // Just the VITC data, without the sync bits or CRC.
         // vitcData[0]'s LSB is bit 2; vitcData[7]'s MSB is bit 79.
-        std::array<qint32, 8> vitcData;
+        std::array<int32_t, 8> vitcData;
 
         void read(SqliteReader &reader, int captureId, int fieldId);
         void write(SqliteWriter &writer, int captureId, int fieldId) const;
@@ -151,8 +152,8 @@ public:
     struct ClosedCaption {
         bool inUse = false;
 
-        qint32 data0 = -1;
-        qint32 data1 = -1;
+        int32_t data0 = -1;
+        int32_t data1 = -1;
 
         void read(SqliteReader &reader, int captureId, int fieldId);
         void write(SqliteWriter &writer, int captureId, int fieldId) const;
@@ -163,7 +164,7 @@ public:
         double sampleRate = -1.0;
         bool isLittleEndian = false;
         bool isSigned = false;
-        qint32 bits = -1;
+        int32_t bits = -1;
 
         // Flags if our data has been initialized yet
         bool isValid = false;
@@ -174,12 +175,12 @@ public:
 
     // Field metadata definition
     struct Field {
-        qint32 seqNo = 0;   // Note: This is the unique primary-key
+        int32_t seqNo = 0;   // Note: This is the unique primary-key
         bool isFirstField = false;
-        qint32 syncConf = 0;
+        int32_t syncConf = 0;
         double medianBurstIRE = 0.0;
-        qint32 fieldPhaseID = -1;
-        qint32 audioSamples = -1;
+        int32_t fieldPhaseID = -1;
+        int32_t audioSamples = -1;
 
         VitsMetrics vitsMetrics;
         Vbi vbi;
@@ -190,9 +191,9 @@ public:
         bool pad = false;
 
         double diskLoc = -1;
-        qint64 fileLoc = -1;
-        qint32 decodeFaults = -1;
-        qint32 efmTValues = -1;
+        int64_t fileLoc = -1;
+        int32_t decodeFaults = -1;
+        int32_t efmTValues = -1;
 
         void read(SqliteReader &reader, int captureId);
         void write(SqliteWriter &writer, int captureId) const;
@@ -200,10 +201,10 @@ public:
 
     // CLV timecode (used by frame number conversion methods)
     struct ClvTimecode {
-        qint32 hours;
-        qint32 minutes;
-        qint32 seconds;
-        qint32 pictureNumber;
+        int32_t hours;
+        int32_t minutes;
+        int32_t seconds;
+        int32_t pictureNumber;
     };
 
     LdDecodeMetaData();
@@ -213,8 +214,8 @@ public:
     LdDecodeMetaData& operator=(const LdDecodeMetaData &) = delete;
 
     void clear();
-    bool read(QString fileName);
-    bool write(QString fileName) const;
+    bool read(std::string fileName);
+    bool write(std::string fileName) const;
     void readFields(SqliteReader &reader, int captureId);
     void writeFields(SqliteWriter &writer, int captureId) const;
 
@@ -228,56 +229,58 @@ public:
     void processLineParameters(LdDecodeMetaData::LineParameters &_lineParameters);
 
     // Get field metadata
-    const Field &getField(qint32 sequentialFieldNumber);
-    const VitsMetrics &getFieldVitsMetrics(qint32 sequentialFieldNumber);
-    const Vbi &getFieldVbi(qint32 sequentialFieldNumber);
-    const Ntsc &getFieldNtsc(qint32 sequentialFieldNumber);
-    const Vitc &getFieldVitc(qint32 sequentialFieldNumber);
-    const ClosedCaption &getFieldClosedCaption(qint32 sequentialFieldNumber);
-    const DropOuts &getFieldDropOuts(qint32 sequentialFieldNumber);
+    const Field &getField(int32_t sequentialFieldNumber);
+    const VitsMetrics &getFieldVitsMetrics(int32_t sequentialFieldNumber);
+    const Vbi &getFieldVbi(int32_t sequentialFieldNumber);
+    const Ntsc &getFieldNtsc(int32_t sequentialFieldNumber);
+    const Vitc &getFieldVitc(int32_t sequentialFieldNumber);
+    const ClosedCaption &getFieldClosedCaption(int32_t sequentialFieldNumber);
+    const DropOuts &getFieldDropOuts(int32_t sequentialFieldNumber);
 
     // Set field metadata
-    void updateField(const Field &field, qint32 sequentialFieldNumber);
-    void updateFieldVitsMetrics(const LdDecodeMetaData::VitsMetrics &vitsMetrics, qint32 sequentialFieldNumber);
-    void updateFieldVbi(const LdDecodeMetaData::Vbi &vbi, qint32 sequentialFieldNumber);
-    void updateFieldNtsc(const LdDecodeMetaData::Ntsc &ntsc, qint32 sequentialFieldNumber);
-    void updateFieldVitc(const LdDecodeMetaData::Vitc &vitc, qint32 sequentialFieldNumber);
-    void updateFieldClosedCaption(const LdDecodeMetaData::ClosedCaption &closedCaption, qint32 sequentialFieldNumber);
-    void updateFieldDropOuts(const DropOuts &dropOuts, qint32 sequentialFieldNumber);
-    void clearFieldDropOuts(qint32 sequentialFieldNumber);
+    void updateField(const Field &field, int32_t sequentialFieldNumber);
+    void updateFieldVitsMetrics(const LdDecodeMetaData::VitsMetrics &vitsMetrics, int32_t sequentialFieldNumber);
+    void updateFieldVbi(const LdDecodeMetaData::Vbi &vbi, int32_t sequentialFieldNumber);
+    void updateFieldNtsc(const LdDecodeMetaData::Ntsc &ntsc, int32_t sequentialFieldNumber);
+    void updateFieldVitc(const LdDecodeMetaData::Vitc &vitc, int32_t sequentialFieldNumber);
+    void updateFieldClosedCaption(const LdDecodeMetaData::ClosedCaption &closedCaption, int32_t sequentialFieldNumber);
+    void updateFieldDropOuts(const DropOuts &dropOuts, int32_t sequentialFieldNumber);
+    void clearFieldDropOuts(int32_t sequentialFieldNumber);
 
     void appendField(const Field &field);
 
-    void setNumberOfFields(qint32 numberOfFields);
-    qint32 getNumberOfFields();
-    qint32 getNumberOfFrames();
-    qint32 getFirstFieldNumber(qint32 frameNumber);
-    qint32 getSecondFieldNumber(qint32 frameNumber);
+    void setNumberOfFields(int32_t numberOfFields);
+    int32_t getNumberOfFields();
+    int32_t getNumberOfFrames();
+    int32_t getFirstFieldNumber(int32_t frameNumber);
+    int32_t getSecondFieldNumber(int32_t frameNumber);
 
     void setIsFirstFieldFirst(bool flag);
     bool getIsFirstFieldFirst();
 
-    qint32 convertClvTimecodeToFrameNumber(LdDecodeMetaData::ClvTimecode clvTimeCode);
-    LdDecodeMetaData::ClvTimecode convertFrameNumberToClvTimecode(qint32 clvFrameNumber);
+    int32_t convertClvTimecodeToFrameNumber(LdDecodeMetaData::ClvTimecode clvTimeCode);
+    LdDecodeMetaData::ClvTimecode convertFrameNumberToClvTimecode(int32_t clvFrameNumber);
 
     // PCM Analogue audio helper methods
-    qint32 getFieldPcmAudioStart(qint32 sequentialFieldNumber);
-    qint32 getFieldPcmAudioLength(qint32 sequentialFieldNumber);
+    int32_t getFieldPcmAudioStart(int32_t sequentialFieldNumber);
+    int32_t getFieldPcmAudioLength(int32_t sequentialFieldNumber);
 
     // Video system helper methods
-    QString getVideoSystemDescription() const;
+    std::string getVideoSystemDescription() const;
 
 private:
     bool isFirstFieldFirst;
     VideoParameters videoParameters;
     PcmAudioParameters pcmAudioParameters;
-    QVector<Field> fields;
-    QVector<qint32> pcmAudioFieldStartSampleMap;
-    QVector<qint32> pcmAudioFieldLengthMap;
+    std::vector<Field> fields;
+    std::vector<int32_t> pcmAudioFieldStartSampleMap;
+    std::vector<int32_t> pcmAudioFieldLengthMap;
 
     void initialiseVideoSystemParameters();
-    qint32 getFieldNumber(qint32 frameNumber, qint32 field);
+    int32_t getFieldNumber(int32_t frameNumber, int32_t field);
     void generatePcmAudioMap();
 };
 
-#endif // LDDECODEMETADATA_H
+} // namespace chd::metadata
+
+#endif // CHD_METADATA_CORE_H

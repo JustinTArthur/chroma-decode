@@ -8,12 +8,13 @@
  * This file is part of ld-decode-tools.
  ******************************************************************************/
 
-#ifndef DROPOUTS_H
-#define DROPOUTS_H
+#ifndef CHD_METADATA_DROPOUTS_H
+#define CHD_METADATA_DROPOUTS_H
 
-#include <QDebug>
-#include <QtGlobal>
-#include <QMetaType>
+#include <cstdint>
+#include <vector>
+
+namespace chd::metadata {
 
 class SqliteReader;
 class SqliteWriter;
@@ -26,18 +27,18 @@ public:
     ~DropOuts() = default;
     DropOuts(const DropOuts &) = default;
 
-    DropOuts(const QVector<qint32> &startx, const QVector<qint32> &endx, const QVector<qint32> &fieldLine);
+    DropOuts(const std::vector<int32_t> &startx, const std::vector<int32_t> &endx, const std::vector<int32_t> &fieldLine);
     DropOuts &operator=(const DropOuts &);
 
-    void append(const qint32 startx, const qint32 endx, const qint32 fieldLine);
+    void append(const int32_t startx, const int32_t endx, const int32_t fieldLine);
     void reserve(int size);
-    void resize(qint32 size);
+    void resize(int32_t size);
     void clear();
     void concatenate(const bool verbose=true);
 
     // Return the number of dropouts
-    qint32 size() const {
-        return m_startx.size();
+    int32_t size() const {
+        return static_cast<int32_t>(m_startx.size());
     }
 
     // Return true if there are no dropouts
@@ -46,13 +47,13 @@ public:
     }
 
     // Get position of a dropout
-    qint32 startx(qint32 index) const {
+    int32_t startx(int32_t index) const {
         return m_startx[index];
     }
-    qint32 endx(qint32 index) const {
+    int32_t endx(int32_t index) const {
         return m_endx[index];
     }
-    qint32 fieldLine(qint32 index) const {
+    int32_t fieldLine(int32_t index) const {
         return m_fieldLine[index];
     }
 
@@ -60,9 +61,11 @@ public:
     void write(SqliteWriter &writer, int captureId, int fieldId) const;
 
 private:
-    QVector<qint32> m_startx;
-    QVector<qint32> m_endx;
-    QVector<qint32> m_fieldLine;
+    std::vector<int32_t> m_startx;
+    std::vector<int32_t> m_endx;
+    std::vector<int32_t> m_fieldLine;
 };
 
-#endif // DROPOUTS_H
+} // namespace chd::metadata
+
+#endif // CHD_METADATA_DROPOUTS_H

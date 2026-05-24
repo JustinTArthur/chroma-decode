@@ -8,28 +8,22 @@
  * This file is part of ld-decode-tools.
  ******************************************************************************/
 
-#ifndef SQLITEIO_H
-#define SQLITEIO_H
+#ifndef CHD_METADATA_LD_METADATA_SQLITE_H
+#define CHD_METADATA_LD_METADATA_SQLITE_H
 
-#include <QString>
-#include <QSqlDatabase>
-#include <QSqlQuery>
-#include <QSqlError>
-#include <QVariant>
 #include <stdexcept>
+#include <string>
 
-namespace SqliteValue
-{
-    int toIntOrDefault(const QSqlQuery &query, const char *column, int defaultValue = -1);
-    qint64 toLongLongOrDefault(const QSqlQuery &query, const char *column, qint64 defaultValue = -1);
-    double toDoubleOrDefault(const QSqlQuery &query, const char *column, double defaultValue = -1.0);
-    bool toBoolOrDefault(const QSqlQuery &query, const char *column, bool defaultValue = false);
-}
+#include "sqlite_query.h"
+
+struct sqlite3;
+
+namespace chd::metadata {
 
 class SqliteReader
 {
 public:
-    SqliteReader(const QString &fileName);
+    SqliteReader(const std::string &fileName);
     ~SqliteReader();
     
     // Explicitly close the database connection
@@ -48,46 +42,45 @@ public:
     }
 
     // Read capture-level metadata
-    bool readCaptureMetadata(int &captureId, QString &system, QString &decoder,
-                           QString &gitBranch, QString &gitCommit,
+    bool readCaptureMetadata(int &captureId, std::string &system, std::string &decoder,
+                           std::string &gitBranch, std::string &gitCommit,
                            double &videoSampleRate, int &activeVideoStart, int &activeVideoEnd,
                            int &fieldWidth, int &fieldHeight, int &numberOfSequentialFields,
                            int &colourBurstStart, int &colourBurstEnd,
                            bool &isMapped, bool &isSubcarrierLocked, bool &isWidescreen,
-                           int &white16bIre, int &black16bIre, int &blanking16bIre, QString &captureNotes);
+                           int &white16bIre, int &black16bIre, int &blanking16bIre, std::string &captureNotes);
 
     // Read PCM audio parameters
     bool readPcmAudioParameters(int captureId, int &bits, bool &isSigned,
                               bool &isLittleEndian, double &sampleRate);
 
     // Read field metadata
-    bool readFields(int captureId, QSqlQuery &fieldsQuery);
+    bool readFields(int captureId, SqliteQuery &fieldsQuery);
 
     // Read field-specific data (individual queries - slower)
     bool readFieldVitsMetrics(int captureId, int fieldId, double &wSnr, double &bPsnr);
     bool readFieldVbi(int captureId, int fieldId, int &vbi0, int &vbi1, int &vbi2);
     bool readFieldVitc(int captureId, int fieldId, int vitcData[8]);
     bool readFieldClosedCaption(int captureId, int fieldId, int &data0, int &data1);
-    bool readFieldDropouts(int captureId, int fieldId, QSqlQuery &dropoutsQuery);
+    bool readFieldDropouts(int captureId, int fieldId, SqliteQuery &dropoutsQuery);
 
     // Optimized bulk read methods for all fields (much faster)
-    bool readAllFieldVitsMetrics(int captureId, QSqlQuery &vitsQuery);
-    bool readAllFieldVbi(int captureId, QSqlQuery &vbiQuery);
-    bool readAllFieldVitc(int captureId, QSqlQuery &vitcQuery);
-    bool readAllFieldClosedCaptions(int captureId, QSqlQuery &ccQuery);
-    bool readAllFieldDropouts(int captureId, QSqlQuery &dropoutsQuery);
+    bool readAllFieldVitsMetrics(int captureId, SqliteQuery &vitsQuery);
+    bool readAllFieldVbi(int captureId, SqliteQuery &vbiQuery);
+    bool readAllFieldVitc(int captureId, SqliteQuery &vitcQuery);
+    bool readAllFieldClosedCaptions(int captureId, SqliteQuery &ccQuery);
+    bool readAllFieldDropouts(int captureId, SqliteQuery &dropoutsQuery);
 
 private:
-    QSqlDatabase db;
-    QString connectionName;
+    sqlite3 *db = nullptr;
 };
 
 class SqliteWriter
 {
 public:
-    SqliteWriter(const QString &fileName);
+    SqliteWriter(const std::string &fileName);
     ~SqliteWriter();
-    
+
     // Explicitly close the database connection
     void close();
 
@@ -107,22 +100,22 @@ public:
     bool createSchema();
 
     // Write capture-level metadata
-    int writeCaptureMetadata(const QString &system, const QString &decoder,
-                           const QString &gitBranch, const QString &gitCommit,
+    int writeCaptureMetadata(const std::string &system, const std::string &decoder,
+                           const std::string &gitBranch, const std::string &gitCommit,
                            double videoSampleRate, int activeVideoStart, int activeVideoEnd,
                            int fieldWidth, int fieldHeight, int numberOfSequentialFields,
                            int colourBurstStart, int colourBurstEnd,
                            bool isMapped, bool isSubcarrierLocked, bool isWidescreen,
-                           int white16bIre, int black16bIre, int blanking16bIre, const QString &captureNotes);
+                           int white16bIre, int black16bIre, int blanking16bIre, const std::string &captureNotes);
 
-    // Update existing capture metadata  
-    bool updateCaptureMetadata(int captureId, const QString &system, const QString &decoder,
-                             const QString &gitBranch, const QString &gitCommit,
+    // Update existing capture metadata
+    bool updateCaptureMetadata(int captureId, const std::string &system, const std::string &decoder,
+                             const std::string &gitBranch, const std::string &gitCommit,
                              double videoSampleRate, int activeVideoStart, int activeVideoEnd,
                              int fieldWidth, int fieldHeight, int numberOfSequentialFields,
                              int colourBurstStart, int colourBurstEnd,
                              bool isMapped, bool isSubcarrierLocked, bool isWidescreen,
-                             int white16bIre, int black16bIre, int blanking16bIre, const QString &captureNotes);
+                             int white16bIre, int black16bIre, int blanking16bIre, const std::string &captureNotes);
 
     // Write PCM audio parameters
     bool writePcmAudioParameters(int captureId, int bits, bool isSigned,
@@ -148,8 +141,9 @@ public:
     bool rollbackTransaction();
 
 private:
-    QSqlDatabase db;
-    QString connectionName;
+    sqlite3 *db = nullptr;
 };
 
-#endif // SQLITEIO_H
+}  // namespace chd::metadata
+
+#endif // CHD_METADATA_LD_METADATA_SQLITE_H

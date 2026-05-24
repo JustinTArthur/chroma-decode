@@ -8,46 +8,16 @@
  * This file is part of ld-decode-tools.
  ******************************************************************************/
 
-#include "sqliteio.h"
+#include "ld_metadata_sqlite.h"
 
-#include <QSqlDriver>
-#include <QUuid>
-#include <QDebug>
-#include <QFileInfo>
-#include <QThread>
-#include <QStringList>
-#include "tbc/logging.h"
+#include <sqlite3.h>
 
-namespace SqliteValue
-{
-    // Keep legacy "-1 means missing" semantics when SQLite stores NULL
-    int toIntOrDefault(const QSqlQuery &query, const char *column, int defaultValue)
-    {
-        const QVariant value = query.value(column);
-        return value.isNull() ? defaultValue : value.toInt();
-    }
+#include "../common/log.h"
 
-    qint64 toLongLongOrDefault(const QSqlQuery &query, const char *column, qint64 defaultValue)
-    {
-        const QVariant value = query.value(column);
-        return value.isNull() ? defaultValue : value.toLongLong();
-    }
-
-    double toDoubleOrDefault(const QSqlQuery &query, const char *column, double defaultValue)
-    {
-        const QVariant value = query.value(column);
-        return value.isNull() ? defaultValue : value.toDouble();
-    }
-
-    bool toBoolOrDefault(const QSqlQuery &query, const char *column, bool defaultValue)
-    {
-        const QVariant value = query.value(column);
-        return value.isNull() ? defaultValue : value.toInt() == 1;
-    }
-}
+namespace chd::metadata {
 
 // SQL schema as per documentation
-static const QString SCHEMA_SQL = R"(
+static const char *SCHEMA_SQL = R"(
 PRAGMA user_version = 1;
 
 CREATE TABLE IF NOT EXISTS capture (
@@ -181,23 +151,17 @@ CREATE TABLE IF NOT EXISTS closed_caption (
 );
 )";
 
-SqliteReader::SqliteReader(const QString &fileName)
+SqliteReader::SqliteReader(const std::string &fileName)
 {
-    // Create connection name based on filename and thread to avoid cross-thread issues
-    QString threadId = QString::number(reinterpret_cast<qintptr>(QThread::currentThread()));
-    connectionName = "sqlite_reader_" + QFileInfo(fileName).absoluteFilePath().replace('/', '_') + "_thread_" + threadId;
-    
-    // Check if connection already exists, if so reuse it
-    if (QSqlDatabase::contains(connectionName)) {
-        db = QSqlDatabase::database(connectionName);
-    } else {
-        // Create new database connection
-        db = QSqlDatabase::addDatabase("QSQLITE", connectionName);
-        db.setDatabaseName(fileName);
-        
-        if (!db.open()) {
-            throwError("Failed to open database: " + db.lastError().text().toStdString());
-        }
+    // Open the database in read-only mode; each instance owns its own handle
+    // so cross-thread coordination is the caller's responsibility.
+    const int rc = sqlite3_open_v2(fileName.c_str(), &db,
+                                   SQLITE_OPEN_READONLY, nullptr);
+    if (rc != SQLITE_OK) {
+        const std::string msg = db ? sqlite3_errmsg(db) : "unknown error";
+        sqlite3_close(db);
+        db = nullptr;
+        throwError("Failed to open database: " + msg);
     }
 }
 
@@ -209,28 +173,27 @@ SqliteReader::~SqliteReader()
 void SqliteReader::close()
 {
     // Close the database connection
-    if (db.isValid() && db.isOpen()) {
-        db.close();
+    if (db != nullptr) {
+        sqlite3_close(db);
+        db = nullptr;
     }
-    // Don't remove the connection - this causes a Qt warning
-    // Qt will clean up connections when the application exits
 }
 
-bool SqliteReader::readCaptureMetadata(int &captureId, QString &system, QString &decoder,
-                                     QString &gitBranch, QString &gitCommit,
+bool SqliteReader::readCaptureMetadata(int &captureId, std::string &system, std::string &decoder,
+                                     std::string &gitBranch, std::string &gitCommit,
                                      double &videoSampleRate, int &activeVideoStart, int &activeVideoEnd,
                                      int &fieldWidth, int &fieldHeight, int &numberOfSequentialFields,
                                      int &colourBurstStart, int &colourBurstEnd,
                                      bool &isMapped, bool &isSubcarrierLocked, bool &isWidescreen,
-                                     int &white16bIre, int &black16bIre, int &blanking16bIre, QString &captureNotes)
+                                     int &white16bIre, int &black16bIre, int &blanking16bIre, std::string &captureNotes)
 {
     // Check if blanking_16b_ire column exists (for backward compatibility)
     bool hasBlankingColumn = false;
-    QSqlQuery checkQuery(db);
+    SqliteQuery checkQuery(db);
     checkQuery.prepare("PRAGMA table_info(capture)");
     if (checkQuery.exec()) {
         while (checkQuery.next()) {
-            QString columnName = checkQuery.value("name").toString();
+            std::string columnName = checkQuery.value("name").toString();
             if (columnName == "blanking_16b_ire") {
                 hasBlankingColumn = true;
                 break;
@@ -238,8 +201,8 @@ bool SqliteReader::readCaptureMetadata(int &captureId, QString &system, QString 
         }
     }
 
-    QSqlQuery query(db);
-    QString queryStr = "SELECT capture_id, system, decoder, git_branch, git_commit, "
+    SqliteQuery query(db);
+    std::string queryStr = "SELECT capture_id, system, decoder, git_branch, git_commit, "
                        "video_sample_rate, active_video_start, active_video_end, "
                        "field_width, field_height, number_of_sequential_fields, "
                        "colour_burst_start, colour_burst_end, is_mapped, is_subcarrier_locked, "
@@ -248,16 +211,16 @@ bool SqliteReader::readCaptureMetadata(int &captureId, QString &system, QString 
         queryStr += ", blanking_16b_ire";
     }
     queryStr += ", capture_notes FROM capture LIMIT 1";
-    
+
     query.prepare(queryStr);
 
     if (!query.exec()) {
-        qCritical() << "Failed to execute capture metadata query:" << query.lastError().text();
+        chd::log::error() << "Failed to execute capture metadata query:" << query.lastError().text();
         return false;
     }
-    
+
     if (!query.next()) {
-        qCritical() << "No capture metadata found in database - capture table may be empty";
+        chd::log::error() << "No capture metadata found in database - capture table may be empty";
         return false;
     }
 
@@ -284,7 +247,7 @@ bool SqliteReader::readCaptureMetadata(int &captureId, QString &system, QString 
     if (hasBlankingColumn) {
         blanking16bIre = SqliteValue::toIntOrDefault(query, "blanking_16b_ire");
     } else {
-        qWarning() << "blanking_16b_ire field not found in metadata - using black_16b_ire value";
+        chd::log::warn() << "blanking_16b_ire field not found in metadata - using black_16b_ire value";
         blanking16bIre = black16bIre;
     }
     
@@ -296,7 +259,7 @@ bool SqliteReader::readCaptureMetadata(int &captureId, QString &system, QString 
 bool SqliteReader::readPcmAudioParameters(int captureId, int &bits, bool &isSigned,
                                         bool &isLittleEndian, double &sampleRate)
 {
-    QSqlQuery query(db);
+    SqliteQuery query(db);
     query.prepare("SELECT bits, is_signed, is_little_endian, sample_rate "
                  "FROM pcm_audio_parameters WHERE capture_id = ?");
     query.addBindValue(captureId);
@@ -313,9 +276,9 @@ bool SqliteReader::readPcmAudioParameters(int captureId, int &bits, bool &isSign
     return true;
 }
 
-bool SqliteReader::readFields(int captureId, QSqlQuery &fieldsQuery)
+bool SqliteReader::readFields(int captureId, SqliteQuery &fieldsQuery)
 {
-    fieldsQuery = QSqlQuery(db);
+    fieldsQuery = SqliteQuery(db);
     fieldsQuery.prepare("SELECT field_id, audio_samples, decode_faults, disk_loc, "
                        "efm_t_values, field_phase_id, file_loc, is_first_field, "
                        "median_burst_ire, pad, sync_conf, ntsc_is_fm_code_data_valid, "
@@ -329,7 +292,7 @@ bool SqliteReader::readFields(int captureId, QSqlQuery &fieldsQuery)
 
 bool SqliteReader::readFieldVitsMetrics(int captureId, int fieldId, double &wSnr, double &bPsnr)
 {
-    QSqlQuery query(db);
+    SqliteQuery query(db);
     query.prepare("SELECT w_snr, b_psnr FROM vits_metrics WHERE capture_id = ? AND field_id = ?");
     query.addBindValue(captureId);
     query.addBindValue(fieldId);
@@ -346,7 +309,7 @@ bool SqliteReader::readFieldVitsMetrics(int captureId, int fieldId, double &wSnr
 
 bool SqliteReader::readFieldVbi(int captureId, int fieldId, int &vbi0, int &vbi1, int &vbi2)
 {
-    QSqlQuery query(db);
+    SqliteQuery query(db);
     query.prepare("SELECT vbi0, vbi1, vbi2 FROM vbi WHERE capture_id = ? AND field_id = ?");
     query.addBindValue(captureId);
     query.addBindValue(fieldId);
@@ -364,7 +327,7 @@ bool SqliteReader::readFieldVbi(int captureId, int fieldId, int &vbi0, int &vbi1
 
 bool SqliteReader::readFieldVitc(int captureId, int fieldId, int vitcData[8])
 {
-    QSqlQuery query(db);
+    SqliteQuery query(db);
     query.prepare("SELECT vitc0, vitc1, vitc2, vitc3, vitc4, vitc5, vitc6, vitc7 "
                  "FROM vitc WHERE capture_id = ? AND field_id = ?");
     query.addBindValue(captureId);
@@ -388,7 +351,7 @@ bool SqliteReader::readFieldVitc(int captureId, int fieldId, int vitcData[8])
 
 bool SqliteReader::readFieldClosedCaption(int captureId, int fieldId, int &data0, int &data1)
 {
-    QSqlQuery query(db);
+    SqliteQuery query(db);
     query.prepare("SELECT data0, data1 FROM closed_caption WHERE capture_id = ? AND field_id = ?");
     query.addBindValue(captureId);
     query.addBindValue(fieldId);
@@ -403,9 +366,9 @@ bool SqliteReader::readFieldClosedCaption(int captureId, int fieldId, int &data0
     return true;
 }
 
-bool SqliteReader::readFieldDropouts(int captureId, int fieldId, QSqlQuery &dropoutsQuery)
+bool SqliteReader::readFieldDropouts(int captureId, int fieldId, SqliteQuery &dropoutsQuery)
 {
-    dropoutsQuery = QSqlQuery(db);
+    dropoutsQuery = SqliteQuery(db);
     dropoutsQuery.prepare("SELECT startx, endx, field_line FROM drop_outs "
                          "WHERE capture_id = ? AND field_id = ? ORDER BY startx");
     dropoutsQuery.addBindValue(captureId);
@@ -415,82 +378,66 @@ bool SqliteReader::readFieldDropouts(int captureId, int fieldId, QSqlQuery &drop
 }
 
 // Optimized bulk read methods for better performance
-bool SqliteReader::readAllFieldVitsMetrics(int captureId, QSqlQuery &vitsQuery)
+bool SqliteReader::readAllFieldVitsMetrics(int captureId, SqliteQuery &vitsQuery)
 {
-    vitsQuery = QSqlQuery(db);
+    vitsQuery = SqliteQuery(db);
     vitsQuery.prepare("SELECT field_id, w_snr, b_psnr FROM vits_metrics "
                      "WHERE capture_id = ? ORDER BY field_id");
     vitsQuery.addBindValue(captureId);
     return vitsQuery.exec();
 }
 
-bool SqliteReader::readAllFieldVbi(int captureId, QSqlQuery &vbiQuery)
+bool SqliteReader::readAllFieldVbi(int captureId, SqliteQuery &vbiQuery)
 {
-    vbiQuery = QSqlQuery(db);
+    vbiQuery = SqliteQuery(db);
     vbiQuery.prepare("SELECT field_id, vbi0, vbi1, vbi2 FROM vbi "
                     "WHERE capture_id = ? ORDER BY field_id");
     vbiQuery.addBindValue(captureId);
     return vbiQuery.exec();
 }
 
-bool SqliteReader::readAllFieldVitc(int captureId, QSqlQuery &vitcQuery)
+bool SqliteReader::readAllFieldVitc(int captureId, SqliteQuery &vitcQuery)
 {
-    vitcQuery = QSqlQuery(db);
+    vitcQuery = SqliteQuery(db);
     vitcQuery.prepare("SELECT field_id, vitc0, vitc1, vitc2, vitc3, vitc4, vitc5, vitc6, vitc7 FROM vitc "
                      "WHERE capture_id = ? ORDER BY field_id");
     vitcQuery.addBindValue(captureId);
     return vitcQuery.exec();
 }
 
-bool SqliteReader::readAllFieldClosedCaptions(int captureId, QSqlQuery &ccQuery)
+bool SqliteReader::readAllFieldClosedCaptions(int captureId, SqliteQuery &ccQuery)
 {
-    ccQuery = QSqlQuery(db);
+    ccQuery = SqliteQuery(db);
     ccQuery.prepare("SELECT field_id, data0, data1 FROM closed_caption "
                    "WHERE capture_id = ? ORDER BY field_id");
     ccQuery.addBindValue(captureId);
     return ccQuery.exec();
 }
 
-bool SqliteReader::readAllFieldDropouts(int captureId, QSqlQuery &dropoutsQuery)
+bool SqliteReader::readAllFieldDropouts(int captureId, SqliteQuery &dropoutsQuery)
 {
-    dropoutsQuery = QSqlQuery(db);
+    dropoutsQuery = SqliteQuery(db);
     dropoutsQuery.prepare("SELECT field_id, startx, endx, field_line FROM drop_outs "
                          "WHERE capture_id = ? ORDER BY field_id, startx");
     dropoutsQuery.addBindValue(captureId);
     return dropoutsQuery.exec();
 }
 
-SqliteWriter::SqliteWriter(const QString &fileName)
+SqliteWriter::SqliteWriter(const std::string &fileName)
 {
-    // Create connection name based on filename and thread to avoid cross-thread issues
-    QString threadId = QString::number(reinterpret_cast<qintptr>(QThread::currentThread()));
-    connectionName = "sqlite_writer_" + QFileInfo(fileName).absoluteFilePath().replace('/', '_') + "_thread_" + threadId;
-    
-    // When creating a writer, we need to ensure any existing reader connections to the same file
-    // are closed to avoid database locking issues when overwriting
-    QString baseConnectionName = QFileInfo(fileName).absoluteFilePath().replace('/', '_');
-    QStringList allConnections = QSqlDatabase::connectionNames();
-    for (const QString &connName : allConnections) {
-        if (connName.contains(baseConnectionName) && connName.contains("sqlite_reader")) {
-            QSqlDatabase existingDb = QSqlDatabase::database(connName);
-            if (existingDb.isValid() && existingDb.isOpen()) {
-                existingDb.close();
-            }
-        }
+    // Open the database read-write; create if missing. Each instance owns its
+    // own handle, so writer/reader coordination is the caller's responsibility.
+    const int rc = sqlite3_open_v2(fileName.c_str(), &db,
+                                   SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                                   nullptr);
+    if (rc != SQLITE_OK) {
+        const std::string msg = db ? sqlite3_errmsg(db) : "unknown error";
+        sqlite3_close(db);
+        db = nullptr;
+        throwError("Failed to open database: " + msg);
     }
-    
-    // Check if connection already exists, if so reuse it
-    if (QSqlDatabase::contains(connectionName)) {
-        db = QSqlDatabase::database(connectionName);
-    } else {
-        // Create new database connection
-        db = QSqlDatabase::addDatabase("QSQLITE", connectionName);
-        db.setDatabaseName(fileName);
-        
-        if (!db.open()) {
-            throwError("Failed to open database: " + db.lastError().text().toStdString());
-        }
-    }
+    // Enable foreign keys for cascade-delete semantics in the schema.
+    sqlite3_exec(db, "PRAGMA foreign_keys = ON;", nullptr, nullptr, nullptr);
 }
 
 SqliteWriter::~SqliteWriter()
@@ -501,50 +448,39 @@ SqliteWriter::~SqliteWriter()
 void SqliteWriter::close()
 {
     // Close the database connection
-    if (db.isValid() && db.isOpen()) {
-        db.close();
+    if (db != nullptr) {
+        sqlite3_close(db);
+        db = nullptr;
     }
-    // Don't remove the connection - this causes the warning
-    // Qt will clean up connections when the application exits
 }
 
 bool SqliteWriter::createSchema()
 {
-    tbcDebugStream() << "SqliteWriter::createSchema(): Starting schema creation";
-    
-    // Split schema into individual statements and execute them
-    QStringList statements = SCHEMA_SQL.split(";", Qt::SkipEmptyParts);
-    
-    tbcDebugStream() << "Schema has" << statements.size() << "statements";
-    
-    for (int i = 0; i < statements.size(); ++i) {
-        QString trimmed = statements[i].trimmed();
-        if (trimmed.isEmpty()) continue;
-        
-        tbcDebugStream() << "Executing statement" << i+1 << ":" << trimmed.left(50) << "...";
-        
-        QSqlQuery query(db);
-        if (!query.exec(trimmed)) {
-            qCritical() << "Failed to execute statement" << i+1 << ":" << trimmed;
-            qCritical() << "SQL Error:" << query.lastError().text();
-            qCritical() << "Database connection valid:" << db.isValid() << "open:" << db.isOpen();
-            return false;
-        }
+    chd::log::debug() << "SqliteWriter::createSchema(): Starting schema creation";
+
+    // Run the entire schema script in one call; sqlite3_exec handles multiple
+    // statements separated by ';'.
+    char *errMsg = nullptr;
+    const int rc = sqlite3_exec(db, SCHEMA_SQL, nullptr, nullptr, &errMsg);
+    if (rc != SQLITE_OK) {
+        chd::log::error() << "Failed to execute schema:" << (errMsg ? errMsg : "(no message)");
+        sqlite3_free(errMsg);
+        return false;
     }
-    
-    tbcDebugStream() << "Schema creation completed successfully";
+
+    chd::log::debug() << "Schema creation completed successfully";
     return true;
 }
 
-int SqliteWriter::writeCaptureMetadata(const QString &system, const QString &decoder,
-                                     const QString &gitBranch, const QString &gitCommit,
+int SqliteWriter::writeCaptureMetadata(const std::string &system, const std::string &decoder,
+                                     const std::string &gitBranch, const std::string &gitCommit,
                                      double videoSampleRate, int activeVideoStart, int activeVideoEnd,
                                      int fieldWidth, int fieldHeight, int numberOfSequentialFields,
                                      int colourBurstStart, int colourBurstEnd,
                                      bool isMapped, bool isSubcarrierLocked, bool isWidescreen,
-                                     int white16bIre, int black16bIre, int blanking16bIre, const QString &captureNotes)
+                                     int white16bIre, int black16bIre, int blanking16bIre, const std::string &captureNotes)
 {
-    QSqlQuery query(db);
+    SqliteQuery query(db);
     query.prepare("INSERT INTO capture (system, decoder, git_branch, git_commit, "
                  "video_sample_rate, active_video_start, active_video_end, "
                  "field_width, field_height, number_of_sequential_fields, "
@@ -554,8 +490,8 @@ int SqliteWriter::writeCaptureMetadata(const QString &system, const QString &dec
 
     query.addBindValue(system);
     query.addBindValue(decoder);
-    query.addBindValue(gitBranch.isEmpty() ? QVariant() : gitBranch);
-    query.addBindValue(gitCommit.isEmpty() ? QVariant() : gitCommit);
+    query.addBindValueOrNull(gitBranch);
+    query.addBindValueOrNull(gitCommit);
     query.addBindValue(videoSampleRate);
     query.addBindValue(activeVideoStart);
     query.addBindValue(activeVideoEnd);
@@ -570,25 +506,25 @@ int SqliteWriter::writeCaptureMetadata(const QString &system, const QString &dec
     query.addBindValue(white16bIre);
     query.addBindValue(black16bIre);
     query.addBindValue(blanking16bIre);
-    query.addBindValue(captureNotes.isEmpty() ? QVariant() : captureNotes);
+    query.addBindValueOrNull(captureNotes);
 
     if (!query.exec()) {
-        tbcDebugStream() << "Failed to insert capture metadata:" << query.lastError().text();
+        chd::log::debug() << "Failed to insert capture metadata:" << query.lastError().text();
         return -1;
     }
 
     return query.lastInsertId().toInt();
 }
 
-bool SqliteWriter::updateCaptureMetadata(int captureId, const QString &system, const QString &decoder,
-                                       const QString &gitBranch, const QString &gitCommit,
+bool SqliteWriter::updateCaptureMetadata(int captureId, const std::string &system, const std::string &decoder,
+                                       const std::string &gitBranch, const std::string &gitCommit,
                                        double videoSampleRate, int activeVideoStart, int activeVideoEnd,
                                        int fieldWidth, int fieldHeight, int numberOfSequentialFields,
                                        int colourBurstStart, int colourBurstEnd,
                                        bool isMapped, bool isSubcarrierLocked, bool isWidescreen,
-                                       int white16bIre, int black16bIre, int blanking16bIre, const QString &captureNotes)
+                                       int white16bIre, int black16bIre, int blanking16bIre, const std::string &captureNotes)
 {
-    QSqlQuery query(db);
+    SqliteQuery query(db);
     query.prepare("UPDATE capture SET system=?, decoder=?, git_branch=?, git_commit=?, "
                  "video_sample_rate=?, active_video_start=?, active_video_end=?, "
                  "field_width=?, field_height=?, number_of_sequential_fields=?, "
@@ -598,8 +534,8 @@ bool SqliteWriter::updateCaptureMetadata(int captureId, const QString &system, c
 
     query.addBindValue(system);
     query.addBindValue(decoder);
-    query.addBindValue(gitBranch.isEmpty() ? QVariant() : gitBranch);
-    query.addBindValue(gitCommit.isEmpty() ? QVariant() : gitCommit);
+    query.addBindValueOrNull(gitBranch);
+    query.addBindValueOrNull(gitCommit);
     query.addBindValue(videoSampleRate);
     query.addBindValue(activeVideoStart);
     query.addBindValue(activeVideoEnd);
@@ -614,11 +550,11 @@ bool SqliteWriter::updateCaptureMetadata(int captureId, const QString &system, c
     query.addBindValue(white16bIre);
     query.addBindValue(black16bIre);
     query.addBindValue(blanking16bIre);
-    query.addBindValue(captureNotes.isEmpty() ? QVariant() : captureNotes);
+    query.addBindValueOrNull(captureNotes);
     query.addBindValue(captureId);
 
     if (!query.exec()) {
-        tbcDebugStream() << "Failed to update capture metadata:" << query.lastError().text();
+        chd::log::debug() << "Failed to update capture metadata:" << query.lastError().text();
         return false;
     }
 
@@ -628,7 +564,7 @@ bool SqliteWriter::updateCaptureMetadata(int captureId, const QString &system, c
 bool SqliteWriter::writePcmAudioParameters(int captureId, int bits, bool isSigned,
                                          bool isLittleEndian, double sampleRate)
 {
-    QSqlQuery query(db);
+    SqliteQuery query(db);
     query.prepare("INSERT OR REPLACE INTO pcm_audio_parameters (capture_id, bits, is_signed, "
                  "is_little_endian, sample_rate) VALUES (?, ?, ?, ?, ?)");
 
@@ -639,7 +575,7 @@ bool SqliteWriter::writePcmAudioParameters(int captureId, int bits, bool isSigne
     query.addBindValue(sampleRate);
 
     if (!query.exec()) {
-        tbcDebugStream() << "Failed to insert PCM audio parameters:" << query.lastError().text();
+        chd::log::debug() << "Failed to insert PCM audio parameters:" << query.lastError().text();
         return false;
     }
 
@@ -652,7 +588,7 @@ bool SqliteWriter::writeField(int captureId, int fieldId, int audioSamples, int 
                             bool ntscIsFmCodeDataValid, int ntscFmCodeData, bool ntscFieldFlag,
                             bool ntscIsVideoIdDataValid, int ntscVideoIdData, bool ntscWhiteFlag)
 {
-    QSqlQuery query(db);
+    SqliteQuery query(db);
     query.prepare("INSERT OR REPLACE INTO field_record (capture_id, field_id, audio_samples, decode_faults, "
                  "disk_loc, efm_t_values, field_phase_id, file_loc, is_first_field, "
                  "median_burst_ire, pad, sync_conf, ntsc_is_fm_code_data_valid, "
@@ -680,7 +616,7 @@ bool SqliteWriter::writeField(int captureId, int fieldId, int audioSamples, int 
     query.addBindValue(ntscWhiteFlag ? 1 : 0);
 
     if (!query.exec()) {
-        tbcDebugStream() << "Failed to insert field record:" << query.lastError().text();
+        chd::log::debug() << "Failed to insert field record:" << query.lastError().text();
         return false;
     }
 
@@ -689,7 +625,7 @@ bool SqliteWriter::writeField(int captureId, int fieldId, int audioSamples, int 
 
 bool SqliteWriter::writeFieldVitsMetrics(int captureId, int fieldId, double wSnr, double bPsnr)
 {
-    QSqlQuery query(db);
+    SqliteQuery query(db);
     query.prepare("INSERT OR REPLACE INTO vits_metrics (capture_id, field_id, w_snr, b_psnr) VALUES (?, ?, ?, ?)");
 
     query.addBindValue(captureId);
@@ -698,7 +634,7 @@ bool SqliteWriter::writeFieldVitsMetrics(int captureId, int fieldId, double wSnr
     query.addBindValue(bPsnr);
 
     if (!query.exec()) {
-        tbcDebugStream() << "Failed to insert VITS metrics:" << query.lastError().text();
+        chd::log::debug() << "Failed to insert VITS metrics:" << query.lastError().text();
         return false;
     }
 
@@ -707,7 +643,7 @@ bool SqliteWriter::writeFieldVitsMetrics(int captureId, int fieldId, double wSnr
 
 bool SqliteWriter::writeFieldVbi(int captureId, int fieldId, int vbi0, int vbi1, int vbi2)
 {
-    QSqlQuery query(db);
+    SqliteQuery query(db);
     query.prepare("INSERT OR REPLACE INTO vbi (capture_id, field_id, vbi0, vbi1, vbi2) VALUES (?, ?, ?, ?, ?)");
 
     query.addBindValue(captureId);
@@ -717,7 +653,7 @@ bool SqliteWriter::writeFieldVbi(int captureId, int fieldId, int vbi0, int vbi1,
     query.addBindValue(vbi2);
 
     if (!query.exec()) {
-        tbcDebugStream() << "Failed to insert VBI:" << query.lastError().text();
+        chd::log::debug() << "Failed to insert VBI:" << query.lastError().text();
         return false;
     }
 
@@ -726,7 +662,7 @@ bool SqliteWriter::writeFieldVbi(int captureId, int fieldId, int vbi0, int vbi1,
 
 bool SqliteWriter::writeFieldVitc(int captureId, int fieldId, const int vitcData[8])
 {
-    QSqlQuery query(db);
+    SqliteQuery query(db);
     query.prepare("INSERT OR REPLACE INTO vitc (capture_id, field_id, vitc0, vitc1, vitc2, vitc3, "
                  "vitc4, vitc5, vitc6, vitc7) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
@@ -737,7 +673,7 @@ bool SqliteWriter::writeFieldVitc(int captureId, int fieldId, const int vitcData
     }
 
     if (!query.exec()) {
-        tbcDebugStream() << "Failed to insert VITC:" << query.lastError().text();
+        chd::log::debug() << "Failed to insert VITC:" << query.lastError().text();
         return false;
     }
 
@@ -746,7 +682,7 @@ bool SqliteWriter::writeFieldVitc(int captureId, int fieldId, const int vitcData
 
 bool SqliteWriter::writeFieldClosedCaption(int captureId, int fieldId, int data0, int data1)
 {
-    QSqlQuery query(db);
+    SqliteQuery query(db);
     query.prepare("INSERT OR REPLACE INTO closed_caption (capture_id, field_id, data0, data1) VALUES (?, ?, ?, ?)");
 
     query.addBindValue(captureId);
@@ -755,7 +691,7 @@ bool SqliteWriter::writeFieldClosedCaption(int captureId, int fieldId, int data0
     query.addBindValue(data1);
 
     if (!query.exec()) {
-        tbcDebugStream() << "Failed to insert closed caption:" << query.lastError().text();
+        chd::log::debug() << "Failed to insert closed caption:" << query.lastError().text();
         return false;
     }
 
@@ -764,7 +700,7 @@ bool SqliteWriter::writeFieldClosedCaption(int captureId, int fieldId, int data0
 
 bool SqliteWriter::writeFieldDropouts(int captureId, int fieldId, int startx, int endx, int fieldLine)
 {
-    QSqlQuery query(db);
+    SqliteQuery query(db);
     query.prepare("INSERT OR REPLACE INTO drop_outs (capture_id, field_id, startx, endx, field_line) VALUES (?, ?, ?, ?, ?)");
 
     query.addBindValue(captureId);
@@ -774,7 +710,7 @@ bool SqliteWriter::writeFieldDropouts(int captureId, int fieldId, int startx, in
     query.addBindValue(fieldLine);
 
     if (!query.exec()) {
-        tbcDebugStream() << "Failed to insert dropout:" << query.lastError().text();
+        chd::log::debug() << "Failed to insert dropout:" << query.lastError().text();
         return false;
     }
 
@@ -783,15 +719,17 @@ bool SqliteWriter::writeFieldDropouts(int captureId, int fieldId, int startx, in
 
 bool SqliteWriter::beginTransaction()
 {
-    return db.transaction();
+    return sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr) == SQLITE_OK;
 }
 
 bool SqliteWriter::commitTransaction()
 {
-    return db.commit();
+    return sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr) == SQLITE_OK;
 }
 
 bool SqliteWriter::rollbackTransaction()
 {
-    return db.rollback();
+    return sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr) == SQLITE_OK;
 }
+
+}  // namespace chd::metadata

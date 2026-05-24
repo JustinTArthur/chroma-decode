@@ -10,18 +10,18 @@
  * This file is part of ld-decode-tools.
  ******************************************************************************/
 
-#include "lddecodemetadata.h"
+#include "core.h"
 
-#include "sqliteio.h"
+#include "ld_metadata_sqlite.h"
 
 #include <cassert>
+#include <filesystem>
+#include <map>
 #include <stdexcept>
-#include <QFileInfo>
-#include <QDebug>
-#include <QMap>
-#include <QMultiMap>
-#include <QVariant>
-#include "tbc/logging.h"
+
+#include "../common/log.h"
+
+namespace chd::metadata {
 
 // Default values used when configuring VideoParameters for a particular video system.
 // See the comments in VideoParameters for the meanings of these values.
@@ -30,11 +30,11 @@ struct VideoSystemDefaults {
     VideoSystem system;
     const char *name;
     double fSC;
-    qint32 minActiveFrameLine;
-    qint32 firstActiveFieldLine;
-    qint32 lastActiveFieldLine;
-    qint32 firstActiveFrameLine;
-    qint32 lastActiveFrameLine;
+    int32_t minActiveFrameLine;
+    int32_t firstActiveFieldLine;
+    int32_t lastActiveFieldLine;
+    int32_t firstActiveFrameLine;
+    int32_t lastActiveFrameLine;
 };
 
 static constexpr VideoSystemDefaults palDefaults {
@@ -83,7 +83,7 @@ static const VideoSystemDefaults &getSystemDefaults(const LdDecodeMetaData::Vide
 
 // Look up a video system by name.
 // Return true and set system if found; if not found, return false.
-bool parseVideoSystemName(QString name, VideoSystem &system)
+bool parseVideoSystemName(std::string name, VideoSystem &system)
 {
     // Search VIDEO_SYSTEM_DEFAULTS for a matching name
     for (const auto &defaults: VIDEO_SYSTEM_DEFAULTS) {
@@ -270,10 +270,10 @@ void LdDecodeMetaData::clear()
 }
 
 // Read all metadata from SQLite file
-bool LdDecodeMetaData::read(QString fileName)
+bool LdDecodeMetaData::read(std::string fileName)
 {
-    if (!QFileInfo::exists(fileName)) {
-        qCritical() << "SQLite input file does not exist:" << fileName;
+    if (!std::filesystem::exists(fileName)) {
+        chd::log::error() << "SQLite input file does not exist:" << fileName;
         return false;
     }
 
@@ -283,7 +283,7 @@ bool LdDecodeMetaData::read(QString fileName)
         SqliteReader reader(fileName);
         
         int captureId;
-        QString system, decoder, gitBranch, gitCommit, captureNotes;
+        std::string system, decoder, gitBranch, gitCommit, captureNotes;
         double videoSampleRate;
         int activeVideoStart, activeVideoEnd, fieldWidth, fieldHeight, numberOfSequentialFields;
         int colourBurstStart, colourBurstEnd, white16bIre, black16bIre, blanking16bIre;
@@ -296,14 +296,14 @@ bool LdDecodeMetaData::read(QString fileName)
                                        colourBurstStart, colourBurstEnd, isMapped,
                                        isSubcarrierLocked, isWidescreen, white16bIre,
                                        black16bIre, blanking16bIre, captureNotes)) {
-            qCritical() << "Failed to read capture metadata from SQLite file";
+            chd::log::error() << "Failed to read capture metadata from SQLite file";
             return false;
         }
 
         // Set video parameters
         videoParameters.numberOfSequentialFields = numberOfSequentialFields;
         if (!parseVideoSystemName(system, videoParameters.system)) {
-            qCritical() << "Unknown video system:" << system;
+            chd::log::error() << "Unknown video system:" << system;
             return false;
         }
         videoParameters.isSubcarrierLocked = isSubcarrierLocked;
@@ -340,7 +340,7 @@ bool LdDecodeMetaData::read(QString fileName)
         readFields(reader, captureId);
 
     } catch (SqliteReader::Error &error) {
-        qCritical() << "Reading SQLite file failed:" << error.what();
+        chd::log::error() << "Reading SQLite file failed:" << error.what();
         return false;
     }
 
@@ -354,17 +354,17 @@ bool LdDecodeMetaData::read(QString fileName)
 }
 
 // Write all metadata out to an SQLite file
-bool LdDecodeMetaData::write(QString fileName) const
+bool LdDecodeMetaData::write(std::string fileName) const
 {
     // Check if we're updating an existing file or creating a new one
-    bool isUpdate = QFileInfo::exists(fileName);
+    bool isUpdate = std::filesystem::exists(fileName);
     int captureId = 1; // Default for new files
     
     if (isUpdate) {
         // Try to read the existing capture_id from the file
         try {
             SqliteReader reader(fileName);
-            QString existingSystem, existingDecoder, existingGitBranch, existingGitCommit, existingCaptureNotes;
+            std::string existingSystem, existingDecoder, existingGitBranch, existingGitCommit, existingCaptureNotes;
             double existingVideoSampleRate;
             int existingActiveVideoStart, existingActiveVideoEnd, existingFieldWidth, existingFieldHeight;
             int existingNumberOfSequentialFields, existingColourBurstStart, existingColourBurstEnd;
@@ -378,14 +378,14 @@ bool LdDecodeMetaData::write(QString fileName) const
                                          existingColourBurstStart, existingColourBurstEnd,
                                          existingIsMapped, existingIsSubcarrierLocked, existingIsWidescreen,
                                          existingWhite16bIre, existingBlack16bIre, existingBlanking16bIre, existingCaptureNotes)) {
-                tbcDebugStream() << "Updating existing SQLite file with capture_id:" << captureId;
+                chd::log::debug() << "Updating existing SQLite file with capture_id:" << captureId;
             } else {
-                qWarning() << "Could not read existing capture metadata, treating as new file";
+                chd::log::warn() << "Could not read existing capture metadata, treating as new file";
                 isUpdate = false;
                 captureId = 1;
             }
         } catch (...) {
-            qWarning() << "Error reading existing SQLite file, treating as new file";
+            chd::log::warn() << "Error reading existing SQLite file, treating as new file";
             isUpdate = false;
             captureId = 1;
         }
@@ -397,18 +397,18 @@ bool LdDecodeMetaData::write(QString fileName) const
         // Only create schema for new files
         if (!isUpdate) {
             if (!writer.createSchema()) {
-                qCritical() << "Failed to create SQLite schema";
+                chd::log::error() << "Failed to create SQLite schema";
                 return false;
             }
         }
 
         if (!writer.beginTransaction()) {
-            qCritical() << "Failed to begin transaction";
+            chd::log::error() << "Failed to begin transaction";
             return false;
         }
 
         // Write or update capture metadata
-        QString systemName = getVideoSystemDescription();
+        std::string systemName = getVideoSystemDescription();
         if (isUpdate) {
             // Update existing capture metadata
             if (!writer.updateCaptureMetadata(captureId, systemName, "ld-decode", // TODO: make decoder configurable
@@ -457,12 +457,12 @@ bool LdDecodeMetaData::write(QString fileName) const
         writeFields(writer, captureId);
 
         if (!writer.commitTransaction()) {
-            qCritical() << "Failed to commit transaction";
+            chd::log::error() << "Failed to commit transaction";
             return false;
         }
 
     } catch (SqliteWriter::Error &error) {
-        qCritical() << "Writing SQLite file failed:" << error.what();
+        chd::log::error() << "Writing SQLite file failed:" << error.what();
         return false;
     }
 
@@ -472,13 +472,13 @@ bool LdDecodeMetaData::write(QString fileName) const
 // Read array of Fields from SQLite (optimized version)
 void LdDecodeMetaData::readFields(SqliteReader &reader, int captureId)
 {
-    QSqlQuery fieldsQuery;
+    SqliteQuery fieldsQuery;
     if (!reader.readFields(captureId, fieldsQuery)) {
         return;
     }
 
     // Pre-read all optional field data in bulk for performance
-    QSqlQuery vitsQuery, vbiQuery, vitcQuery, ccQuery, dropoutsQuery;
+    SqliteQuery vitsQuery, vbiQuery, vitcQuery, ccQuery, dropoutsQuery;
     reader.readAllFieldVitsMetrics(captureId, vitsQuery);
     reader.readAllFieldVbi(captureId, vbiQuery);
     reader.readAllFieldVitc(captureId, vitcQuery);
@@ -486,22 +486,22 @@ void LdDecodeMetaData::readFields(SqliteReader &reader, int captureId)
     reader.readAllFieldDropouts(captureId, dropoutsQuery);
 
     // Create lookup maps for fast field data retrieval
-    QMap<int, QPair<double, double>> vitsMap;
-    QMap<int, QVector<int>> vbiMap, vitcMap, ccMap;
-    QMultiMap<int, QVector<int>> dropoutsMap;
+    std::map<int, std::pair<double, double>> vitsMap;
+    std::map<int, std::vector<int>> vbiMap, vitcMap, ccMap;
+    std::multimap<int, std::vector<int>> dropoutsMap;
 
     // Populate VITS metrics map
     while (vitsQuery.next()) {
         int fieldId = vitsQuery.value("field_id").toInt();
         double wSnr = vitsQuery.value("w_snr").toDouble();
         double bPsnr = vitsQuery.value("b_psnr").toDouble();
-        vitsMap[fieldId] = qMakePair(wSnr, bPsnr);
+        vitsMap[fieldId] = std::make_pair(wSnr, bPsnr);
     }
 
     // Populate VBI map
     while (vbiQuery.next()) {
         int fieldId = vbiQuery.value("field_id").toInt();
-        QVector<int> vbiData = {vbiQuery.value("vbi0").toInt(), 
+        std::vector<int> vbiData = {vbiQuery.value("vbi0").toInt(), 
                                vbiQuery.value("vbi1").toInt(), 
                                vbiQuery.value("vbi2").toInt()};
         vbiMap[fieldId] = vbiData;
@@ -510,9 +510,9 @@ void LdDecodeMetaData::readFields(SqliteReader &reader, int captureId)
     // Populate VITC map
     while (vitcQuery.next()) {
         int fieldId = vitcQuery.value("field_id").toInt();
-        QVector<int> vitcData;
+        std::vector<int> vitcData;
         for (int i = 0; i < 8; i++) {
-            vitcData.append(vitcQuery.value(QString("vitc%1").arg(i)).toInt());
+            vitcData.push_back(vitcQuery.value(("vitc" + std::to_string(i)).c_str()).toInt());
         }
         vitcMap[fieldId] = vitcData;
     }
@@ -520,7 +520,7 @@ void LdDecodeMetaData::readFields(SqliteReader &reader, int captureId)
     // Populate closed captions map
     while (ccQuery.next()) {
         int fieldId = ccQuery.value("field_id").toInt();
-        QVector<int> ccData = {ccQuery.value("data0").toInt(), 
+        std::vector<int> ccData = {ccQuery.value("data0").toInt(), 
                               ccQuery.value("data1").toInt()};
         ccMap[fieldId] = ccData;
     }
@@ -528,10 +528,10 @@ void LdDecodeMetaData::readFields(SqliteReader &reader, int captureId)
     // Populate dropouts map
     while (dropoutsQuery.next()) {
         int fieldId = dropoutsQuery.value("field_id").toInt();
-        QVector<int> dropoutData = {dropoutsQuery.value("startx").toInt(),
+        std::vector<int> dropoutData = {dropoutsQuery.value("startx").toInt(),
                                    dropoutsQuery.value("endx").toInt(),
                                    dropoutsQuery.value("field_line").toInt()};
-        dropoutsMap.insert(fieldId, dropoutData);
+        dropoutsMap.emplace(fieldId, dropoutData);
     }
 
     // Process main field records and apply cached data
@@ -562,39 +562,40 @@ void LdDecodeMetaData::readFields(SqliteReader &reader, int captureId)
         field.ntsc.inUse = field.ntsc.isFmCodeDataValid || field.ntsc.isVideoIdDataValid;
 
         // Apply cached optional field data
-        if (vitsMap.contains(fieldId)) {
+        if (vitsMap.count(fieldId) > 0) {
             field.vitsMetrics.wSNR = vitsMap[fieldId].first;
             field.vitsMetrics.bPSNR = vitsMap[fieldId].second;
             field.vitsMetrics.inUse = true;
         }
 
-        if (vbiMap.contains(fieldId)) {
-            QVector<int> vbiData = vbiMap[fieldId];
+        if (vbiMap.count(fieldId) > 0) {
+            std::vector<int> vbiData = vbiMap[fieldId];
             field.vbi.vbiData[0] = vbiData[0];
             field.vbi.vbiData[1] = vbiData[1]; 
             field.vbi.vbiData[2] = vbiData[2];
             field.vbi.inUse = true;
         }
 
-        if (vitcMap.contains(fieldId)) {
-            QVector<int> vitcData = vitcMap[fieldId];
+        if (vitcMap.count(fieldId) > 0) {
+            std::vector<int> vitcData = vitcMap[fieldId];
             for (int i = 0; i < 8 && i < vitcData.size(); i++) {
                 field.vitc.vitcData[i] = vitcData[i];
             }
             field.vitc.inUse = true;
         }
 
-        if (ccMap.contains(fieldId)) {
-            QVector<int> ccData = ccMap[fieldId];
+        if (ccMap.count(fieldId) > 0) {
+            std::vector<int> ccData = ccMap[fieldId];
             field.closedCaption.data0 = ccData[0];
             field.closedCaption.data1 = ccData[1];
             field.closedCaption.inUse = true;
         }
 
-        if (dropoutsMap.contains(fieldId)) {
+        if (dropoutsMap.count(fieldId) > 0) {
             field.dropOuts.clear();
-            auto dropouts = dropoutsMap.values(fieldId);
-            for (const auto& dropout : dropouts) {
+            auto range = dropoutsMap.equal_range(fieldId);
+            for (auto it = range.first; it != range.second; ++it) {
+                const auto &dropout = it->second;
                 field.dropOuts.append(dropout[0], dropout[1], dropout[2]);
             }
         }
@@ -670,16 +671,16 @@ void LdDecodeMetaData::LineParameters::applyTo(LdDecodeMetaData::VideoParameters
     const bool lastFrameLineExists = lastActiveFrameLine != -1;
 
     const VideoSystemDefaults &defaults = getSystemDefaults(videoParameters);
-    const qint32 minFirstFrameLine = defaults.minActiveFrameLine;
-    const qint32 defaultFirstFieldLine = defaults.firstActiveFieldLine;
-    const qint32 defaultLastFieldLine = defaults.lastActiveFieldLine;
-    const qint32 defaultFirstFrameLine = defaults.firstActiveFrameLine;
-    const qint32 defaultLastFrameLine = defaults.lastActiveFrameLine;
+    const int32_t minFirstFrameLine = defaults.minActiveFrameLine;
+    const int32_t defaultFirstFieldLine = defaults.firstActiveFieldLine;
+    const int32_t defaultLastFieldLine = defaults.lastActiveFieldLine;
+    const int32_t defaultFirstFrameLine = defaults.firstActiveFrameLine;
+    const int32_t defaultLastFrameLine = defaults.lastActiveFrameLine;
 
     // Validate and potentially fix the first active field line.
     if (firstActiveFieldLine < 1 || firstActiveFieldLine > defaultLastFieldLine) {
         if (firstFieldLineExists) {
-            qInfo().nospace() << "Specified first active field line " << firstActiveFieldLine << " out of bounds (1 to "
+            chd::log::info().nospace() << "Specified first active field line " << firstActiveFieldLine << " out of bounds (1 to "
                               << defaultLastFieldLine << "), resetting to default (" << defaultFirstFieldLine << ").";
         }
         firstActiveFieldLine = defaultFirstFieldLine;
@@ -688,7 +689,7 @@ void LdDecodeMetaData::LineParameters::applyTo(LdDecodeMetaData::VideoParameters
     // Validate and potentially fix the last active field line.
     if (lastActiveFieldLine < 1 || lastActiveFieldLine > defaultLastFieldLine) {
         if (lastFieldLineExists) {
-            qInfo().nospace() << "Specified last active field line " << lastActiveFieldLine << " out of bounds (1 to "
+            chd::log::info().nospace() << "Specified last active field line " << lastActiveFieldLine << " out of bounds (1 to "
                               << defaultLastFieldLine << "), resetting to default (" << defaultLastFieldLine << ").";
         }
         lastActiveFieldLine = defaultLastFieldLine;
@@ -696,7 +697,7 @@ void LdDecodeMetaData::LineParameters::applyTo(LdDecodeMetaData::VideoParameters
 
     // Range-check the first and last active field lines.
     if (firstActiveFieldLine > lastActiveFieldLine) {
-       qInfo().nospace() << "Specified last active field line " << lastActiveFieldLine << " is before specified first active field line"
+       chd::log::info().nospace() << "Specified last active field line " << lastActiveFieldLine << " is before specified first active field line"
                          << firstActiveFieldLine << ", resetting to defaults (" << defaultFirstFieldLine << "-" << defaultLastFieldLine << ").";
         firstActiveFieldLine = defaultFirstFieldLine;
         lastActiveFieldLine = defaultLastFieldLine;
@@ -705,7 +706,7 @@ void LdDecodeMetaData::LineParameters::applyTo(LdDecodeMetaData::VideoParameters
     // Validate and potentially fix the first active frame line.
     if (firstActiveFrameLine < minFirstFrameLine || firstActiveFrameLine > defaultLastFrameLine) {
         if (firstFrameLineExists) {
-            qInfo().nospace() << "Specified first active frame line " << firstActiveFrameLine << " out of bounds (" << minFirstFrameLine << " to "
+            chd::log::info().nospace() << "Specified first active frame line " << firstActiveFrameLine << " out of bounds (" << minFirstFrameLine << " to "
                               << defaultLastFrameLine << "), resetting to default (" << defaultFirstFrameLine << ").";
         }
         firstActiveFrameLine = defaultFirstFrameLine;
@@ -714,7 +715,7 @@ void LdDecodeMetaData::LineParameters::applyTo(LdDecodeMetaData::VideoParameters
     // Validate and potentially fix the last active frame line.
     if (lastActiveFrameLine < minFirstFrameLine || lastActiveFrameLine > defaultLastFrameLine) {
         if (lastFrameLineExists) {
-            qInfo().nospace() << "Specified last active frame line " << lastActiveFrameLine << " out of bounds (" << minFirstFrameLine << " to "
+            chd::log::info().nospace() << "Specified last active frame line " << lastActiveFrameLine << " out of bounds (" << minFirstFrameLine << " to "
                               << defaultLastFrameLine << "), resetting to default (" << defaultLastFrameLine << ").";
         }
         lastActiveFrameLine = defaultLastFrameLine;
@@ -722,7 +723,7 @@ void LdDecodeMetaData::LineParameters::applyTo(LdDecodeMetaData::VideoParameters
 
     // Range-check the first and last active frame lines.
     if (firstActiveFrameLine > lastActiveFrameLine) {
-        qInfo().nospace() << "Specified last active frame line " << lastActiveFrameLine << " is before specified first active frame line"
+        chd::log::info().nospace() << "Specified last active frame line " << lastActiveFrameLine << " is before specified first active frame line"
                           << firstActiveFrameLine << ", resetting to defaults (" << defaultFirstFrameLine << "-" << defaultLastFrameLine << ").";
         firstActiveFrameLine = defaultFirstFrameLine;
         lastActiveFrameLine = defaultLastFrameLine;
@@ -736,165 +737,165 @@ void LdDecodeMetaData::LineParameters::applyTo(LdDecodeMetaData::VideoParameters
 }
 
 // This method gets the metadata for the specified sequential field number (indexed from 1 (not 0!))
-const LdDecodeMetaData::Field &LdDecodeMetaData::getField(qint32 sequentialFieldNumber)
+const LdDecodeMetaData::Field &LdDecodeMetaData::getField(int32_t sequentialFieldNumber)
 {
-    qint32 fieldNumber = sequentialFieldNumber - 1;
+    int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::getField(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        chd::log::error() << "LdDecodeMetaData::getField(): Requested field number" << sequentialFieldNumber << "out of bounds!";
     }
 
     return fields[fieldNumber];
 }
 
 // This method gets the VITS metrics metadata for the specified sequential field number
-const LdDecodeMetaData::VitsMetrics &LdDecodeMetaData::getFieldVitsMetrics(qint32 sequentialFieldNumber)
+const LdDecodeMetaData::VitsMetrics &LdDecodeMetaData::getFieldVitsMetrics(int32_t sequentialFieldNumber)
 {
-    qint32 fieldNumber = sequentialFieldNumber - 1;
+    int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::getFieldVitsMetrics(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        chd::log::error() << "LdDecodeMetaData::getFieldVitsMetrics(): Requested field number" << sequentialFieldNumber << "out of bounds!";
     }
 
     return fields[fieldNumber].vitsMetrics;
 }
 
 // This method gets the VBI metadata for the specified sequential field number
-const LdDecodeMetaData::Vbi &LdDecodeMetaData::getFieldVbi(qint32 sequentialFieldNumber)
+const LdDecodeMetaData::Vbi &LdDecodeMetaData::getFieldVbi(int32_t sequentialFieldNumber)
 {
-    qint32 fieldNumber = sequentialFieldNumber - 1;
+    int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::getFieldVbi(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        chd::log::error() << "LdDecodeMetaData::getFieldVbi(): Requested field number" << sequentialFieldNumber << "out of bounds!";
     }
 
     return fields[fieldNumber].vbi;
 }
 
 // This method gets the NTSC metadata for the specified sequential field number
-const LdDecodeMetaData::Ntsc &LdDecodeMetaData::getFieldNtsc(qint32 sequentialFieldNumber)
+const LdDecodeMetaData::Ntsc &LdDecodeMetaData::getFieldNtsc(int32_t sequentialFieldNumber)
 {
-    qint32 fieldNumber = sequentialFieldNumber - 1;
+    int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::getFieldNtsc(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        chd::log::error() << "LdDecodeMetaData::getFieldNtsc(): Requested field number" << sequentialFieldNumber << "out of bounds!";
     }
 
     return fields[fieldNumber].ntsc;
 }
 
 // This method gets the VITC metadata for the specified sequential field number
-const LdDecodeMetaData::Vitc &LdDecodeMetaData::getFieldVitc(qint32 sequentialFieldNumber)
+const LdDecodeMetaData::Vitc &LdDecodeMetaData::getFieldVitc(int32_t sequentialFieldNumber)
 {
-    qint32 fieldNumber = sequentialFieldNumber - 1;
+    int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::getFieldVitc(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        chd::log::error() << "LdDecodeMetaData::getFieldVitc(): Requested field number" << sequentialFieldNumber << "out of bounds!";
     }
 
     return fields[fieldNumber].vitc;
 }
 
 // This method gets the Closed Caption metadata for the specified sequential field number
-const LdDecodeMetaData::ClosedCaption &LdDecodeMetaData::getFieldClosedCaption(qint32 sequentialFieldNumber)
+const LdDecodeMetaData::ClosedCaption &LdDecodeMetaData::getFieldClosedCaption(int32_t sequentialFieldNumber)
 {
-    qint32 fieldNumber = sequentialFieldNumber - 1;
+    int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::getFieldClosedCaption(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        chd::log::error() << "LdDecodeMetaData::getFieldClosedCaption(): Requested field number" << sequentialFieldNumber << "out of bounds!";
     }
 
     return fields[fieldNumber].closedCaption;
 }
 
 // This method gets the drop-out metadata for the specified sequential field number
-const DropOuts &LdDecodeMetaData::getFieldDropOuts(qint32 sequentialFieldNumber)
+const DropOuts &LdDecodeMetaData::getFieldDropOuts(int32_t sequentialFieldNumber)
 {
-    qint32 fieldNumber = sequentialFieldNumber - 1;
+    int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::getFieldDropOuts(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        chd::log::error() << "LdDecodeMetaData::getFieldDropOuts(): Requested field number" << sequentialFieldNumber << "out of bounds!";
     }
 
     return fields[fieldNumber].dropOuts;
 }
 
 // This method sets the field metadata for a field
-void LdDecodeMetaData::updateField(const LdDecodeMetaData::Field &field, qint32 sequentialFieldNumber)
+void LdDecodeMetaData::updateField(const LdDecodeMetaData::Field &field, int32_t sequentialFieldNumber)
 {
-    qint32 fieldNumber = sequentialFieldNumber - 1;
+    int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::updateFieldVitsMetrics(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        chd::log::error() << "LdDecodeMetaData::updateFieldVitsMetrics(): Requested field number" << sequentialFieldNumber << "out of bounds!";
     }
 
     fields[fieldNumber] = field;
 }
 
 // This method sets the field VBI metadata for a field
-void LdDecodeMetaData::updateFieldVitsMetrics(const LdDecodeMetaData::VitsMetrics &vitsMetrics, qint32 sequentialFieldNumber)
+void LdDecodeMetaData::updateFieldVitsMetrics(const LdDecodeMetaData::VitsMetrics &vitsMetrics, int32_t sequentialFieldNumber)
 {
-    qint32 fieldNumber = sequentialFieldNumber - 1;
+    int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::updateFieldVitsMetrics(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        chd::log::error() << "LdDecodeMetaData::updateFieldVitsMetrics(): Requested field number" << sequentialFieldNumber << "out of bounds!";
     }
 
     fields[fieldNumber].vitsMetrics = vitsMetrics;
 }
 
 // This method sets the field VBI metadata for a field
-void LdDecodeMetaData::updateFieldVbi(const LdDecodeMetaData::Vbi &vbi, qint32 sequentialFieldNumber)
+void LdDecodeMetaData::updateFieldVbi(const LdDecodeMetaData::Vbi &vbi, int32_t sequentialFieldNumber)
 {
-    qint32 fieldNumber = sequentialFieldNumber - 1;
+    int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::updateFieldVbi(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        chd::log::error() << "LdDecodeMetaData::updateFieldVbi(): Requested field number" << sequentialFieldNumber << "out of bounds!";
     }
 
     fields[fieldNumber].vbi = vbi;
 }
 
 // This method sets the field NTSC metadata for a field
-void LdDecodeMetaData::updateFieldNtsc(const LdDecodeMetaData::Ntsc &ntsc, qint32 sequentialFieldNumber)
+void LdDecodeMetaData::updateFieldNtsc(const LdDecodeMetaData::Ntsc &ntsc, int32_t sequentialFieldNumber)
 {
-    qint32 fieldNumber = sequentialFieldNumber - 1;
+    int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::updateFieldNtsc(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        chd::log::error() << "LdDecodeMetaData::updateFieldNtsc(): Requested field number" << sequentialFieldNumber << "out of bounds!";
     }
 
     fields[fieldNumber].ntsc = ntsc;
 }
 
 // This method sets the VITC metadata for a field
-void LdDecodeMetaData::updateFieldVitc(const LdDecodeMetaData::Vitc &vitc, qint32 sequentialFieldNumber)
+void LdDecodeMetaData::updateFieldVitc(const LdDecodeMetaData::Vitc &vitc, int32_t sequentialFieldNumber)
 {
-    qint32 fieldNumber = sequentialFieldNumber - 1;
+    int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::updateFieldVitc(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        chd::log::error() << "LdDecodeMetaData::updateFieldVitc(): Requested field number" << sequentialFieldNumber << "out of bounds!";
     }
 
     fields[fieldNumber].vitc = vitc;
 }
 
 // This method sets the Closed Caption metadata for a field
-void LdDecodeMetaData::updateFieldClosedCaption(const LdDecodeMetaData::ClosedCaption &closedCaption, qint32 sequentialFieldNumber)
+void LdDecodeMetaData::updateFieldClosedCaption(const LdDecodeMetaData::ClosedCaption &closedCaption, int32_t sequentialFieldNumber)
 {
-    qint32 fieldNumber = sequentialFieldNumber - 1;
+    int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::updateFieldClosedCaption(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        chd::log::error() << "LdDecodeMetaData::updateFieldClosedCaption(): Requested field number" << sequentialFieldNumber << "out of bounds!";
     }
 
     fields[fieldNumber].closedCaption = closedCaption;
 }
 
 // This method sets the field dropout metadata for a field
-void LdDecodeMetaData::updateFieldDropOuts(const DropOuts &dropOuts, qint32 sequentialFieldNumber)
+void LdDecodeMetaData::updateFieldDropOuts(const DropOuts &dropOuts, int32_t sequentialFieldNumber)
 {
-    qint32 fieldNumber = sequentialFieldNumber - 1;
+    int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::updateFieldDropOuts(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        chd::log::error() << "LdDecodeMetaData::updateFieldDropOuts(): Requested field number" << sequentialFieldNumber << "out of bounds!";
     }
 
     fields[fieldNumber].dropOuts = dropOuts;
 }
 
 // This method clears the field dropout metadata for a field
-void LdDecodeMetaData::clearFieldDropOuts(qint32 sequentialFieldNumber)
+void LdDecodeMetaData::clearFieldDropOuts(int32_t sequentialFieldNumber)
 {
-    qint32 fieldNumber = sequentialFieldNumber - 1;
+    int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::clearFieldDropOuts(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        chd::log::error() << "LdDecodeMetaData::clearFieldDropOuts(): Requested field number" << sequentialFieldNumber << "out of bounds!";
     }
 
     fields[fieldNumber].dropOuts.clear();
@@ -906,20 +907,20 @@ void LdDecodeMetaData::appendField(const LdDecodeMetaData::Field &field)
     // Ensure sequential numbering stays contiguous when writing out
     LdDecodeMetaData::Field fieldCopy = field;
     fieldCopy.seqNo = fields.size() + 1;
-    fields.append(fieldCopy);
+    fields.push_back(fieldCopy);
 
     videoParameters.numberOfSequentialFields = fields.size();
 }
 
 // Method to get the available number of fields (according to the metadata)
-qint32 LdDecodeMetaData::getNumberOfFields()
+int32_t LdDecodeMetaData::getNumberOfFields()
 {
     return fields.size();
 }
 
 // Method to set the available number of fields
 // XXX This is unnecessary given appendField
-void LdDecodeMetaData::setNumberOfFields(qint32 numberOfFields)
+void LdDecodeMetaData::setNumberOfFields(int32_t numberOfFields)
 {
     videoParameters.numberOfSequentialFields = numberOfFields;
 }
@@ -985,9 +986,9 @@ void LdDecodeMetaData::setNumberOfFields(qint32 numberOfFields)
 // the shared-library scope.
 
 // Method to get the available number of still-frames
-qint32 LdDecodeMetaData::getNumberOfFrames()
+int32_t LdDecodeMetaData::getNumberOfFrames()
 {
-    qint32 frameOffset = 0;
+    int32_t frameOffset = 0;
 
     // If the first field in the TBC input isn't the expected first field,
     // skip it when counting the number of still-frames
@@ -1004,14 +1005,14 @@ qint32 LdDecodeMetaData::getNumberOfFrames()
 
 // Method to get the first and second field numbers based on the frame number
 // If field = 1 return the firstField, otherwise return second field
-qint32 LdDecodeMetaData::getFieldNumber(qint32 frameNumber, qint32 field)
+int32_t LdDecodeMetaData::getFieldNumber(int32_t frameNumber, int32_t field)
 {
-    qint32 firstFieldNumber = 0;
-    qint32 secondFieldNumber = 0;
+    int32_t firstFieldNumber = 0;
+    int32_t secondFieldNumber = 0;
 
     // Verify the frame number
     if (frameNumber < 1) {
-        qCritical() << "Invalid frame number, cannot determine fields";
+        chd::log::error() << "Invalid frame number, cannot determine fields";
         return -1;
     }
 
@@ -1035,7 +1036,7 @@ qint32 LdDecodeMetaData::getFieldNumber(qint32 frameNumber, qint32 field)
 
         // Give up if we reach the end of the available fields
         if (firstFieldNumber > getNumberOfFields() || secondFieldNumber > getNumberOfFields()) {
-            qCritical() << "Attempting to get field number failed - no isFirstField in metadata before end of file";
+            chd::log::error() << "Attempting to get field number failed - no isFirstField in metadata before end of file";
             firstFieldNumber = -1;
             secondFieldNumber = -1;
             break;
@@ -1044,34 +1045,34 @@ qint32 LdDecodeMetaData::getFieldNumber(qint32 frameNumber, qint32 field)
 
     // Range check the first field number
     if (firstFieldNumber > getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::getFieldNumber(): First field number exceed the available number of fields!";
+        chd::log::error() << "LdDecodeMetaData::getFieldNumber(): First field number exceed the available number of fields!";
         firstFieldNumber = -1;
         secondFieldNumber = -1;
     }
 
     // Range check the second field number
     if (secondFieldNumber > getNumberOfFields()) {
-        qCritical() << "LdDecodeMetaData::getFieldNumber(): Second field number exceed the available number of fields!";
+        chd::log::error() << "LdDecodeMetaData::getFieldNumber(): Second field number exceed the available number of fields!";
         firstFieldNumber = -1;
         secondFieldNumber = -1;
     }
 
     // Test for a buggy TBC file...
     if (getField(secondFieldNumber).isFirstField) {
-        qCritical() << "LdDecodeMetaData::getFieldNumber(): Both of the determined fields have isFirstField set - the TBC source video is probably broken...";
+        chd::log::error() << "LdDecodeMetaData::getFieldNumber(): Both of the determined fields have isFirstField set - the TBC source video is probably broken...";
     }
 
     if (field == 1) return firstFieldNumber; else return secondFieldNumber;
 }
 
 // Method to get the first field number based on the frame number
-qint32 LdDecodeMetaData::getFirstFieldNumber(qint32 frameNumber)
+int32_t LdDecodeMetaData::getFirstFieldNumber(int32_t frameNumber)
 {
     return getFieldNumber(frameNumber, 1);
 }
 
 // Method to get the second field number based on the frame number
-qint32 LdDecodeMetaData::getSecondFieldNumber(qint32 frameNumber)
+int32_t LdDecodeMetaData::getSecondFieldNumber(int32_t frameNumber)
 {
     return getFieldNumber(frameNumber, 2);
 }
@@ -1090,10 +1091,10 @@ bool LdDecodeMetaData::getIsFirstFieldFirst()
 
 // Method to convert a CLV time code into an equivalent frame number (to make
 // processing the timecodes easier)
-qint32 LdDecodeMetaData::convertClvTimecodeToFrameNumber(LdDecodeMetaData::ClvTimecode clvTimeCode)
+int32_t LdDecodeMetaData::convertClvTimecodeToFrameNumber(LdDecodeMetaData::ClvTimecode clvTimeCode)
 {
     // Calculate the frame number
-    qint32 frameNumber = 0;
+    int32_t frameNumber = 0;
     VideoParameters videoParameters = getVideoParameters();
 
     // Check for invalid CLV timecode
@@ -1124,7 +1125,7 @@ qint32 LdDecodeMetaData::convertClvTimecodeToFrameNumber(LdDecodeMetaData::ClvTi
 }
 
 // Method to convert a frame number into an equivalent CLV timecode
-LdDecodeMetaData::ClvTimecode LdDecodeMetaData::convertFrameNumberToClvTimecode(qint32 frameNumber)
+LdDecodeMetaData::ClvTimecode LdDecodeMetaData::convertFrameNumberToClvTimecode(int32_t frameNumber)
 {
     ClvTimecode clvTimecode;
 
@@ -1161,7 +1162,7 @@ LdDecodeMetaData::ClvTimecode LdDecodeMetaData::convertFrameNumberToClvTimecode(
 }
 
 // Method to return a description string for the current video format
-QString LdDecodeMetaData::getVideoSystemDescription() const
+std::string LdDecodeMetaData::getVideoSystemDescription() const
 {
     return getSystemDefaults(videoParameters).name;
 }
@@ -1174,16 +1175,16 @@ void LdDecodeMetaData::generatePcmAudioMap()
     pcmAudioFieldStartSampleMap.clear();
     pcmAudioFieldLengthMap.clear();
 
-    tbcDebugStream() << "LdDecodeMetaData::generatePcmAudioMap(): Generating PCM audio map...";
+    chd::log::debug() << "LdDecodeMetaData::generatePcmAudioMap(): Generating PCM audio map...";
 
     // Get the number of fields and resize the maps
-    qint32 numberOfFields = getVideoParameters().numberOfSequentialFields;
+    int32_t numberOfFields = getVideoParameters().numberOfSequentialFields;
     pcmAudioFieldStartSampleMap.resize(numberOfFields + 1);
     pcmAudioFieldLengthMap.resize(numberOfFields + 1);
 
-    for (qint32 fieldNo = 0; fieldNo < numberOfFields; fieldNo++) {
+    for (int32_t fieldNo = 0; fieldNo < numberOfFields; fieldNo++) {
         // Each audio sample is 16 bit - and there are 2 samples per stereo pair
-        pcmAudioFieldLengthMap[fieldNo] = static_cast<qint32>(getField(fieldNo+1).audioSamples);
+        pcmAudioFieldLengthMap[fieldNo] = static_cast<int32_t>(getField(fieldNo+1).audioSamples);
 
         if (fieldNo == 0) {
             // First field starts at 0 units
@@ -1196,7 +1197,7 @@ void LdDecodeMetaData::generatePcmAudioMap()
 }
 
 // Method to get the start sample location of the specified sequential field number
-qint32 LdDecodeMetaData::getFieldPcmAudioStart(qint32 sequentialFieldNumber)
+int32_t LdDecodeMetaData::getFieldPcmAudioStart(int32_t sequentialFieldNumber)
 {
     if (pcmAudioFieldStartSampleMap.size() < sequentialFieldNumber) return -1;
     // Field numbers are 1 indexed, but our map is 0 indexed
@@ -1204,9 +1205,11 @@ qint32 LdDecodeMetaData::getFieldPcmAudioStart(qint32 sequentialFieldNumber)
 }
 
 // Method to get the sample length of the specified sequential field number
-qint32 LdDecodeMetaData::getFieldPcmAudioLength(qint32 sequentialFieldNumber)
+int32_t LdDecodeMetaData::getFieldPcmAudioLength(int32_t sequentialFieldNumber)
 {
-    if (pcmAudioFieldLengthMap.size() < sequentialFieldNumber) return -1;
+    if (pcmAudioFieldLengthMap.size() < static_cast<size_t>(sequentialFieldNumber)) return -1;
     // Field numbers are 1 indexed, but our map is 0 indexed
     return pcmAudioFieldLengthMap[sequentialFieldNumber - 1];
 }
+
+}  // namespace chd::metadata

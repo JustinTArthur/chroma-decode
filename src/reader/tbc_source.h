@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     sourcevideo.h
@@ -22,22 +23,25 @@
 
 ************************************************************************/
 
-#ifndef SOURCEVIDEO_H
-#define SOURCEVIDEO_H
+#ifndef CHD_READER_TBC_SOURCE_H
+#define CHD_READER_TBC_SOURCE_H
 
-#include <QFile>
-#include <QCache>
-#include <QDebug>
-#include <QVector>
+#include <cstdint>
+#include <fstream>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace chd::reader {
 
 class SourceVideo
 {
 public:
-    // A QVector of timebase-corrected video samples.
+    // A vector of timebase-corrected video samples.
     // This is usually a complete field, but it may be a partial field if
     // you've requested fewer lines from getVideoField (or if you've sliced it
     // yourself).
-    using Data = QVector<quint16>;
+    using Data = std::vector<uint16_t>;
 
     SourceVideo();
     ~SourceVideo();
@@ -47,31 +51,33 @@ public:
     SourceVideo& operator=(const SourceVideo &) = delete;
 
     // File handling methods
-    bool open(QString filename, qint32 _fieldLength, qint32 _fieldLineLength = -1);
+    bool open(std::string filename, int32_t _fieldLength, int32_t _fieldLineLength = -1);
     void close(void);
 
     // Field handling methods
-    Data getVideoField(qint32 fieldNumber, qint32 startFieldLine = -1, qint32 endFieldLine = -1);
+    Data getVideoField(int32_t fieldNumber, int32_t startFieldLine = -1, int32_t endFieldLine = -1);
 
     // Get and set methods
     bool isSourceValid();
-    qint32 getNumberOfAvailableFields();
-    qint32 getFieldLength();
+    int32_t getNumberOfAvailableFields();
+    int32_t getFieldLength();
 
 private:
     // File handling globals
-    QFile inputFile;
-    qint64 inputFilePos;
+    std::ifstream inputFile;
+    int64_t inputFilePos;
     bool isSourceVideoOpen;
-    qint32 availableFields;
-    qint32 fieldLength;
-    qint32 fieldByteLength;
-    qint32 fieldLineLength;
+    int32_t availableFields;
+    int32_t fieldLength;
+    int32_t fieldByteLength;
+    int32_t fieldLineLength;
 
     Data outputFieldData;
 
     // Field caching
-    QCache<qint32, Data> fieldCache;
+    std::unordered_map<int32_t, Data> fieldCache;
 };
 
-#endif // SOURCEVIDEO_H
+}  // namespace chd::reader
+
+#endif // CHD_READER_TBC_SOURCE_H

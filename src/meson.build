@@ -8,6 +8,12 @@ chromadec_sources = files(
   'abi/c_api_pipeline.cpp',
   'abi/c_api_errors.cpp',
   'common/error_state.cpp',
+  'common/log.cpp',
+  'metadata/core.cpp',
+  'metadata/dropouts.cpp',
+  'metadata/ld_metadata_sqlite.cpp',
+  'metadata/sqlite_query.cpp',
+  'reader/tbc_source.cpp',
 )
 
 # Symbol export discipline:
@@ -25,7 +31,7 @@ endif
 libchromadec = library('chromadec',
   chromadec_sources,
   include_directories: [public_inc, version_inc],
-  dependencies: [threads_dep],
+  dependencies: [threads_dep, sqlite3_dep],
   # NOTE: do NOT add -fvisibility=hidden. The version script (ELF) /
   # exports list (Mach-O) is the source of truth for what's exported.
   # -fvisibility=hidden would hide every internal symbol *and* the C ABI
