@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     paldecoder.h
@@ -23,60 +24,44 @@
 
 ************************************************************************/
 
-#ifndef PALDECODER_H
-#define PALDECODER_H
+#ifndef CHD_DECODERS_PALCOLOUR_PAL_DECODER_H
+#define CHD_DECODERS_PALCOLOUR_PAL_DECODER_H
 
-#include <QObject>
-#include <QAtomicInt>
-#include <QThread>
-#include <QDebug>
+#include <cstdint>
+#include <vector>
 
-#include "componentframe.h"
-#include "lddecodemetadata.h"
-#include "sourcevideo.h"
+#include "../../output/component_frame.h"
+#include "../../metadata/core.h"
+#include "../../reader/tbc_source.h"
 
-#include "decoder.h"
+#include "../decoder_base.h"
+#include "../source_field.h"
 #include "palcolour.h"
-#include "sourcefield.h"
 
-class DecoderPool;
+namespace chd::decoders::palcolour {
 
 // 2D PAL decoder using PALcolour
-class PalDecoder : public Decoder {
+class PalDecoder : public chd::decoders::Decoder {
 public:
     PalDecoder(const PalColour::Configuration &palConfig);
-    bool configure(const LdDecodeMetaData::VideoParameters &videoParameters) override;
-    qint32 getLookBehind() const override;
-    qint32 getLookAhead() const override;
-    QThread *makeThread(QAtomicInt& abort, DecoderPool& decoderPool) override;
+    bool configure(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters) override;
+    int32_t getLookBehind() const override;
+    int32_t getLookAhead() const override;
 
-    // Parameters used by PalDecoder and PalThread
-    struct Configuration : public Decoder::Configuration {
+    void decodeFrames(const std::vector<chd::decoders::SourceField> &inputFields,
+                      int32_t startIndex, int32_t endIndex,
+                      std::vector<chd::output::ComponentFrame> &componentFrames) override;
+
+    // Parameters used by PalDecoder
+    struct Configuration : public chd::decoders::Decoder::Configuration {
         PalColour::Configuration pal;
     };
 
 private:
     Configuration config;
-};
-
-class PalThread : public DecoderThread
-{
-    Q_OBJECT
-public:
-    explicit PalThread(QAtomicInt &abort, DecoderPool &decoderPool,
-                       const PalDecoder::Configuration &config,
-                       QObject *parent = nullptr);
-
-protected:
-    void decodeFrames(const QVector<SourceField> &inputFields, qint32 startIndex, qint32 endIndex,
-                      QVector<ComponentFrame> &componentFrames) override;
-
-private:
-    // Settings
-    const PalDecoder::Configuration &config;
-
-    // PAL colour object
     PalColour palColour;
 };
 
-#endif // PALDECODER
+}  // namespace chd::decoders::palcolour
+
+#endif  // CHD_DECODERS_PALCOLOUR_PAL_DECODER_H

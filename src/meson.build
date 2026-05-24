@@ -16,8 +16,14 @@ chromadec_sources = files(
   'reader/tbc_source.cpp',
   'decoders/source_field.cpp',
   'decoders/mono/mono_decoder.cpp',
+  'decoders/palcolour/palcolour.cpp',
+  'decoders/palcolour/pal_decoder.cpp',
+  'decoders/palcolour/transform_pal.cpp',
+  'decoders/palcolour/transform_pal_2d.cpp',
+  'decoders/palcolour/transform_pal_3d.cpp',
   'output/component_frame.cpp',
   'output/output_writer.cpp',
+  'output/frame_canvas.cpp',
 )
 
 # Symbol export discipline:
@@ -35,7 +41,7 @@ endif
 libchromadec = library('chromadec',
   chromadec_sources,
   include_directories: [public_inc, version_inc],
-  dependencies: [threads_dep, sqlite3_dep],
+  dependencies: [threads_dep, sqlite3_dep, fftw3_dep],
   # NOTE: do NOT add -fvisibility=hidden. The version script (ELF) /
   # exports list (Mach-O) is the source of truth for what's exported.
   # -fvisibility=hidden would hide every internal symbol *and* the C ABI

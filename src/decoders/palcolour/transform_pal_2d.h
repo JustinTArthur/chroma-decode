@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     transformpal2d.h
@@ -25,16 +26,19 @@
 
 ************************************************************************/
 
-#ifndef TRANSFORMPAL2D_H
-#define TRANSFORMPAL2D_H
+#ifndef CHD_DECODERS_PALCOLOUR_TRANSFORM_PAL_2D_H
+#define CHD_DECODERS_PALCOLOUR_TRANSFORM_PAL_2D_H
 
-#include <QVector>
+#include <cstdint>
+#include <vector>
+
 #include <fftw3.h>
 
-#include "componentframe.h"
-#include "outputwriter.h"
-#include "sourcefield.h"
-#include "transformpal.h"
+#include "../../output/component_frame.h"
+#include "../source_field.h"
+#include "transform_pal.h"
+
+namespace chd::decoders::palcolour {
 
 class TransformPal2D : public TransformPal {
 public:
@@ -42,34 +46,34 @@ public:
     virtual ~TransformPal2D();
 
     // Return the expected size of the thresholds array.
-    static qint32 getThresholdsSize();
+    static int32_t getThresholdsSize();
 
-    void filterFields(const QVector<SourceField> &inputFields, qint32 startIndex, qint32 endIndex,
-                      QVector<const double *> &outputFields) override;
+    void filterFields(const std::vector<chd::decoders::SourceField> &inputFields, int32_t startIndex, int32_t endIndex,
+                      std::vector<const double *> &outputFields) override;
 
 protected:
-    void filterField(const SourceField& inputField, qint32 outputIndex);
-    void forwardFFTTile(qint32 tileX, qint32 tileY, qint32 startY, qint32 endY, const SourceField &inputField);
-    void inverseFFTTile(qint32 tileX, qint32 tileY, qint32 startY, qint32 endY, qint32 outputIndex);
+    void filterField(const chd::decoders::SourceField& inputField, int32_t outputIndex);
+    void forwardFFTTile(int32_t tileX, int32_t tileY, int32_t startY, int32_t endY, const chd::decoders::SourceField &inputField);
+    void inverseFFTTile(int32_t tileX, int32_t tileY, int32_t startY, int32_t endY, int32_t outputIndex);
     void applyFilter();
-    void overlayFFTFrame(qint32 positionX, qint32 positionY,
-                         const QVector<SourceField> &inputFields, qint32 fieldIndex,
-                         ComponentFrame &componentFrame) override;
+    void overlayFFTFrame(int32_t positionX, int32_t positionY,
+                         const std::vector<chd::decoders::SourceField> &inputFields, int32_t fieldIndex,
+                         chd::output::ComponentFrame &componentFrame) override;
 
     // FFT input and output sizes.
     // The input field is divided into tiles of XTILE x YTILE, with adjacent
     // tiles overlapping by HALFXTILE/HALFYTILE.
-    static constexpr qint32 YTILE = 16;
-    static constexpr qint32 HALFYTILE = YTILE / 2;
-    static constexpr qint32 XTILE = 32;
-    static constexpr qint32 HALFXTILE = XTILE / 2;
+    static constexpr int32_t YTILE = 16;
+    static constexpr int32_t HALFYTILE = YTILE / 2;
+    static constexpr int32_t XTILE = 32;
+    static constexpr int32_t HALFXTILE = XTILE / 2;
 
     // Each tile is converted to the frequency domain using forwardPlan, which
     // gives a complex result of size XCOMPLEX x YCOMPLEX (roughly half the
     // size of the input, because the input data was real, i.e. contained no
     // negative frequencies).
-    static constexpr qint32 YCOMPLEX = YTILE;
-    static constexpr qint32 XCOMPLEX = (XTILE / 2) + 1;
+    static constexpr int32_t YCOMPLEX = YTILE;
+    static constexpr int32_t XCOMPLEX = (XTILE / 2) + 1;
 
     // Window function applied before the FFT
     double windowFunction[YTILE][XTILE];
@@ -84,7 +88,9 @@ protected:
 
     // The combined result of all the FFT processing for each input field.
     // Inverse-FFT results are accumulated into these buffers.
-    QVector<QVector<double>> chromaBuf;
+    std::vector<std::vector<double>> chromaBuf;
 };
 
-#endif
+}  // namespace chd::decoders::palcolour
+
+#endif  // CHD_DECODERS_PALCOLOUR_TRANSFORM_PAL_2D_H
