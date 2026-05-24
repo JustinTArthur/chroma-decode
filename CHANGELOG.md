@@ -7,9 +7,34 @@ All notable changes to this project will be documented in this file. Format:
 ## [Unreleased]
 
 ### Added
-- Initial skeleton: meson build, public C header stubs, repo layout
+- Initial skeleton: meson build, public C header stubs, repo layout.
 - Preserved git history extracted from `ld-decode` via `git filter-repo`
   (paths `tools/ld-chroma-decoder/` + `tools/library/`, ~478 commits)
-  staged under `src/legacy/` for incremental porting
+  staged under `src/legacy/` for incremental porting.
+- TBC metadata reader and source video reader, built on the C++17
+  standard library and `sqlite3` instead of Qt:
+  `chd::metadata::LdDecodeMetaData`, `DropOuts`,
+  `SqliteReader`/`SqliteWriter`, `chd::reader::SourceVideo`. The C
+  ABI exposes `chd_video_open_composite`, `chd_video_get_info`,
+  `chd_video_add_extra_source_composite`, `chd_video_free`.
+- Decoder framework: `chd::decoders::Decoder` synchronous interface,
+  `SourceField` data container, `chd::output::ComponentFrame` and
+  `chd::output::OutputWriter`. Filter library
+  (`firfilter` / `iirfilter` / `deemp`) under
+  `chd::decoders::filter`.
+- Decoders: `chd::decoders::mono::MonoDecoder` (luma-only),
+  `chd::decoders::palcolour::PalDecoder` (PALcolour algorithm with
+  optional 2D/3D Transform-PAL frequency-domain filter, FFTW3),
+  `chd::decoders::comb::NtscDecoder` (NTSC adaptive 1D/2D/3D comb).
+  `chd::output::FrameCanvas` debug overlay helper.
+- `chd::pipeline::DecoderPool`: thread-pool orchestrator built on
+  `std::thread`, `std::atomic`, `std::mutex`, `std::ofstream`, and
+  `std::chrono::steady_clock`.
+- Unit tests: TBC reader round-trip and end-to-end pipeline sanity
+  test.
+
+### Dependencies
+- SQLite3 (required from this release).
+- FFTW3 (required by the Transform-PAL decoders).
 
 [Unreleased]: about:blank
