@@ -1,0 +1,49 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+#ifndef CHROMADEC_NN_H
+#define CHROMADEC_NN_H
+
+#include <chromadec/errors.h>
+#include <chromadec/types.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef enum chd_nn_provider {
+    CHD_NN_EP_AUTO     = 0,   /* platform default chain */
+    CHD_NN_EP_CPU      = 1,
+    CHD_NN_EP_CUDA     = 2,
+    CHD_NN_EP_TENSORRT = 3,
+    CHD_NN_EP_COREML   = 4,
+    CHD_NN_EP_DIRECTML = 5,
+    CHD_NN_EP_MIGRAPHX = 6
+} chd_nn_provider_t;
+
+typedef struct chd_nn_session_opts {
+    chd_nn_provider_t provider;     /* AUTO unless caller pins */
+    int32_t device_id;              /* 0 unless multi-GPU */
+    int     enable_graph_optim;     /* default 1 */
+    int     enable_mem_pattern;     /* default 1 */
+    /* Default 1 — our DecoderPool already parallelises across frames; setting
+     * intra-op > 1 oversubscribes CPU. */
+    int32_t inter_op_threads;
+    int32_t intra_op_threads;
+} chd_nn_session_opts_t;
+
+void chd_nn_session_opts_default(chd_nn_session_opts_t *out);
+
+chd_status_t chd_nn_model_load(const char *model_path,
+                                const chd_nn_session_opts_t *opts_or_null,
+                                chd_nn_model_t **out);
+
+void chd_nn_model_free(chd_nn_model_t *m);
+
+chd_status_t chd_nn_model_get_active_provider(const chd_nn_model_t *m,
+                                               chd_nn_provider_t *out);
+
+int chd_nn_provider_is_available(chd_nn_provider_t p);
+
+#ifdef __cplusplus
+}
+#endif
+#endif

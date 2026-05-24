@@ -1,0 +1,23 @@
+option('with_nn',
+       type: 'boolean', value: true,
+       description: 'Enable ONNX Runtime NN decoders')
+
+option('with_cuda',
+       type: 'feature', value: 'auto',
+       description: 'Build CUDA FFT path for nnTransform3D')
+
+option('with_tests',
+       type: 'boolean', value: true,
+       description: 'Build the test suite')
+
+option('with_examples',
+       type: 'boolean', value: true,
+       description: 'Build the plain-C example programs')
+
+option('with_debug_overlay',
+       type: 'boolean', value: false,
+       description: 'Compile the framecanvas debug overlay')
+
+option('onnxruntime_root',
+       type: 'string', value: '',
+       description: 'Manual ONNX Runtime install prefix (used as a fallback when pkg-config and system probes both fail)')

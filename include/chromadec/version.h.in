@@ -1,0 +1,24 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Generated from version.h.in by meson configure_file(). */
+#ifndef CHROMADEC_VERSION_H
+#define CHROMADEC_VERSION_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define CHROMADEC_VERSION_MAJOR @CHROMADEC_VERSION_MAJOR@
+#define CHROMADEC_VERSION_MINOR @CHROMADEC_VERSION_MINOR@
+#define CHROMADEC_VERSION_PATCH @CHROMADEC_VERSION_PATCH@
+#define CHROMADEC_VERSION_STRING "@CHROMADEC_VERSION_STRING@"
+
+const char *chd_version_string(void);
+void        chd_version(int *major, int *minor, int *patch);
+
+/* feature: "nn", "cuda", "fftw", "sqlite". Returns 1 if compiled in. */
+int         chd_has_feature(const char *feature);
+
+#ifdef __cplusplus
+}
+#endif
+#endif

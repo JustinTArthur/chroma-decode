@@ -1,0 +1,114 @@
+name: build
+
+on:
+  push:
+    branches: [ main, extract-base ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config libsqlite3-dev libfftw3-dev
+
+      - name: Python venv
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install meson
+
+      - name: Download ONNX Runtime (Microsoft release, includes Linux CPU+CUDA)
+        run: |
+          ORT_VER=1.26.0
+          curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-x64-${ORT_VER}.tgz"
+          mkdir -p ${HOME}/ort
+          tar -xzf ort.tgz -C ${HOME}/ort --strip-components=1
+          echo "ORT_ROOT=${HOME}/ort" >> $GITHUB_ENV
+
+      - name: Configure
+        run: |
+          . .venv/bin/activate
+          meson setup build -Donnxruntime_root="${ORT_ROOT}"
+
+      - name: Build
+        run: |
+          . .venv/bin/activate
+          meson compile -C build
+
+      - name: Verify exported chd_* symbols
+        run: |
+          # Lib name is libchromadec.so.0.x.y; resolve the actual file.
+          LIB=$(ls build/src/libchromadec.so.0.* 2>/dev/null | head -1)
+          test -n "$LIB" || (echo "no built shared lib found" >&2; exit 1)
+          echo "Inspecting $LIB"
+          nm -D --defined-only "$LIB" | awk '$2 == "T" && $3 ~ /^chd_/ { print $3 }' > /tmp/exports.txt
+          wc -l /tmp/exports.txt
+          test "$(wc -l < /tmp/exports.txt)" -ge 40
+          # No non-chd_ globals should leak.
+          nm -D --defined-only "$LIB" | awk '$2 == "T" && $3 !~ /^chd_/ { print $3 }' > /tmp/leaks.txt
+          if [ -s /tmp/leaks.txt ]; then
+            echo "Non-chd_ symbols leaked:"; cat /tmp/leaks.txt; exit 1
+          fi
+
+      - name: Install (DESTDIR sandbox)
+        run: |
+          . .venv/bin/activate
+          DESTDIR=/tmp/inst meson install -C build --quiet
+          find /tmp/inst -type f | head -30
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System deps
+        run: brew install ninja pkg-config sqlite fftw
+
+      - name: Python venv
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install meson
+
+      - name: Download ONNX Runtime (Microsoft release, includes CoreML)
+        run: |
+          ORT_VER=1.26.0
+          curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-osx-arm64-${ORT_VER}.tgz"
+          mkdir -p ${HOME}/ort
+          tar -xzf ort.tgz -C ${HOME}/ort --strip-components=1
+          echo "ORT_ROOT=${HOME}/ort" >> $GITHUB_ENV
+
+      - name: Configure
+        run: |
+          . .venv/bin/activate
+          meson setup build -Donnxruntime_root="${ORT_ROOT}"
+
+      - name: Build
+        run: |
+          . .venv/bin/activate
+          meson compile -C build
+
+      - name: Verify exported chd_* symbols
+        run: |
+          LIB="build/src/libchromadec.0.dylib"
+          test -f "$LIB" || (echo "no built dylib at $LIB" >&2; exit 1)
+          nm -g "$LIB" | awk '$2 == "T" && $3 ~ /^_chd_/ { print substr($3,2) }' > /tmp/exports.txt
+          wc -l /tmp/exports.txt
+          test "$(wc -l < /tmp/exports.txt)" -ge 40
+          # No non-chd_ globals should be exported.
+          nm -g "$LIB" | awk '$2 == "T" && $3 !~ /^_chd_/ { print $3 }' > /tmp/leaks.txt
+          if [ -s /tmp/leaks.txt ]; then
+            echo "Non-chd_ symbols leaked:"; cat /tmp/leaks.txt; exit 1
+          fi
+
+  # Windows support is added in a follow-up once we have
+  # ORT download + ninja + msvc set up for the matrix.

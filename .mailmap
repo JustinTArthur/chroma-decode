@@ -1,0 +1,9 @@
+# Canonical author names / emails for libchromadec.
+#
+# Format (per git-mailmap(7)):
+#   Canonical Name <canonical@email>      <Old Email>
+#   Canonical Name <canonical@email>      Old Name <Old Email>
+#
+# Populated as authorship variations are encountered. Do not rewrite history
+# to apply these; .mailmap is consulted by git log/blame/shortlog at display
+# time.

@@ -1,0 +1,26 @@
+# Build output
+/build/
+/build-*/
+/buildDir/
+/subprojects/packagecache/
+/subprojects/*/
+
+# IDE / editor
+.idea/
+.vscode/
+.cache/
+*.swp
+*.swo
+*~
+
+# Python venv
+.venv/
+__pycache__/
+*.pyc
+
+# Local Claude state
+.claude/settings.local.json
+
+# OS noise
+.DS_Store
+Thumbs.db

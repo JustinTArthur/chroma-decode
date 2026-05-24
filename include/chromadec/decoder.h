@@ -1,0 +1,80 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+#ifndef CHROMADEC_DECODER_H
+#define CHROMADEC_DECODER_H
+
+#include <chromadec/errors.h>
+#include <chromadec/types.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef enum chd_decoder_kind {
+    CHD_DEC_AUTO              = 0,
+    CHD_DEC_MONO              = 1,
+    CHD_DEC_NTSC_1D           = 2,
+    CHD_DEC_NTSC_2D           = 3,
+    CHD_DEC_NTSC_3D           = 4,
+    CHD_DEC_NTSC_3D_NO_ADAPT  = 5,
+    CHD_DEC_PAL_2D            = 6,
+    CHD_DEC_TRANSFORM_2D      = 7,
+    CHD_DEC_TRANSFORM_3D      = 8,
+    CHD_DEC_NN_TRANSFORM3D    = 9,
+    CHD_DEC_LDZEUG_COLOR_CNN  = 10,
+    CHD_DEC_LDZEUG_LUMA_SEP   = 11,
+    CHD_DEC_LDZEUG_LUMA_SEP_FRAME = 12
+} chd_decoder_kind_t;
+
+chd_status_t chd_decoder_create(chd_video_t *v, chd_decoder_kind_t kind, chd_decoder_t **out);
+void         chd_decoder_free(chd_decoder_t *d);
+
+/* Strongly-typed option setters. CHD_E_INVALID_ARG if not meaningful for kind.
+ * Not safe to call concurrently with chd_decode_frame on the same decoder. */
+chd_status_t chd_decoder_set_option_f64(chd_decoder_t *d, const char *name, double v);
+chd_status_t chd_decoder_set_option_i32(chd_decoder_t *d, const char *name, int32_t v);
+chd_status_t chd_decoder_set_option_bool(chd_decoder_t *d, const char *name, int v);
+chd_status_t chd_decoder_set_option_str(chd_decoder_t *d, const char *name, const char *v);
+chd_status_t chd_decoder_has_option(const chd_decoder_t *d, const char *name);
+
+chd_status_t chd_decoder_set_nn_model(chd_decoder_t *d, chd_nn_model_t *m);
+
+/* Apply pending options. Required before chd_decode_frame. Cheap to call repeatedly. */
+chd_status_t chd_decoder_commit(chd_decoder_t *d);
+
+/* Stable option-name registry. */
+#define CHD_OPT_CHROMA_GAIN                 "chroma_gain"               /* f64 */
+#define CHD_OPT_CHROMA_PHASE_DEG            "chroma_phase_deg"          /* f64 */
+#define CHD_OPT_CHROMA_NR_LEVEL             "chroma_nr_level"           /* f64 */
+#define CHD_OPT_LUMA_NR_LEVEL               "luma_nr_level"             /* f64 */
+#define CHD_OPT_PADDING_MULTIPLE            "padding_multiple"          /* i32, default 8 */
+#define CHD_OPT_REVERSE_FIELD_ORDER         "reverse_field_order"       /* bool */
+#define CHD_OPT_PHASE_COMPENSATION          "phase_compensation"        /* bool, NTSC */
+#define CHD_OPT_COMB_DIMENSIONS             "comb_dimensions"           /* i32 in {1,2,3} */
+#define CHD_OPT_COMB_ADAPTIVE               "comb_adaptive"             /* bool */
+#define CHD_OPT_COMB_ADAPT_THRESHOLD        "comb_adapt_threshold"      /* f64 */
+#define CHD_OPT_COMB_CHROMA_WEIGHT          "comb_chroma_weight"        /* f64 */
+#define CHD_OPT_COMB_SHOW_MAP               "comb_show_map"             /* bool */
+#define CHD_OPT_TRANSFORM_THRESHOLD         "transform_threshold"       /* f64 */
+#define CHD_OPT_TRANSFORM_THRESHOLDS_FILE   "transform_thresholds_file" /* str */
+#define CHD_OPT_FIRST_ACTIVE_FIELD_LINE     "first_active_field_line"   /* i32 */
+#define CHD_OPT_LAST_ACTIVE_FIELD_LINE      "last_active_field_line"    /* i32 */
+#define CHD_OPT_FIRST_ACTIVE_FRAME_LINE     "first_active_frame_line"   /* i32 */
+#define CHD_OPT_LAST_ACTIVE_FRAME_LINE      "last_active_frame_line"    /* i32 */
+#define CHD_OPT_NN_INPUT_MAGNITUDE_SCALE    "nn_input_magnitude_scale"  /* f64 (nnTransform3D only) */
+#define CHD_OPT_NN_CHROMA_BANDPASS          "nn_chroma_bandpass"        /* bool (ldzeug2_luma_sep only) */
+#define CHD_OPT_OUTPUT_FORMAT               "output_format"             /* str: "yuv444p16"|"yuv444_float"|"rgb48"|"gray16" */
+#define CHD_OPT_OUTPUT_Y4M_HEADERS          "output_y4m_headers"        /* bool */
+#define CHD_OPT_THREAD_COUNT                "thread_count"              /* i32, 0=auto */
+
+chd_status_t chd_decode_frame(chd_decoder_t *d, int64_t frame_index, chd_frame_t **out);
+
+typedef void (*chd_frame_done_cb)(void *user, chd_status_t s, int64_t idx, chd_frame_t *f);
+chd_status_t chd_decode_frames_async(chd_decoder_t *d,
+                                      const int64_t *indices, size_t n,
+                                      chd_frame_done_cb cb, void *user,
+                                      chd_cancel_t *cancel_or_null);
+
+#ifdef __cplusplus
+}
+#endif
+#endif
