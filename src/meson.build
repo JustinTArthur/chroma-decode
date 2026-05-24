@@ -14,6 +14,10 @@ chromadec_sources = files(
   'metadata/ld_metadata_sqlite.cpp',
   'metadata/sqlite_query.cpp',
   'reader/tbc_source.cpp',
+  'decoders/source_field.cpp',
+  'decoders/mono/mono_decoder.cpp',
+  'output/component_frame.cpp',
+  'output/output_writer.cpp',
 )
 
 # Symbol export discipline:

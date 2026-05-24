@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     firfilter.h
@@ -22,11 +23,13 @@
 
 ************************************************************************/
 
-#ifndef FIRFILTER_H
-#define FIRFILTER_H
+#ifndef CHD_DECODERS_FILTER_FIRFILTER_H
+#define CHD_DECODERS_FILTER_FIRFILTER_H
 
 #include <algorithm>
 #include <cassert>
+
+namespace chd::decoders::filter {
 
 // A FIR filter with arbitrary coefficients. The number of taps must be odd.
 //
@@ -126,4 +129,6 @@ constexpr FIRFilter<Coeffs> makeFIRFilter(const Coeffs &coeffs)
     return FIRFilter<Coeffs>(coeffs);
 }
 
-#endif
+}  // namespace chd::decoders::filter
+
+#endif  // CHD_DECODERS_FILTER_FIRFILTER_H

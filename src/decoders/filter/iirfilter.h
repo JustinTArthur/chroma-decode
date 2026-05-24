@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     iirfilter.h
@@ -24,12 +25,13 @@
 
 ************************************************************************/
 
-#ifndef IIRFILTER_H
-#define IIRFILTER_H
+#ifndef CHD_DECODERS_FILTER_IIRFILTER_H
+#define CHD_DECODERS_FILTER_IIRFILTER_H
 
 #include <cassert>
 #include <array>
-#include <vector>
+
+namespace chd::decoders::filter {
 
 // IIR or FIR filter
 // b is feedforward (input), a is feedback (output -- 1 for a FIR filter).
@@ -91,4 +93,6 @@ private:
     std::array<double, aOrder> y;
 };
 
-#endif // IIRFILTER_H
+}  // namespace chd::decoders::filter
+
+#endif  // CHD_DECODERS_FILTER_IIRFILTER_H

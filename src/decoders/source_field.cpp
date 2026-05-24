@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     sourcefield.cpp
@@ -22,16 +23,18 @@
 
 ************************************************************************/
 
-#include "sourcefield.h"
+#include "source_field.h"
 
-#include "sourcevideo.h"
+#include "../reader/tbc_source.h"
 
-void SourceField::loadFields(SourceVideo &sourceVideo, LdDecodeMetaData &ldDecodeMetaData,
-                             qint32 firstFrameNumber, qint32 numFrames,
-                             qint32 lookBehindFrames, qint32 lookAheadFrames,
-                             QVector<SourceField> &fields, qint32 &startIndex, qint32 &endIndex)
+namespace chd::decoders {
+
+void SourceField::loadFields(chd::reader::SourceVideo &sourceVideo, chd::metadata::LdDecodeMetaData &ldDecodeMetaData,
+                             int32_t firstFrameNumber, int32_t numFrames,
+                             int32_t lookBehindFrames, int32_t lookAheadFrames,
+                             std::vector<SourceField> &fields, int32_t &startIndex, int32_t &endIndex)
 {
-    const LdDecodeMetaData::VideoParameters &videoParameters = ldDecodeMetaData.getVideoParameters();
+    const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters = ldDecodeMetaData.getVideoParameters();
 
     // Work out indexes.
     // fields will contain {lookbehind fields... [startIndex] real fields... [endIndex] lookahead fields...}.
@@ -40,34 +43,34 @@ void SourceField::loadFields(SourceVideo &sourceVideo, LdDecodeMetaData &ldDecod
     fields.resize(endIndex + (2 * lookAheadFrames));
 
     // Populate fields
-    const qint32 numInputFrames = ldDecodeMetaData.getNumberOfFrames();
-    qint32 frameNumber = firstFrameNumber - lookBehindFrames;
-    for (qint32 i = 0; i < fields.size(); i += 2) {
+    const int32_t numInputFrames = ldDecodeMetaData.getNumberOfFrames();
+    int32_t frameNumber = firstFrameNumber - lookBehindFrames;
+    for (size_t i = 0; i < fields.size(); i += 2) {
 
         // Is this frame outside the bounds of the input file?
         // If so, use real metadata (from frame 1) and black fields.
         const bool useBlankFrame = frameNumber < 1 || frameNumber > numInputFrames;
 
         // Get the first frame from the file (using frame 1 if outside bounds)
-        qint32 firstFieldNumber = ldDecodeMetaData.getFirstFieldNumber(useBlankFrame ? 1 : frameNumber);
-        qint32 secondFieldNumber = ldDecodeMetaData.getSecondFieldNumber(useBlankFrame ? 1 : frameNumber);
+        int32_t firstFieldNumber = ldDecodeMetaData.getFirstFieldNumber(useBlankFrame ? 1 : frameNumber);
+        int32_t secondFieldNumber = ldDecodeMetaData.getSecondFieldNumber(useBlankFrame ? 1 : frameNumber);
 
         // Fetch the input metadata
         fields[i].field = ldDecodeMetaData.getField(firstFieldNumber);
         fields[i + 1].field = ldDecodeMetaData.getField(secondFieldNumber);
 
-        const quint16 black = videoParameters.black16bIre;
+        const uint16_t black = videoParameters.black16bIre;
 
         if (useBlankFrame) {
             // Fill both fields with black
-            fields[i].data.fill(black, sourceVideo.getFieldLength());
-            fields[i + 1].data.fill(black, sourceVideo.getFieldLength());
+            fields[i].data.assign(sourceVideo.getFieldLength(), black);
+            fields[i + 1].data.assign(sourceVideo.getFieldLength(), black);
         } else {
             // Fetch the input fields
             fields[i].data = sourceVideo.getVideoField(firstFieldNumber);
             fields[i + 1].data = sourceVideo.getVideoField(secondFieldNumber);
 
-            if ((videoParameters.system == PAL || videoParameters.system == PAL_M) && videoParameters.isSubcarrierLocked) {
+            if ((videoParameters.system == chd::metadata::PAL || videoParameters.system == chd::metadata::PAL_M) && videoParameters.isSubcarrierLocked) {
                 // With subcarrier-locked 4fSC PAL sampling, we have four
                 // "extra" samples over the course of the frame, so the two
                 // fields will be horizontally misaligned by two samples. Shift
@@ -76,9 +79,9 @@ void SourceField::loadFields(SourceVideo &sourceVideo, LdDecodeMetaData &ldDecod
                 // XXX This should be done elsewhere, as it affects other tools
                 // too.
 
-                fields[i + 1].data.remove(0, 2);
+                fields[i + 1].data.erase(fields[i + 1].data.begin(), fields[i + 1].data.begin() + 2);
                 for (int j = 0; j < 2; j++) {
-                    fields[i + 1].data.append(black);
+                    fields[i + 1].data.push_back(black);
                 }
             }
         }
@@ -86,3 +89,5 @@ void SourceField::loadFields(SourceVideo &sourceVideo, LdDecodeMetaData &ldDecod
         frameNumber++;
     }
 }
+
+}  // namespace chd::decoders

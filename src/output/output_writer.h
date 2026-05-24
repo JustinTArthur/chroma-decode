@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     outputwriter.h
@@ -23,21 +24,23 @@
 
 ************************************************************************/
 
-#ifndef OUTPUTWRITER_H
-#define OUTPUTWRITER_H
+#ifndef CHD_OUTPUT_OUTPUT_WRITER_H
+#define CHD_OUTPUT_OUTPUT_WRITER_H
 
-#include <QtGlobal>
-#include <QByteArray>
-#include <QVector>
+#include <cstdint>
+#include <string>
+#include <vector>
 
-#include "lddecodemetadata.h"
+#include "../metadata/core.h"
+
+namespace chd::output {
 
 class ComponentFrame;
 
 // A frame (two interlaced fields), converted to one of the supported output formats.
 // Since all the formats currently supported use 16-bit samples, this is just a
 // vector of 16-bit numbers.
-using OutputFrame = QVector<quint16>;
+using OutputFrame = std::vector<uint16_t>;
 
 class OutputWriter {
 public:
@@ -50,23 +53,23 @@ public:
 
     // Output settings
     struct Configuration {
-        qint32 paddingAmount = 8;
+        int32_t paddingAmount = 8;
         PixelFormat pixelFormat = RGB48;
         bool outputY4m = false;
     };
 
     // Set the output configuration, and adjust the VideoParameters to suit.
     // (If usePadding is disabled, this will not change the VideoParameters.)
-    void updateConfiguration(LdDecodeMetaData::VideoParameters &videoParameters, const Configuration &config);
+    void updateConfiguration(chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters, const Configuration &config);
 
-    // Print a qInfo message about the output format
+    // Print an info message about the output format
     void printOutputInfo() const;
 
     // Get the header data to be written at the start of the stream
-    QByteArray getStreamHeader() const;
+    std::string getStreamHeader() const;
 
     // Get the header data to be written before each frame
-    QByteArray getFrameHeader() const;
+    std::string getFrameHeader() const;
 
     // For worker threads: convert a component frame to the configured output format
     void convert(const ComponentFrame &componentFrame, OutputFrame &outputFrame) const;
@@ -78,25 +81,27 @@ public:
 private:
     // Configuration parameters
     Configuration config;
-    LdDecodeMetaData::VideoParameters videoParameters;
+    chd::metadata::LdDecodeMetaData::VideoParameters videoParameters;
 
     // Number of blank lines to add at the top and bottom of the output
-    qint32 topPadLines;
-    qint32 bottomPadLines;
+    int32_t topPadLines;
+    int32_t bottomPadLines;
 
     // Output size
-    qint32 activeWidth;
-    qint32 activeHeight;
-    qint32 outputHeight;
+    int32_t activeWidth;
+    int32_t activeHeight;
+    int32_t outputHeight;
 
     // Get a string representing the pixel format
     const char *getPixelName() const;
 
     // Clear padding lines
-    void clearPadLines(qint32 firstLine, qint32 numLines, OutputFrame &outputFrame) const;
+    void clearPadLines(int32_t firstLine, int32_t numLines, OutputFrame &outputFrame) const;
 
     // Convert one line
-    void convertLine(qint32 lineNumber, const ComponentFrame &componentFrame, OutputFrame &outputFrame) const;
+    void convertLine(int32_t lineNumber, const ComponentFrame &componentFrame, OutputFrame &outputFrame) const;
 };
 
-#endif // OUTPUTWRITER_H
+}  // namespace chd::output
+
+#endif  // CHD_OUTPUT_OUTPUT_WRITER_H

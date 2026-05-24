@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     monodecoder.cpp
@@ -22,17 +23,14 @@
 
 ************************************************************************/
 
-#include "monodecoder.h"
+#include "mono_decoder.h"
 
-#include "comb.h"
-#include "decoderpool.h"
-#include "palcolour.h"
+#include "../filter/deemp.h"
 
-#include "deemp.h"
-#include "firfilter.h"
+namespace chd::decoders::mono {
 
 MonoDecoder::MonoDecoder()
-{	
+{
 }
 
 MonoDecoder::MonoDecoder(const MonoDecoder::MonoConfiguration &config)
@@ -40,7 +38,7 @@ MonoDecoder::MonoDecoder(const MonoDecoder::MonoConfiguration &config)
     monoConfig = config;
 }
 
-bool MonoDecoder::updateConfiguration(const LdDecodeMetaData::VideoParameters &videoParameters, const MonoDecoder::MonoConfiguration &configuration) {
+bool MonoDecoder::updateConfiguration(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters, const MonoDecoder::MonoConfiguration &configuration) {
     // This decoder works for both PAL and NTSC.
 	monoConfig.yNRLevel = configuration.yNRLevel;
     monoConfig.videoParameters = videoParameters;
@@ -48,7 +46,7 @@ bool MonoDecoder::updateConfiguration(const LdDecodeMetaData::VideoParameters &v
     return true;
 }
 
-bool MonoDecoder::configure(const LdDecodeMetaData::VideoParameters &videoParameters) {
+bool MonoDecoder::configure(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters) {
     // This decoder works for both PAL and NTSC.
 
     monoConfig.videoParameters = videoParameters;
@@ -56,28 +54,24 @@ bool MonoDecoder::configure(const LdDecodeMetaData::VideoParameters &videoParame
     return true;
 }
 
-QThread *MonoDecoder::makeThread(QAtomicInt& abort, DecoderPool& decoderPool) {
-    return new MonoThread(abort, decoderPool, monoConfig);
-}
-
-void MonoDecoder::decodeFrames(const QVector<SourceField>& inputFields,
-                               qint32 startIndex,
-                               qint32 endIndex,
-                               QVector<ComponentFrame>& componentFrames)
+void MonoDecoder::decodeFrames(const std::vector<chd::decoders::SourceField>& inputFields,
+                               int32_t startIndex,
+                               int32_t endIndex,
+                               std::vector<chd::output::ComponentFrame>& componentFrames)
 {
-	const LdDecodeMetaData::VideoParameters &videoParameters = monoConfig.videoParameters;
+	const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters = monoConfig.videoParameters;
 	bool ignoreUV = false;
-	
-	
-	for (qint32 fieldIndex = startIndex, frameIndex = 0; fieldIndex < endIndex; fieldIndex += 2, frameIndex++) {
+
+
+	for (int32_t fieldIndex = startIndex, frameIndex = 0; fieldIndex < endIndex; fieldIndex += 2, frameIndex++) {
 		componentFrames[frameIndex].init(videoParameters, ignoreUV);
-		for (qint32 y = videoParameters.firstActiveFrameLine; y < videoParameters.lastActiveFrameLine; y++) {
-			const SourceVideo::Data &inputFieldData = (y % 2) == 0 ? inputFields[fieldIndex].data :inputFields[fieldIndex+1].data;
-			const quint16 *inputLine = inputFieldData.data() + ((y / 2) * videoParameters.fieldWidth);
+		for (int32_t y = videoParameters.firstActiveFrameLine; y < videoParameters.lastActiveFrameLine; y++) {
+			const chd::reader::SourceVideo::Data &inputFieldData = (y % 2) == 0 ? inputFields[fieldIndex].data :inputFields[fieldIndex+1].data;
+			const uint16_t *inputLine = inputFieldData.data() + ((y / 2) * videoParameters.fieldWidth);
 
 			// Copy the whole composite signal to Y (leaving U and V blank)
 			double *outY = componentFrames[frameIndex].y(y);
-			for (qint32 x = videoParameters.activeVideoStart; x < videoParameters.activeVideoEnd; x++) {
+			for (int32_t x = videoParameters.activeVideoStart; x < videoParameters.activeVideoEnd; x++) {
 				outY[x] = inputLine[x];
 			}
 		}
@@ -85,7 +79,7 @@ void MonoDecoder::decodeFrames(const QVector<SourceField>& inputFields,
     }
 }
 
-void MonoDecoder::doYNR(ComponentFrame &componentFrame) {
+void MonoDecoder::doYNR(chd::output::ComponentFrame &componentFrame) {
     if (monoConfig.yNRLevel == 0.0)
         return;
 
@@ -95,11 +89,11 @@ void MonoDecoder::doYNR(ComponentFrame &componentFrame) {
     double nr_y     = monoConfig.yNRLevel * irescale;
 
     // 2. Choose filter taps & descriptor based on system
-    bool usePal = (monoConfig.videoParameters.system == PAL || monoConfig.videoParameters.system == PAL_M);
-    const auto& taps       = usePal ? c_nrpal_b
-                                    : c_nr_b;
-    const auto& descriptor = usePal ? f_nrpal
-                                    : f_nr;
+    bool usePal = (monoConfig.videoParameters.system == chd::metadata::PAL || monoConfig.videoParameters.system == chd::metadata::PAL_M);
+    const auto& taps       = usePal ? chd::decoders::filter::c_nrpal_b
+                                    : chd::decoders::filter::c_nr_b;
+    const auto& descriptor = usePal ? chd::decoders::filter::f_nrpal
+                                    : chd::decoders::filter::f_nr;
 
     const int delay = static_cast<int>(taps.size()) / 2;
 
@@ -149,17 +143,4 @@ void MonoDecoder::doYNR(ComponentFrame &componentFrame) {
     }
 }
 
-MonoThread::MonoThread(QAtomicInt& _abort, DecoderPool& _decoderPool,
-                       const MonoDecoder::MonoConfiguration &_monoConfig, QObject *parent)
-    : DecoderThread(_abort, _decoderPool, parent), monoConfig(_monoConfig)
-{
-}
-
-void MonoThread::decodeFrames(const QVector<SourceField>& inputFields,
-                              qint32 startIndex, qint32 endIndex,
-                              QVector<ComponentFrame>& componentFrames)
-{
-    // Delegate to the centralized, public API
-    auto &baseDecoder = static_cast<MonoDecoder&>(decoderPool.getDecoder());
-    baseDecoder.decodeFrames(inputFields, startIndex, endIndex, componentFrames);
-}
+}  // namespace chd::decoders::mono

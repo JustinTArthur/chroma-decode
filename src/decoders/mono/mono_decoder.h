@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     monodecoder.h
@@ -22,63 +23,44 @@
 
 ************************************************************************/
 
-#ifndef MONODECODER_H
-#define MONODECODER_H
+#ifndef CHD_DECODERS_MONO_MONO_DECODER_H
+#define CHD_DECODERS_MONO_MONO_DECODER_H
 
-#include <QObject>
-#include <QAtomicInt>
-#include <QThread>
-#include <QDebug>
+#include <cstdint>
+#include <vector>
 
-#include "componentframe.h"
-#include "lddecodemetadata.h"
-#include "sourcevideo.h"
+#include "../../output/component_frame.h"
+#include "../../metadata/core.h"
+#include "../../reader/tbc_source.h"
 
-#include "comb.h"
-#include "decoder.h"
-#include "sourcefield.h"
+#include "../decoder_base.h"
+#include "../source_field.h"
 
-class DecoderPool;
+namespace chd::decoders::mono {
 
 // Decoder that passes all input through as luma, for purely monochrome sources
-class MonoDecoder : public Decoder {
+class MonoDecoder : public chd::decoders::Decoder {
 public:
 
 	struct MonoConfiguration {
 		double yNRLevel = 0.0;
-		LdDecodeMetaData::VideoParameters videoParameters;
+		chd::metadata::LdDecodeMetaData::VideoParameters videoParameters;
 	};
 	MonoDecoder();
 	MonoDecoder(const MonoDecoder::MonoConfiguration &config);
-	bool updateConfiguration(const LdDecodeMetaData::VideoParameters &videoParameters, const MonoDecoder::MonoConfiguration &configuration);
-	bool configure(const LdDecodeMetaData::VideoParameters &videoParameters) override;
-    QThread *makeThread(QAtomicInt& abort, DecoderPool& decoderPool) override;
+	bool updateConfiguration(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters, const MonoDecoder::MonoConfiguration &configuration);
+	bool configure(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters) override;
 	/// Synchronously decode luma-only frames (no filtering)
-	void decodeFrames(const QVector<SourceField>& inputFields,
-                    qint32 startIndex,
-                    qint32 endIndex,
-                    QVector<ComponentFrame>& componentFrames);
-	void doYNR(ComponentFrame &componentFrame);				
+	void decodeFrames(const std::vector<chd::decoders::SourceField>& inputFields,
+                    int32_t startIndex,
+                    int32_t endIndex,
+                    std::vector<chd::output::ComponentFrame>& componentFrames) override;
+	void doYNR(chd::output::ComponentFrame &componentFrame);
 
 private:
     MonoConfiguration monoConfig;
 };
 
-class MonoThread : public DecoderThread
-{
-    Q_OBJECT
-public:
-    explicit MonoThread(QAtomicInt &abort, DecoderPool &decoderPool,
-                       const MonoDecoder::MonoConfiguration &monoConfig,
-                       QObject *parent = nullptr);
+}  // namespace chd::decoders::mono
 
-protected:
-    void decodeFrames(const QVector<SourceField> &inputFields, qint32 startIndex, qint32 endIndex,
-                      QVector<ComponentFrame> &componentFrames) override;
-
-private:
-    // Settings
-    const MonoDecoder::MonoConfiguration &monoConfig;
-};
-
-#endif // MONODECODER
+#endif  // CHD_DECODERS_MONO_MONO_DECODER_H

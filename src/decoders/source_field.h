@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     sourcefield.h
@@ -22,40 +23,47 @@
 
 ************************************************************************/
 
-#ifndef SOURCEFIELD_H
-#define SOURCEFIELD_H
+#ifndef CHD_DECODERS_SOURCE_FIELD_H
+#define CHD_DECODERS_SOURCE_FIELD_H
 
-#include "lddecodemetadata.h"
-#include "sourcevideo.h"
+#include <cstdint>
+#include <vector>
+
+#include "../metadata/core.h"
+#include "../reader/tbc_source.h"
+
+namespace chd::decoders {
 
 // A field read from the input, with metadata and data
 struct SourceField {
-    LdDecodeMetaData::Field field;
-    SourceVideo::Data data;
+    chd::metadata::LdDecodeMetaData::Field field;
+    chd::reader::SourceVideo::Data data;
 
     // Load a sequence of frames from the input files.
     //
     // fields will contain {lookbehind fields... [startIndex] real fields... [endIndex] lookahead fields...}.
     // Fields requested outside the bounds of the file will have dummy metadata and black data.
-    static void loadFields(SourceVideo &sourceVideo, LdDecodeMetaData &ldDecodeMetaData,
-                           qint32 firstFrameNumber, qint32 numFrames,
-                           qint32 lookBehindFrames, qint32 lookAheadFrames,
-                           QVector<SourceField> &fields, qint32 &startIndex, qint32 &endIndex);
+    static void loadFields(chd::reader::SourceVideo &sourceVideo, chd::metadata::LdDecodeMetaData &ldDecodeMetaData,
+                           int32_t firstFrameNumber, int32_t numFrames,
+                           int32_t lookBehindFrames, int32_t lookAheadFrames,
+                           std::vector<SourceField> &fields, int32_t &startIndex, int32_t &endIndex);
 
     // Return the vertical offset of this field within the interlaced frame
     // (i.e. 0 for the top field, 1 for the bottom field).
-    qint32 getOffset() const {
+    int32_t getOffset() const {
         return field.isFirstField ? 0 : 1;
     }
 
     // Return the first/last active line numbers within this field's data,
     // given the video parameters.
-    qint32 getFirstActiveLine(const LdDecodeMetaData::VideoParameters &videoParameters) const {
+    int32_t getFirstActiveLine(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters) const {
         return (videoParameters.firstActiveFrameLine + 1 - getOffset()) / 2;
     }
-    qint32 getLastActiveLine(const LdDecodeMetaData::VideoParameters &videoParameters) const {
+    int32_t getLastActiveLine(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters) const {
         return (videoParameters.lastActiveFrameLine + 1 - getOffset()) / 2;
     }
 };
 
-#endif
+}  // namespace chd::decoders
+
+#endif  // CHD_DECODERS_SOURCE_FIELD_H

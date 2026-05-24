@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     decoder.h
@@ -22,20 +23,18 @@
 
 ************************************************************************/
 
-#ifndef DECODER_H
-#define DECODER_H
+#ifndef CHD_DECODERS_DECODER_BASE_H
+#define CHD_DECODERS_DECODER_BASE_H
 
-#include <QAtomicInt>
-#include <QByteArray>
-#include <QDebug>
-#include <QThread>
 #include <cassert>
+#include <cstdint>
 
-#include "lddecodemetadata.h"
+#include "../metadata/core.h"
 
-#include "componentframe.h"
-#include "outputwriter.h"
-#include "sourcefield.h"
+#include "../output/component_frame.h"
+#include "source_field.h"
+
+namespace chd::decoders {
 
 class DecoderPool;
 
@@ -63,47 +62,32 @@ public:
 
     // Configure the decoder given input video parameters.
     // If the video is not compatible, print an error message and return false.
-    virtual bool configure(const LdDecodeMetaData::VideoParameters &videoParameters) = 0;
+    virtual bool configure(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters) = 0;
 
     // After configuration, return the number of frames that the decoder needs
     // to be able to see into the past (each frame being two SourceFields).
     // The default implementation returns 0, which is appropriate for 1D/2D decoders.
-    virtual qint32 getLookBehind() const;
+    virtual int32_t getLookBehind() const { return 0; }
 
     // After configuration, return the number of frames that the decoder needs
     // to be able to see into the future (each frame being two SourceFields).
     // The default implementation returns 0, which is appropriate for 1D/2D decoders.
-    virtual qint32 getLookAhead() const;
+    virtual int32_t getLookAhead() const { return 0; }
 
-    // Construct a new worker thread
-    virtual QThread *makeThread(QAtomicInt& abort, DecoderPool& decoderPool) = 0;
+    // Decode a sequence of composite fields into a sequence of component
+    // frames. This replaces the legacy DecoderThread::decodeFrames pure
+    // virtual; threading is provided externally by DecoderPool.
+    virtual void decodeFrames(const std::vector<SourceField> &inputFields,
+                              int32_t startIndex, int32_t endIndex,
+                              std::vector<chd::output::ComponentFrame> &componentFrames) = 0;
 
     // Parameters used by the decoder and its threads.
     // This may be subclassed by decoders to add extra parameters.
     struct Configuration {
-        LdDecodeMetaData::VideoParameters videoParameters;
+        chd::metadata::LdDecodeMetaData::VideoParameters videoParameters;
     };
 };
 
-// Abstract base class for chroma decoder worker threads.
-class DecoderThread : public QThread {
-    Q_OBJECT
-public:
-    explicit DecoderThread(QAtomicInt &abort, DecoderPool &decoderPool, QObject *parent = nullptr);
+}  // namespace chd::decoders
 
-protected:
-    void run() override;
-
-    // Decode a sequence of composite fields into a sequence of component frames
-    virtual void decodeFrames(const QVector<SourceField> &inputFields, qint32 startIndex, qint32 endIndex,
-                              QVector<ComponentFrame> &componentFrames) = 0;
-
-    // Decoder pool
-    QAtomicInt &abort;
-    DecoderPool &decoderPool;
-
-    // Output writer
-    OutputWriter &outputWriter;
-};
-
-#endif
+#endif  // CHD_DECODERS_DECODER_BASE_H

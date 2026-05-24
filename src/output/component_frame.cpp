@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     componentframe.cpp
@@ -22,35 +23,36 @@
 
 ************************************************************************/
 
-#include "componentframe.h"
+#include "component_frame.h"
+
+namespace chd::output {
 
 ComponentFrame::ComponentFrame()
     : width(-1), height(-1)
 {
 }
 
-void ComponentFrame::init(const LdDecodeMetaData::VideoParameters &videoParameters, bool mono)
+void ComponentFrame::init(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters, bool mono)
 {
     width = videoParameters.fieldWidth;
     height = (videoParameters.fieldHeight * 2) - 1;
 
-    const qint32 size = width * height;
+    const int32_t size = width * height;
 
-    yData.resize(size);
-    yData.fill(0.0);
+    yData.assign(size, 0.0);
 
     if(!mono) {
-        uData.resize(size);
-        uData.fill(0.0);
+        uData.assign(size, 0.0);
 
-        vData.resize(size);
-        vData.fill(0.0);
+        vData.assign(size, 0.0);
     } else {
         // Clear and deallocate U/V if they're not used.
         uData.clear();
-        uData.squeeze();
+        uData.shrink_to_fit();
 
         vData.clear();
-        vData.squeeze();
+        vData.shrink_to_fit();
     }
 }
+
+}  // namespace chd::output
