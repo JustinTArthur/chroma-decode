@@ -35,6 +35,25 @@ All notable changes to this project will be documented in this file. Format:
 - Per-source mutex on `TbcSource::getVideoField` and the new CVBS
   source classes so concurrent field reads from worker threads are
   race-free.
+- NN provider attach plumbing (attach layer only):
+  full `attachCuda` recipe ported from tbc-tools (preferred 8-option
+  set with EXHAUSTIVE cuDNN conv search, fallback to a smaller
+  compatibility set, automatic regex-driven filtering of options
+  the local ORT build doesn't recognise) + Linux `libcuda.so.1` /
+  `libnvidia-ptxjitcompiler.so.1` driver loader that rejects the
+  `/stubs/` development libraries. `attachDirectML` for Windows,
+  `attachMIGraphX` for Linux/AMD, `attachTensorRT` via the V2
+  provider-options API (CUDA driver required). Windows ORT CUDA
+  provider probe is intentionally a no-op, following
+  vapoursynth-analog patch #5 (LoadLibrary'ing
+  `onnxruntime_providers_cuda.dll` ourselves before ORT does
+  crashes the provider's overridden `operator new`). The provider
+  attach helpers are written by inspection against tbc-tools'
+  working code; runtime validation against real hardware is
+  deferred to Linux / Windows CI. The cuFFT / `nnTransform3D_kernel.cu`
+  GPU processing pipeline (a parallel ~750 LOC ORT+CUDA pipeline,
+  distinct from "swap FFT backends") is deferred to a Linux+CUDA
+  follow-up session where end-to-end validation is feasible.
 - ldzeug2 decoders: `chd::decoders::ldzeug::
   LdzeugColorCnnDecoder` (3-channel CVBS+I-carrier+Q-carrier ⇒
   Y+I+Q, replacing both Y/C separation and chroma demod) and
