@@ -7,6 +7,33 @@ All notable changes to this project will be documented in this file. Format:
 ## [Unreleased]
 
 ### Added
+- Multi-source dropout correction at the C ABI:
+  `chd_decode_frame` now builds a `std::vector<chd::dropout::ExtraSourceFrame>`
+  from each `chd_video_extra` on the primary and runs the multi-source
+  `DropoutCorrector::correctFrame` overload when extras are attached.
+  Each extra carries its own `LdDecodeMetaData` (loaded from a
+  `.tbc.db`/`.json` sidecar for TBC extras, synthesized from
+  `ISource::parameters()` for CVBS extras), so the corrector can
+  pull per-source `Field.dropOuts` + VITS bPSNR-derived quality
+  exactly the way the legacy `ld-dropout-correct` did.
+- CVBS-primary multi-source support:
+  `chd_video_open_composite` and `chd_video_open_yc` now
+  synthesize an `LdDecodeMetaData` (alternating-is-first-field,
+  no-dropouts) at open time and stash it on the handle, so
+  `chd_video_add_extra_source_composite` against a CVBS primary works
+  (previously rejected with "primary source has no TBC metadata").
+  Discrimination between TBC and CVBS in `chd_video_get_info` now
+  reads the new `chd_video::metadataSynthesized` flag instead of
+  testing `metadata != nullptr`.
+
+### Changed
+- `chd_video::extraSources` is now `std::vector<chd_video_extra>`,
+  with each entry owning both the `ISource` and its own
+  `LdDecodeMetaData`. Earlier vector-of-`unique_ptr<ISource>` shape
+  couldn't carry the per-source dropout / VITS metadata that the
+  multi-source `DropoutCorrector` needs.
+
+### Added
 - C ABI decode loop: `chd_decoder_set_option_*` /
   `chd_decoder_has_option` / `chd_decoder_set_nn_model` /
   `chd_decoder_commit` / `chd_decode_frame` (sync, random-access by

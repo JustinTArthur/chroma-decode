@@ -35,12 +35,31 @@
 #include "../nn/ort_session.h"
 #endif
 
+// One extra source for multi-source dropout correction. Each extra
+// carries its own ISource AND its own LdDecodeMetaData — the multi-source
+// DropoutCorrector::correctFrame overload needs per-source Field metadata
+// (dropouts + bPSNR) which the source itself doesn't carry. For TBC
+// extras the metadata is loaded from the .db sidecar; for CVBS extras
+// it's synthesized from the source's parameters() + field count.
+struct chd_video_extra {
+    std::unique_ptr<chd::reader::ISource> source;
+    std::unique_ptr<chd::metadata::LdDecodeMetaData> metadata;
+    bool metadataSynthesized = false;
+};
+
 extern "C" {
 struct chd_video {
+    // Primary source. `metadata` is always non-null after a successful
+    // chd_video_open_*; metadataSynthesized==false means it was loaded
+    // from a TBC sqlite/json sidecar, true means it was synthesized in
+    // memory from the CVBS source's ISource::parameters() + field count.
+    // chd_video_get_info uses the flag to decide whether to report
+    // CHD_ENC_CVBS_U16_4FSC or the actual CVBS sample encoding.
     std::unique_ptr<chd::metadata::LdDecodeMetaData> metadata;
     std::unique_ptr<chd::reader::ISource> source;
     std::string tbcPath;
-    std::vector<std::unique_ptr<chd::reader::ISource>> extraSources;
+    bool metadataSynthesized = false;
+    std::vector<chd_video_extra> extraSources;
 };
 
 // Per-decoder state. The lifecycle has two phases:

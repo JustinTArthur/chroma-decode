@@ -27,6 +27,30 @@ chd_status_t set_error(const std::string &msg) {
     return CHD_E_INVALID_ARG;
 }
 
+// Synthesize an LdDecodeMetaData from an ISource that doesn't carry one
+// (CVBS sources, whose .meta sidecar covers VideoParameters but not the
+// per-field Field rows that SourceField::loadFields + the multi-source
+// DropoutCorrector both consume). Generates alternating is-first-field
+// metadata matching the ld-decode convention so 1-based frame
+// number → field number translation works.
+std::unique_ptr<chd::metadata::LdDecodeMetaData>
+synthesizeMetadata(const chd::reader::ISource &src) {
+    auto meta = std::make_unique<chd::metadata::LdDecodeMetaData>();
+    meta->setVideoParameters(src.parameters());
+    meta->setIsFirstFieldFirst(true);
+
+    const int32_t nf = src.getNumberOfAvailableFields();
+    if (nf <= 0) return meta;
+
+    for (int32_t i = 0; i < nf; i++) {
+        chd::metadata::LdDecodeMetaData::Field f;
+        f.seqNo = i + 1;
+        f.isFirstField = (i % 2 == 0);
+        meta->appendField(f);
+    }
+    return meta;
+}
+
 chd_video_standard_t toAbiStandard(chd::metadata::VideoSystem system) {
     switch (system) {
         case chd::metadata::PAL:   return CHD_STD_PAL;
@@ -59,12 +83,13 @@ chd_signal_state_t toAbiSignalState(chd::format::SignalState state) {
     return CHD_SIG_UNKNOWN;
 }
 
-std::string resolveSidecar(const std::string &tbcPath, const char *sidecarOrNull) {
-    if (sidecarOrNull != nullptr) return sidecarOrNull;
-    // Auto-locate: <tbcPath>.db wins over <tbcPath>.json.
-    const std::string dbPath = tbcPath + ".db";
-    if (fs::exists(dbPath)) return dbPath;
-    return tbcPath + ".json";  // fallback; opening will fail informatively
+// A CVBS-spec sidecar uses the `.meta` extension (cvbs_file table); an
+// ld-decode sidecar is `.db` (sqlite) or `.json`. The flavour decides which
+// reader + metadata path an input takes.
+bool isCvbsSidecar(const std::string &path) {
+    const std::string suffix = ".meta";
+    return path.size() >= suffix.size()
+        && path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
 // Strip extension and append ".meta" for sidecar auto-location. The CVBS
@@ -76,6 +101,35 @@ std::string defaultMetaPath(const std::string &dataPath) {
     stem.replace_extension("");
     stem += ".meta";
     return stem.string();
+}
+
+// Resolve the sidecar for a data file and report its flavour. With an
+// explicit sidecar, the flavour follows its extension. Auto-location order:
+// the ld-decode `<path>.db` then `<path>.json`, then the CVBS
+// `<basename>.meta`. `found` is false when nothing was located (the caller
+// then needs a chd_video_params_t override).
+struct SidecarResolution {
+    std::string path;
+    bool        isCvbs = false;
+    bool        found  = false;
+};
+
+SidecarResolution resolveSidecarFlavour(const std::string &dataPath,
+                                        const char *sidecarOrNull) {
+    SidecarResolution r;
+    if (sidecarOrNull != nullptr) {
+        r.path  = sidecarOrNull;
+        r.found = fs::exists(r.path);
+        r.isCvbs = isCvbsSidecar(r.path);
+        return r;
+    }
+    const std::string db   = dataPath + ".db";
+    const std::string json = dataPath + ".json";
+    const std::string meta = defaultMetaPath(dataPath);
+    if (fs::exists(db))        { r.path = db;   r.found = true; r.isCvbs = false; }
+    else if (fs::exists(json)) { r.path = json; r.found = true; r.isCvbs = false; }
+    else if (fs::exists(meta)) { r.path = meta; r.found = true; r.isCvbs = true; }
+    return r;
 }
 
 // Resolution chain for CVBS open functions:
@@ -144,12 +198,6 @@ chd_status_t resolveCvbsParams(const std::string &dataPath,
         case CHD_ENC_CVBS_TPG21_4FSC: encoding = chd::format::SampleEncoding::CVBS_TPG21_4FSC; break;
         case CHD_ENC_RAW_S16_28M:     encoding = chd::format::SampleEncoding::RAW_S16_28M;     break;
         case CHD_ENC_RAW_S16_40M:     encoding = chd::format::SampleEncoding::RAW_S16_40M;     break;
-        case CHD_ENC_CVBS_U16_4FSC:
-            // The TBC layout is equivalent to CVBS_U16_4FSC for sample
-            // conversion purposes (10-bit × 64 in u16). Honour the override
-            // by mapping to that encoding.
-            encoding = chd::format::SampleEncoding::CVBS_U16_4FSC;
-            break;
         default:
             return set_error("CVBS open: chd_video_params_t.encoding unset or unknown");
     }
@@ -173,79 +221,184 @@ chd_status_t resolveCvbsParams(const std::string &dataPath,
     return CHD_OK;
 }
 
+// One opened composite-shaped source plus the metadata the decode path needs.
+// For ld-decode inputs `metadata` carries the real per-field rows; for CVBS
+// inputs it is synthesized from the source parameters + field count.
+struct OpenedSource {
+    std::unique_ptr<chd::reader::ISource> source;
+    std::unique_ptr<chd::metadata::LdDecodeMetaData> metadata;
+    bool metadataSynthesized = false;
+};
+
+// Open a single composite source (ld-decode `.tbc` or CVBS `.composite`),
+// auto-detecting the sidecar flavour. `fn` is the caller name for error
+// prefixes; `path` must already exist (callers check).
+chd_status_t openCompositeSource(const std::string &fn, const std::string &path,
+                                 const char *sidecarOrNull,
+                                 const chd_video_params_t *overrideOrNull,
+                                 OpenedSource *out) {
+    const SidecarResolution sc = resolveSidecarFlavour(path, sidecarOrNull);
+    if (sidecarOrNull != nullptr && !sc.found) {
+        return set_error(fn + ": sidecar file does not exist: " + sc.path);
+    }
+
+    if (sc.found && !sc.isCvbs) {
+        // ld-decode path: real per-field metadata + TbcSource.
+        auto metadata = std::make_unique<chd::metadata::LdDecodeMetaData>();
+        try {
+            if (!metadata->read(sc.path)) {
+                return set_error(fn + ": failed to read sidecar metadata");
+            }
+        } catch (const std::exception &e) {
+            return set_error(fn + ": " + e.what());
+        }
+        const auto &vp = metadata->getVideoParameters();
+        auto src = std::make_unique<chd::reader::TbcSource>();
+        if (!src->open(path, vp.fieldWidth * vp.fieldHeight, vp.fieldWidth)) {
+            return set_error(fn + ": failed to open sample file");
+        }
+        src->bindVideoParameters(vp);
+        out->source = std::move(src);
+        out->metadata = std::move(metadata);
+        out->metadataSynthesized = false;
+        return CHD_OK;
+    }
+
+    // CVBS path: preset triple from the `.meta` sidecar or the override.
+    ResolvedCvbsParams resolved{};
+    const chd_status_t rc = resolveCvbsParams(
+        path, sc.found ? sc.path.c_str() : nullptr, overrideOrNull, &resolved);
+    if (rc != CHD_OK) return rc;
+    auto src = std::make_unique<chd::reader::CvbsCompositeSource>();
+    if (!src->open(path, *resolved.videoStandard, resolved.sampleEncoding,
+                   resolved.signalState)) {
+        return set_error(fn + ": failed to open sample file");
+    }
+    out->source = std::move(src);
+    out->metadata = synthesizeMetadata(*out->source);
+    out->metadataSynthesized = true;
+    return CHD_OK;
+}
+
+// Open one composite extra source and append it to `dst`.
+chd_status_t addCompositeExtra(const std::string &fn,
+                               std::vector<chd_video_extra> &dst,
+                               const std::string &path, const char *sidecarOrNull) {
+    if (!fs::exists(path)) {
+        return set_error(fn + ": file does not exist: " + path);
+    }
+    OpenedSource opened;
+    const chd_status_t rc = openCompositeSource(fn, path, sidecarOrNull, nullptr, &opened);
+    if (rc != CHD_OK) return rc;
+    chd_video_extra extra;
+    extra.source = std::move(opened.source);
+    extra.metadata = std::move(opened.metadata);
+    extra.metadataSynthesized = opened.metadataSynthesized;
+    dst.push_back(std::move(extra));
+    return CHD_OK;
+}
+
 }  // namespace
 
 extern "C" {
 
-chd_status_t chd_video_open_composite(const char *tbc_path,
+chd_status_t chd_video_open_composite(const char *path,
                                       const char *sidecar_path_or_null,
-                                      const chd_video_params_t *,
+                                      const chd_video_params_t *override_or_null,
                                       chd_video_t **out) {
-    if (tbc_path == nullptr || out == nullptr) {
+    if (path == nullptr || out == nullptr) {
         return set_error("chd_video_open_composite: null argument");
     }
     *out = nullptr;
-
-    const std::string tbcPath = tbc_path;
-    if (!fs::exists(tbcPath)) {
-        return set_error("chd_video_open_composite: TBC file does not exist: " + tbcPath);
+    if (!fs::exists(path)) {
+        return set_error(std::string("chd_video_open_composite: file does not exist: ") + path);
     }
 
-    const std::string sidecarPath = resolveSidecar(tbcPath, sidecar_path_or_null);
-    if (!fs::exists(sidecarPath)) {
-        return set_error("chd_video_open_composite: sidecar file does not exist: " + sidecarPath);
-    }
+    OpenedSource opened;
+    const chd_status_t rc = openCompositeSource(
+        "chd_video_open_composite", path, sidecar_path_or_null, override_or_null, &opened);
+    if (rc != CHD_OK) return rc;
 
     auto handle = std::make_unique<chd_video>();
-    handle->tbcPath = tbcPath;
-    handle->metadata = std::make_unique<chd::metadata::LdDecodeMetaData>();
-
-    try {
-        if (!handle->metadata->read(sidecarPath)) {
-            return set_error("chd_video_open_composite: failed to read sidecar metadata");
-        }
-    } catch (const std::exception &e) {
-        return set_error(std::string("chd_video_open_composite: ") + e.what());
-    }
-
-    const auto &vp = handle->metadata->getVideoParameters();
-    auto tbc = std::make_unique<chd::reader::TbcSource>();
-    if (!tbc->open(tbcPath, vp.fieldWidth * vp.fieldHeight, vp.fieldWidth)) {
-        return set_error("chd_video_open_composite: failed to open TBC sample file");
-    }
-    tbc->bindVideoParameters(vp);
-    handle->source = std::move(tbc);
-
+    handle->primaryPath        = path;
+    handle->source             = std::move(opened.source);
+    handle->metadata           = std::move(opened.metadata);
+    handle->metadataSynthesized = opened.metadataSynthesized;
     *out = handle.release();
     return CHD_OK;
 }
 
-chd_status_t chd_video_open_yc(const char *y_path, const char *c_path,
-                               const char *meta_path_or_null,
+chd_status_t chd_video_open_yc(const char *luma_path, const char *chroma_path,
+                               const char *sidecar_path_or_null,
                                const chd_video_params_t *override_or_null,
                                chd_video_t **out) {
-    if (y_path == nullptr || c_path == nullptr || out == nullptr) {
+    if (luma_path == nullptr || chroma_path == nullptr || out == nullptr) {
         return set_error("chd_video_open_yc: null argument");
     }
     *out = nullptr;
-    if (!fs::exists(y_path) || !fs::exists(c_path)) {
-        return set_error("chd_video_open_yc: y/c file does not exist");
+    if (!fs::exists(luma_path) || !fs::exists(chroma_path)) {
+        return set_error("chd_video_open_yc: luma/chroma file does not exist");
     }
 
-    ResolvedCvbsParams resolved{};
-    const chd_status_t rc = resolveCvbsParams(y_path, meta_path_or_null,
-                                              override_or_null, &resolved);
-    if (rc != CHD_OK) return rc;
-
-    auto src = std::make_unique<chd::reader::CvbsYcSource>();
-    if (!src->open(y_path, c_path, *resolved.videoStandard,
-                   resolved.sampleEncoding, resolved.signalState)) {
-        return set_error("chd_video_open_yc: failed to open y/c files");
-    }
+    const SidecarResolution sc = resolveSidecarFlavour(luma_path, sidecar_path_or_null);
+    // A CVBS `.y`/`.c` pair (a `.meta` sidecar, or no sidecar + override) reads
+    // through a single CvbsYcSource that reconstructs a composite from the
+    // centred-chroma `.c`. A vhs-decode luma.tbc + chroma.tbc pair instead
+    // decodes each plane separately and merges (set up below).
+    const bool decodeMerge = sc.found && !sc.isCvbs;
 
     auto handle = std::make_unique<chd_video>();
-    handle->tbcPath = y_path;
-    handle->source  = std::move(src);
+    handle->primaryPath = luma_path;
+
+    if (!decodeMerge) {
+        ResolvedCvbsParams resolved{};
+        const chd_status_t rc = resolveCvbsParams(
+            luma_path, sc.found ? sc.path.c_str() : nullptr, override_or_null, &resolved);
+        if (rc != CHD_OK) return rc;
+        auto src = std::make_unique<chd::reader::CvbsYcSource>();
+        if (!src->open(luma_path, chroma_path, *resolved.videoStandard,
+                       resolved.sampleEncoding, resolved.signalState)) {
+            return set_error("chd_video_open_yc: failed to open y/c files");
+        }
+        handle->metadata = synthesizeMetadata(*src);
+        handle->metadataSynthesized = true;
+        handle->source  = std::move(src);
+        *out = handle.release();
+        return CHD_OK;
+    }
+
+    OpenedSource luma;
+    chd_status_t rc = openCompositeSource(
+        "chd_video_open_yc (luma)", luma_path, sidecar_path_or_null, override_or_null, &luma);
+    if (rc != CHD_OK) return rc;
+
+    // Prefer the chroma plane's own sidecar, but fall back to the luma sidecar:
+    // vhs-decode writes one shared `<base>.tbc.json` for the pair, not a
+    // separate `<base>_chroma.tbc.json`. The shared sidecar describes the
+    // (identical) geometry of both planes.
+    const SidecarResolution chromaSc = resolveSidecarFlavour(chroma_path, nullptr);
+    const char *chromaSidecar = chromaSc.found ? nullptr : sc.path.c_str();
+    OpenedSource chroma;
+    rc = openCompositeSource(
+        "chd_video_open_yc (chroma)", chroma_path, chromaSidecar, override_or_null, &chroma);
+    if (rc != CHD_OK) return rc;
+
+    // The two planes come from one capture; require matching geometry and
+    // frame count so the decoded Y and U/V line up.
+    const auto &lvp = luma.source->parameters();
+    const auto &cvp = chroma.source->parameters();
+    if (lvp.fieldWidth != cvp.fieldWidth || lvp.fieldHeight != cvp.fieldHeight) {
+        return set_error("chd_video_open_yc: luma and chroma have mismatched dimensions");
+    }
+    if (luma.metadata->getNumberOfFrames() != chroma.metadata->getNumberOfFrames()) {
+        return set_error("chd_video_open_yc: luma and chroma have different frame counts");
+    }
+
+    handle->source             = std::move(luma.source);
+    handle->metadata           = std::move(luma.metadata);
+    handle->metadataSynthesized = luma.metadataSynthesized;
+    handle->chromaSource       = std::move(chroma.source);
+    handle->chromaMetadata     = std::move(chroma.metadata);
     *out = handle.release();
     return CHD_OK;
 }
@@ -261,13 +414,10 @@ chd_status_t chd_video_get_info(const chd_video_t *v, chd_video_info_t *out) {
     const auto &vp = v->source->parameters();
 
     out->standard               = toAbiStandard(vp.system);
-    // TBC sources report the on-disk format label so consumers can
-    // distinguish them from native CVBS-spec inputs; CVBS sources report the
-    // preset they were opened with. Metadata presence is the discriminator
-    // (TBC opens populate it from the sqlite/json sidecar; CVBS opens don't).
-    out->encoding               = (v->metadata != nullptr)
-                                      ? CHD_ENC_CVBS_U16_4FSC
-                                      : toAbiEncoding(v->source->sampleEncoding());
+    // Report the source's actual sample encoding. An ld-decode `.tbc` reads as
+    // CVBS_U16_4FSC (its on-disk layout); CVBS sources report the preset they
+    // were opened with.
+    out->encoding               = toAbiEncoding(v->source->sampleEncoding());
     out->signal_state           = toAbiSignalState(v->source->signalState());
     out->field_width            = vp.fieldWidth;
     out->field_height           = vp.fieldHeight;
@@ -280,60 +430,67 @@ chd_status_t chd_video_get_info(const chd_video_t *v, chd_video_info_t *out) {
     out->black_16b_ire          = vp.black16bIre;
     out->white_16b_ire          = vp.white16bIre;
     out->blanking_16b_ire       = vp.blanking16bIre;
-    // Frame count: TBC uses metadata; CVBS sources derive from file
-    // size / field count.
-    if (v->metadata != nullptr) {
-        out->num_frames         = const_cast<chd_video_t *>(v)->metadata->getNumberOfFrames();
-        out->is_first_field_first =
-            const_cast<chd_video_t *>(v)->metadata->getIsFirstFieldFirst() ? 1 : 0;
-    } else {
-        const int32_t nf = v->source->getNumberOfAvailableFields();
-        out->num_frames = nf >= 0 ? (nf / 2) : 0;
-        // CVBS spec doesn't carry a field-order flag in the core schema;
-        // default to first-field-first (the common convention).
-        out->is_first_field_first = 1;
-    }
+    // Both TBC and (synthesized) CVBS metadata expose frame count + field
+    // order through the same accessors.
+    out->num_frames         = const_cast<chd_video_t *>(v)->metadata->getNumberOfFrames();
+    out->is_first_field_first =
+        const_cast<chd_video_t *>(v)->metadata->getIsFirstFieldFirst() ? 1 : 0;
     out->is_widescreen          = vp.isWidescreen ? 1 : 0;
     out->is_subcarrier_locked   = vp.isSubcarrierLocked ? 1 : 0;
     return CHD_OK;
 }
 
-chd_status_t chd_video_add_extra_source_composite(chd_video_t *v, const char *tbc_path,
-                                                  const char *) {
-    if (v == nullptr || tbc_path == nullptr) {
+chd_status_t chd_video_add_extra_source_composite(chd_video_t *v, const char *path,
+                                                  const char *sidecar_path_or_null) {
+    if (v == nullptr || path == nullptr) {
         return set_error("chd_video_add_extra_source_composite: null argument");
     }
-    if (v->metadata == nullptr) {
-        return set_error("chd_video_add_extra_source_composite: primary source has no TBC metadata");
-    }
-    auto src = std::make_unique<chd::reader::TbcSource>();
-    const auto &vp = v->metadata->getVideoParameters();
-    if (!src->open(tbc_path, vp.fieldWidth * vp.fieldHeight, vp.fieldWidth)) {
-        return set_error("chd_video_add_extra_source_composite: failed to open extra TBC source");
-    }
-    src->bindVideoParameters(vp);
-    v->extraSources.push_back(std::move(src));
-    return CHD_OK;
+    return addCompositeExtra("chd_video_add_extra_source_composite",
+                             v->extraSources, path, sidecar_path_or_null);
 }
 
-chd_status_t chd_video_add_extra_source_yc(chd_video_t *v, const char *y_path,
-                                           const char *c_path,
-                                           const char *meta_path_or_null) {
-    if (v == nullptr || y_path == nullptr || c_path == nullptr) {
+chd_status_t chd_video_add_extra_source_yc(chd_video_t *v, const char *luma_path,
+                                           const char *chroma_path,
+                                           const char *sidecar_path_or_null) {
+    if (v == nullptr || luma_path == nullptr || chroma_path == nullptr) {
         return set_error("chd_video_add_extra_source_yc: null argument");
     }
-    if (!fs::exists(y_path) || !fs::exists(c_path)) {
-        return set_error("chd_video_add_extra_source_yc: y/c file does not exist");
+    if (!fs::exists(luma_path) || !fs::exists(chroma_path)) {
+        return set_error("chd_video_add_extra_source_yc: luma/chroma file does not exist");
     }
+
+    const SidecarResolution sc = resolveSidecarFlavour(luma_path, sidecar_path_or_null);
+    if (sc.found && !sc.isCvbs) {
+        // vhs-decode pair: a luma extra corrects the luma plane and a chroma
+        // extra corrects the separately-decoded chroma plane.
+        chd_status_t rc = addCompositeExtra(
+            "chd_video_add_extra_source_yc (luma)", v->extraSources,
+            luma_path, sidecar_path_or_null);
+        if (rc != CHD_OK) return rc;
+        // Chroma plane falls back to the shared luma sidecar (vhs-decode writes
+        // one `.tbc.json` per pair).
+        const SidecarResolution chromaSc = resolveSidecarFlavour(chroma_path, nullptr);
+        const char *chromaSidecar = chromaSc.found ? nullptr : sc.path.c_str();
+        return addCompositeExtra(
+            "chd_video_add_extra_source_yc (chroma)", v->chromaExtraSources,
+            chroma_path, chromaSidecar);
+    }
+
+    // CVBS `.y`/`.c` pair: one CvbsYcSource extra, matching the primary.
     ResolvedCvbsParams resolved{};
-    const chd_status_t rc = resolveCvbsParams(y_path, meta_path_or_null, nullptr, &resolved);
+    const chd_status_t rc = resolveCvbsParams(
+        luma_path, sc.found ? sc.path.c_str() : nullptr, nullptr, &resolved);
     if (rc != CHD_OK) return rc;
     auto src = std::make_unique<chd::reader::CvbsYcSource>();
-    if (!src->open(y_path, c_path, *resolved.videoStandard, resolved.sampleEncoding,
-                   resolved.signalState)) {
+    if (!src->open(luma_path, chroma_path, *resolved.videoStandard,
+                   resolved.sampleEncoding, resolved.signalState)) {
         return set_error("chd_video_add_extra_source_yc: open failed");
     }
-    v->extraSources.push_back(std::move(src));
+    chd_video_extra extra;
+    extra.metadata = synthesizeMetadata(*src);
+    extra.metadataSynthesized = true;
+    extra.source = std::move(src);
+    v->extraSources.push_back(std::move(extra));
     return CHD_OK;
 }
 

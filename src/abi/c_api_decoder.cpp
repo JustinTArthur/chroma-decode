@@ -37,27 +37,6 @@ chd_status_t set_arg_error(const char *what, const char *detail = nullptr) {
     return CHD_E_INVALID_ARG;
 }
 
-// Synthesize an LdDecodeMetaData from an ISource that doesn't carry one
-// (CVBS primary sources). SourceField::loadFields needs Field structs and
-// frame-number → field-number translation; we generate alternating
-// is-first-field metadata matching the legacy convention.
-std::unique_ptr<chd::metadata::LdDecodeMetaData> synthesizeMetadata(const chd::reader::ISource &src) {
-    auto meta = std::make_unique<chd::metadata::LdDecodeMetaData>();
-    meta->setVideoParameters(src.parameters());
-    meta->setIsFirstFieldFirst(true);
-
-    const int32_t nf = src.getNumberOfAvailableFields();
-    if (nf <= 0) return meta;
-
-    for (int32_t i = 0; i < nf; i++) {
-        chd::metadata::LdDecodeMetaData::Field f;
-        f.seqNo = i + 1;
-        f.isFirstField = (i % 2 == 0);  // matches the test fixture convention
-        meta->appendField(f);
-    }
-    return meta;
-}
-
 // Translate the string form of the output_format option to an
 // OutputWriter::PixelFormat. Returns -1 on unknown name. The "yuv444_float"
 // alias maps to YUV444P16 here because the float-output path bypasses
@@ -96,17 +75,6 @@ void applyLineOverrides(chd::metadata::LdDecodeMetaData::VideoParameters &vp,
     if (b >= 0) vp.lastActiveFieldLine  = b;
     if (c >= 0) vp.firstActiveFrameLine = c;
     if (e >= 0) vp.lastActiveFrameLine  = e;
-}
-
-// Resolve a metadata pointer for this video: TBC sources own one, CVBS
-// sources synthesize one at commit time and stash it on the video so
-// subsequent decoder commits against the same video share it.
-chd::metadata::LdDecodeMetaData *resolveMetadata(chd_decoder *d) {
-    if (d->video->metadata != nullptr) return d->video->metadata.get();
-    if (d->video->source != nullptr) {
-        d->video->metadata = synthesizeMetadata(*d->video->source);
-    }
-    return d->video->metadata.get();
 }
 
 template <typename T>
@@ -164,7 +132,7 @@ void componentFrameToFloatPlanes(const chd::output::ComponentFrame &cf,
 }
 
 chd_status_t decodeFrameLocked(chd_decoder_t *d, int64_t frame_index, chd_frame_t **out) {
-    auto *meta = resolveMetadata(d);
+    chd::metadata::LdDecodeMetaData *meta = d->video->metadata.get();
     if (meta == nullptr) {
         chd::detail::set_last_error("chd_decode_frame: missing metadata");
         return CHD_E_METADATA_MISSING;
@@ -187,16 +155,53 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, int64_t frame_index, chd_frame_
         firstFrameNumber, /*numFrames=*/1, d->lookBehind, d->lookAhead,
         fields, startIndex, endIndex);
 
-    // Apply dropout correction if requested. Single-source for now; extra
-    // sources land in a follow-up that wires sources[i] + their metadata
-    // through the multi-source DropoutCorrector::correctFrame overload.
+    // Apply dropout correction if requested. Single-source if no extras
+    // are attached; otherwise build a vector<ExtraSourceFrame> from each
+    // chd_video_extra and use the multi-source DropoutCorrector overload.
     chd::dropout::DropoutCorrectionStats stats;
     if (d->dropoutOptsSet && d->dropoutOpts.enabled != 0) {
         chd::dropout::DropoutCorrector corrector(d->videoParameters);
-        corrector.correctFrame(fields[startIndex], fields[startIndex + 1],
-                               d->dropoutOpts.overcorrect != 0,
-                               d->dropoutOpts.intra_field_only != 0,
-                               &stats);
+
+        std::vector<chd::dropout::ExtraSourceFrame> extras;
+        extras.reserve(d->video->extraSources.size());
+        for (auto &ex : d->video->extraSources) {
+            if (ex.metadata == nullptr || ex.source == nullptr) continue;
+            const int32_t exFrames = ex.metadata->getNumberOfFrames();
+            if (firstFrameNumber > exFrames) {
+                // Extra source ends before the primary's frame_index — skip it
+                // for this frame rather than padding with black.
+                continue;
+            }
+            const int32_t exFirst  = ex.metadata->getFirstFieldNumber(firstFrameNumber);
+            const int32_t exSecond = ex.metadata->getSecondFieldNumber(firstFrameNumber);
+
+            chd::dropout::ExtraSourceFrame esf;
+            esf.firstFieldData  = ex.source->getVideoField(exFirst);
+            esf.secondFieldData = ex.source->getVideoField(exSecond);
+            esf.firstFieldMeta  = ex.metadata->getField(exFirst);
+            esf.secondFieldMeta = ex.metadata->getField(exSecond);
+            esf.videoParams     = ex.metadata->getVideoParameters();
+            // Quality: VITS bPSNR average; synthesized CVBS metadata leaves
+            // VitsMetrics inUse=false / bPSNR=0, which is fine — the
+            // corrector still treats it as a usable extra, just without a
+            // quality-based tiebreaker.
+            esf.quality = (esf.firstFieldMeta.vitsMetrics.bPSNR
+                         + esf.secondFieldMeta.vitsMetrics.bPSNR) / 2.0;
+            extras.push_back(std::move(esf));
+        }
+
+        if (extras.empty()) {
+            corrector.correctFrame(fields[startIndex], fields[startIndex + 1],
+                                   d->dropoutOpts.overcorrect != 0,
+                                   d->dropoutOpts.intra_field_only != 0,
+                                   &stats);
+        } else {
+            corrector.correctFrame(fields[startIndex], fields[startIndex + 1],
+                                   extras,
+                                   d->dropoutOpts.overcorrect != 0,
+                                   d->dropoutOpts.intra_field_only != 0,
+                                   &stats);
+        }
     }
 
     std::vector<chd::output::ComponentFrame> componentFrames(1);
@@ -381,7 +386,7 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
         }
     }
 
-    chd::metadata::LdDecodeMetaData *meta = resolveMetadata(d);
+    chd::metadata::LdDecodeMetaData *meta = d->video->metadata.get();
     if (meta == nullptr) {
         chd::detail::set_last_error("chd_decoder_commit: failed to resolve video metadata");
         return CHD_E_METADATA_MISSING;
