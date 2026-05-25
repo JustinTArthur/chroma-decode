@@ -7,6 +7,25 @@ All notable changes to this project will be documented in this file. Format:
 ## [Unreleased]
 
 ### Added
+- Integration coverage extended to NTSC 3D + Transform PAL.
+  test_integration.cpp now drives six chd decoder kinds against
+  two encode-orc fixtures (NTSC + PAL 75 % colour bars, 3 frames each):
+    CHD_DEC_NTSC_2D            ↔ ntsc2d
+    CHD_DEC_NTSC_3D            ↔ ntsc3d
+    CHD_DEC_NTSC_3D_NO_ADAPT   ↔ ntsc3dnoadapt
+    CHD_DEC_PAL_2D             ↔ pal2d
+    CHD_DEC_TRANSFORM_2D       ↔ transform2d
+    CHD_DEC_TRANSFORM_3D       ↔ transform3d
+  The 3-frame duration is the minimum that gives 3D variants real
+  lookbehind + lookahead for the interior frame while still exercising
+  the synthetic-black boundary fallback at frames 0 and 2. Encoder
+  fixtures are built once per video standard and shared across all
+  three variants of that standard, so encode-orc invocation count is 2
+  rather than 6. 18-frame golden-frame comparison (6 variants × 3
+  frames) confirmed bit-exact against the ld-chroma-decoder f39e59e18
+  reference on every frame of every variant.
+
+### Added
 - Integration coverage extended to PAL + multi-frame:
   test_integration.cpp now parameterises its fixture spec
   (encode-orc format + asset path + chd decoder kind + legacy `-f`
