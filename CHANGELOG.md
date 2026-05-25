@@ -7,6 +7,21 @@ All notable changes to this project will be documented in this file. Format:
 ## [Unreleased]
 
 ### Added
+- Integration test driving encode-orc → chd_decode_frame end
+  to end (`tests/unit/test_integration.cpp`). When the
+  `CHD_ENCODE_ORC` env var points at a built encode-orc binary, the
+  test writes a minimal NTSC 75 % colour-bars project YAML, invokes
+  encode-orc to synthesize a one-frame TBC + sqlite sidecar, opens
+  them via `chd_video_open_composite`, commits CHD_DEC_NTSC_2D, decodes
+  frame 0, and asserts real luma + chroma energy (Y range > 30000,
+  Cb/Cr swing > 10000 straddling C_ZERO). Skips cleanly with PASS
+  when the env var is unset so `meson test` stays green on machines
+  that don't have the encoder built. Assets path can be overridden
+  via `CHD_ENCODE_ORC_ASSETS`; defaults to the sibling `assets/`
+  directory of the encode-orc binary's grandparent (matches the
+  upstream layout).
+
+### Added
 - True per-worker async parallelism: `chd_decoder_commit`
   now builds `thread_count` decoder instances (one per worker), each with
   its own `std::mutex` and configured against the same post-padding

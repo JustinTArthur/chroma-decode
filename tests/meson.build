@@ -54,6 +54,19 @@ test_dropout_corrector = executable('test_dropout_corrector',
   dependencies: [sqlite3_dep])
 test('dropout_corrector', test_dropout_corrector)
 
+# integration test driving real fixtures end-to-end through
+# the public C ABI. Skips with PASS when CHD_ENCODE_ORC env var is unset
+# (no encode-orc binary on this machine), so plain `meson test` stays
+# green; CI / a local dev with encode-orc built will exercise the
+# encode-orc → TBC → chd_decode_frame chain and assert real chroma
+# content out of the decoder.
+test_integration = executable('test_integration',
+  'unit/test_integration.cpp',
+  include_directories: [public_inc, version_inc],
+  link_with: libchromadec)
+test('integration', test_integration,
+     timeout: 120)  # encode-orc takes a couple of seconds for one frame
+
 # end-to-end C ABI decode loop (chd_decoder_create →
 # chd_decoder_set_option_* → chd_decoder_commit → chd_decode_frame →
 # chd_frame_get_plane). Links the shared lib so the test goes through the
