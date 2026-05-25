@@ -14,6 +14,7 @@ chromadec_sources = files(
   'format/video_standards.cpp',
   'metadata/core.cpp',
   'metadata/cvbs_metadata_sqlite.cpp',
+  'metadata/dropout_extension_sqlite.cpp',
   'metadata/dropouts.cpp',
   'metadata/ld_metadata_sqlite.cpp',
   'metadata/sqlite_query.cpp',

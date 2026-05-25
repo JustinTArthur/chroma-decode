@@ -12,9 +12,20 @@
 #include <iostream>
 #include <vector>
 
+#include <sqlite3.h>
+#include <unistd.h>
+
+#include <filesystem>
+
+#include <chromadec/decoder.h>
+#include <chromadec/dropout.h>
+#include <chromadec/errors.h>
+#include <chromadec/video.h>
+
 #include "../../src/dropout/dropout_corrector.h"
 #include "../../src/format/video_standards.h"
 #include "../../src/metadata/core.h"
+#include "../../src/metadata/dropout_extension_sqlite.h"
 #include "../../src/metadata/dropouts.h"
 #include "../../src/decoders/source_field.h"
 #include "../../src/reader/source.h"
@@ -212,6 +223,107 @@ int testMultiSourceCorrection() {
     return 0;
 }
 
+// Build a tiny CVBS dropouts.meta sidecar in a temp file with a handful of
+// rows that exercise the transcoder slicing logic. Returns the path; caller
+// is responsible for removing it.
+std::string writeFixtureDropoutSidecar(const std::vector<std::tuple<int32_t,int32_t,int32_t>> &rows)
+{
+    const std::string path = std::filesystem::temp_directory_path() /
+        ("chd_dropouts_test_" + std::to_string(::getpid()) + ".dropouts.meta");
+    std::filesystem::remove(path);
+    sqlite3 *db = nullptr;
+    sqlite3_open(path.c_str(), &db);
+    sqlite3_exec(db, "PRAGMA user_version = 5", nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "CREATE TABLE dropout_run ("
+        "  cvbs_file_id INTEGER NOT NULL, frame_id INTEGER NOT NULL,"
+        "  sample_start INTEGER NOT NULL, sample_count INTEGER NOT NULL,"
+        "  severity INTEGER NOT NULL DEFAULT 0,"
+        "  PRIMARY KEY (cvbs_file_id, frame_id, sample_start))",
+        nullptr, nullptr, nullptr);
+    sqlite3_stmt *ins = nullptr;
+    sqlite3_prepare_v2(db,
+        "INSERT INTO dropout_run (cvbs_file_id, frame_id, sample_start, sample_count, severity) "
+        "VALUES (1, ?, ?, ?, 50)", -1, &ins, nullptr);
+    for (const auto &r : rows) {
+        sqlite3_bind_int(ins, 1, std::get<0>(r));
+        sqlite3_bind_int(ins, 2, std::get<1>(r));
+        sqlite3_bind_int(ins, 3, std::get<2>(r));
+        sqlite3_step(ins);
+        sqlite3_reset(ins);
+    }
+    sqlite3_finalize(ins);
+    sqlite3_close(db);
+    return path;
+}
+
+int testCvbsDropoutsTranscoder() {
+    // NTSC: 910 samples per line, ~262 lines per field. A 50-sample run
+    // starting at frame line 0 (first field, line 1) stays inside one
+    // line. A 1500-sample run starting near line 2's end crosses into
+    // line 3, so it must produce two legacy DropOuts entries — first in
+    // first-field line 2, then in second-field line 2 (frame line 3 = odd
+    // → second field, line (3/2)+1 = 2).
+    const int32_t samplesPerLine = 910;
+    const int32_t linesPerField  = 262;
+    const std::string path = writeFixtureDropoutSidecar({
+        {0, 100, 50},                                  // single line, first field line 1
+        {0, samplesPerLine * 2 + 850, 200},            // crosses lines 2->3
+    });
+    auto framesOpt = chd::metadata::readCvbsDropoutsExtension(path, 1, samplesPerLine, linesPerField);
+    std::filesystem::remove(path);
+
+    REQUIRE(framesOpt.has_value());
+    REQUIRE(framesOpt->size() == 1);
+
+    const chd::metadata::FrameDropouts &fd = (*framesOpt)[0];
+    REQUIRE(fd.frameIndex == 0);
+
+    // First-field accumulators: row 1's slice (line 1) plus the first
+    // half of row 2's slice (frame line 2 → first field, line 2).
+    REQUIRE(fd.firstField.size() == 2);
+    REQUIRE(fd.firstField.startx(0) == 100);
+    REQUIRE(fd.firstField.endx(0) == 150);
+    REQUIRE(fd.firstField.fieldLine(0) == 1);
+    REQUIRE(fd.firstField.startx(1) == 850);
+    REQUIRE(fd.firstField.endx(1) == samplesPerLine);
+    REQUIRE(fd.firstField.fieldLine(1) == 2);
+
+    // Second-field accumulator: the spillover from row 2 (frame line 3 →
+    // second field, line 2), starting at sample 0 of that line.
+    REQUIRE(fd.secondField.size() == 1);
+    REQUIRE(fd.secondField.startx(0) == 0);
+    REQUIRE(fd.secondField.endx(0) == 140);  // (samplesPerLine * 2 + 850 + 200) - samplesPerLine * 3 = 140
+    REQUIRE(fd.secondField.fieldLine(0) == 2);
+    return 0;
+}
+
+int testDropoutAbiNullArgs() {
+    // C ABI surface: set/get reject null and accept a valid handle.
+    chd_dropout_opts_t opts{};
+    opts.enabled = 1;
+    REQUIRE(chd_decoder_set_dropout(nullptr, &opts) == CHD_E_INVALID_ARG);
+    chd_dropout_stats_t stats{};
+    REQUIRE(chd_decoder_get_last_dropout_stats(nullptr, &stats) == CHD_E_INVALID_ARG);
+    return 0;
+}
+
+int testCvbsDropoutsWrongVersionRejected() {
+    // Sidecars with the wrong user_version are rejected, not silently
+    // misinterpreted (spec consumer requirement 3 implies this).
+    const std::string path = std::filesystem::temp_directory_path() /
+        ("chd_dropouts_bad_" + std::to_string(::getpid()) + ".dropouts.meta");
+    std::filesystem::remove(path);
+    sqlite3 *db = nullptr;
+    sqlite3_open(path.c_str(), &db);
+    sqlite3_exec(db, "PRAGMA user_version = 99", nullptr, nullptr, nullptr);
+    sqlite3_close(db);
+    auto framesOpt = chd::metadata::readCvbsDropoutsExtension(path, 1, 910, 262);
+    std::filesystem::remove(path);
+    REQUIRE(!framesOpt.has_value());
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -219,6 +331,9 @@ int main() {
     if (testIntraFieldFallback()) return 1;
     if (testNoDropoutsIsNoOp()) return 1;
     if (testMultiSourceCorrection()) return 1;
+    if (testCvbsDropoutsTranscoder()) return 1;
+    if (testCvbsDropoutsWrongVersionRejected()) return 1;
+    if (testDropoutAbiNullArgs()) return 1;
     std::cout << "test_dropout_corrector: OK\n";
     return 0;
 }

@@ -16,6 +16,9 @@
 #include <string>
 #include <vector>
 
+#include <chromadec/decoder.h>
+#include <chromadec/dropout.h>
+
 #include "../metadata/core.h"
 #include "../reader/source.h"
 
@@ -32,6 +35,22 @@ struct chd_video {
     std::unique_ptr<chd::reader::ISource> source;
     std::string tbcPath;
     std::vector<std::unique_ptr<chd::reader::ISource>> extraSources;
+};
+
+// chd_decoder is intentionally minimal here: the actual decoder
+// pipeline lives in C++ internals (chd::pipeline::DecoderPool +
+// chd::decoders::*) and the ABI wrappers chd_decoder_commit /
+// chd_decode_frame stay stubbed for now. The handle still gets
+// allocated by chd_decoder_create so the dropout-option setters can
+// store caller-supplied config + return last-frame stats by handle.
+struct chd_decoder {
+    chd_video_t *video = nullptr;        // non-owning back-pointer
+    chd_decoder_kind_t kind = CHD_DEC_AUTO;
+
+    bool dropoutOptsSet = false;
+    chd_dropout_opts_t dropoutOpts{};
+
+    chd_dropout_stats_t lastDropoutStats{};
 };
 
 #if defined(CHD_WITH_NN)
