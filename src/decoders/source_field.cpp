@@ -25,11 +25,11 @@
 
 #include "source_field.h"
 
-#include "../reader/tbc_source.h"
+#include "../reader/source.h"
 
 namespace chd::decoders {
 
-void SourceField::loadFields(chd::reader::SourceVideo &sourceVideo, chd::metadata::LdDecodeMetaData &ldDecodeMetaData,
+void SourceField::loadFields(chd::reader::ISource &sourceVideo, chd::metadata::LdDecodeMetaData &ldDecodeMetaData,
                              int32_t firstFrameNumber, int32_t numFrames,
                              int32_t lookBehindFrames, int32_t lookAheadFrames,
                              std::vector<SourceField> &fields, int32_t &startIndex, int32_t &endIndex)

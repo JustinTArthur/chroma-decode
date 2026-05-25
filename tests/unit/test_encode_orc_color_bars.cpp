@@ -7,7 +7,7 @@
 //
 // In both modes the test verifies that DecoderPool produces a YUV444P16
 // output file of the expected size, exercising the full
-// SourceVideo -> SourceField -> Decoder -> ComponentFrame -> OutputWriter
+// TbcSource -> SourceField -> Decoder -> ComponentFrame -> OutputWriter
 // pipeline. The encode-orc mode additionally checks that the first frame
 // has non-trivial chroma content (sanity check that the decoder is doing
 // something — a black frame would be all zeros in Cb/Cr).

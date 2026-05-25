@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "../metadata/core.h"
+#include "../reader/source.h"
 #include "../reader/tbc_source.h"
 
 #include "../decoders/decoder_base.h"
@@ -116,7 +117,7 @@ private:
     int32_t inputFrameNumber;
     int32_t lastFrameNumber;
     chd::metadata::LdDecodeMetaData &ldDecodeMetaData;
-    chd::reader::SourceVideo sourceVideo;
+    chd::reader::TbcSource sourceVideo;
 
     // Output stream information (all guarded by outputMutex while threads are running)
     std::mutex outputMutex;

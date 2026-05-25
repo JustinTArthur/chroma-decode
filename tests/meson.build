@@ -23,3 +23,22 @@ test_encode_orc_color_bars = executable('test_encode_orc_color_bars',
   link_with: libchromadec.get_static_lib(),
   dependencies: [sqlite3_dep, threads_dep, fftw3_dep])
 test('encode_orc_color_bars', test_encode_orc_color_bars)
+
+# format/ DATA-table sanity tests (preset lookup, sample
+# conversion, signal-state mappings). Links the static lib because the
+# format/ symbols are internal — the C ABI only exposes chd_* names.
+test_format_presets = executable('test_format_presets',
+  'unit/test_format_presets.cpp',
+  include_directories: [public_inc, version_inc],
+  link_with: libchromadec.get_static_lib())
+test('format_presets', test_format_presets)
+
+# CVBS reader end-to-end smoke tests. Uses the C ABI's
+# chd_video_open_cvbs_* entry points + reaches into the internal
+# CvbsCompositeSource / CvbsYcSource for sample-level assertions.
+test_cvbs_reader = executable('test_cvbs_reader',
+  'unit/test_cvbs_reader.cpp',
+  include_directories: [public_inc, version_inc],
+  link_with: libchromadec.get_static_lib(),
+  dependencies: [sqlite3_dep])
+test('cvbs_reader', test_cvbs_reader)

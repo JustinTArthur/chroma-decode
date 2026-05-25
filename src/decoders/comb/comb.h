@@ -35,7 +35,7 @@
 #include "../../metadata/core.h"
 
 #include "../../output/component_frame.h"
-#include "../../reader/tbc_source.h"
+#include "../../reader/source.h"
 #include "../decoder_base.h"
 #include "../source_field.h"
 
@@ -124,7 +124,7 @@ private:
         double irescale;
 
         // Baseband samples (interlaced to form a complete frame)
-        chd::reader::SourceVideo::Data rawbuffer;
+        chd::reader::Data rawbuffer;
 
         // Chroma phase of the frame's two fields
         int32_t firstFieldPhaseID;

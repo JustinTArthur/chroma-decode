@@ -28,39 +28,52 @@
 
 #include <cstdint>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "../format/sample_encoding.h"
+#include "../format/signal_state.h"
+#include "../metadata/core.h"
+#include "source.h"
+
 namespace chd::reader {
 
-class SourceVideo
+class TbcSource : public ISource
 {
 public:
     // A vector of timebase-corrected video samples.
     // This is usually a complete field, but it may be a partial field if
     // you've requested fewer lines from getVideoField (or if you've sliced it
     // yourself).
-    using Data = std::vector<uint16_t>;
+    using Data = chd::reader::Data;
 
-    SourceVideo();
-    ~SourceVideo();
-
-    // Prevent copying or assignment
-    SourceVideo(const SourceVideo &) = delete;
-    SourceVideo& operator=(const SourceVideo &) = delete;
+    TbcSource();
+    ~TbcSource() override;
 
     // File handling methods
     bool open(std::string filename, int32_t _fieldLength, int32_t _fieldLineLength = -1);
     void close(void);
 
-    // Field handling methods
-    Data getVideoField(int32_t fieldNumber, int32_t startFieldLine = -1, int32_t endFieldLine = -1);
+    // Bind a VideoParameters reference that outlives the source. Required
+    // before parameters() may be called. The metadata is owned by the
+    // chd_video handle in the C ABI layer; the source holds only a
+    // non-owning pointer.
+    void bindVideoParameters(const chd::metadata::LdDecodeMetaData::VideoParameters &vp);
 
-    // Get and set methods
-    bool isSourceValid();
-    int32_t getNumberOfAvailableFields();
-    int32_t getFieldLength();
+    // ISource implementation -------------------------------------------------
+    const chd::metadata::LdDecodeMetaData::VideoParameters &parameters() const override;
+    chd::format::SignalState     signalState()    const override;
+    chd::format::SampleEncoding  sampleEncoding() const override;
+
+    bool isSourceValid() const override;
+    int32_t getNumberOfAvailableFields() const override;
+    int32_t getFieldLength() const override;
+
+    Data getVideoField(int32_t fieldNumber,
+                       int32_t startFieldLine = -1,
+                       int32_t endFieldLine = -1) override;
 
 private:
     // File handling globals
@@ -76,6 +89,15 @@ private:
 
     // Field caching
     std::unordered_map<int32_t, Data> fieldCache;
+
+    // Serialises I/O + cache access so concurrent getVideoField() calls from
+    // different worker threads are race-free. The legacy
+    // SourceVideo was single-threaded; this widens the contract.
+    mutable std::mutex ioMutex;
+
+    // Non-owning pointer to the VideoParameters bound via
+    // bindVideoParameters(). The C ABI's chd_video handle owns the metadata.
+    const chd::metadata::LdDecodeMetaData::VideoParameters *boundParameters = nullptr;
 };
 
 }  // namespace chd::reader

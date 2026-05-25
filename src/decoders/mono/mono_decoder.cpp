@@ -66,7 +66,7 @@ void MonoDecoder::decodeFrames(const std::vector<chd::decoders::SourceField>& in
 	for (int32_t fieldIndex = startIndex, frameIndex = 0; fieldIndex < endIndex; fieldIndex += 2, frameIndex++) {
 		componentFrames[frameIndex].init(videoParameters, ignoreUV);
 		for (int32_t y = videoParameters.firstActiveFrameLine; y < videoParameters.lastActiveFrameLine; y++) {
-			const chd::reader::SourceVideo::Data &inputFieldData = (y % 2) == 0 ? inputFields[fieldIndex].data :inputFields[fieldIndex+1].data;
+			const chd::reader::Data &inputFieldData = (y % 2) == 0 ? inputFields[fieldIndex].data :inputFields[fieldIndex+1].data;
 			const uint16_t *inputLine = inputFieldData.data() + ((y / 2) * videoParameters.fieldWidth);
 
 			// Copy the whole composite signal to Y (leaving U and V blank)

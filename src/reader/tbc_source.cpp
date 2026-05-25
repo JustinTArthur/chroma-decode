@@ -33,7 +33,7 @@
 namespace chd::reader {
 
 // Class constructor
-SourceVideo::SourceVideo()
+TbcSource::TbcSource()
 {
     // Default object settings
     isSourceVideoOpen = false;
@@ -44,7 +44,7 @@ SourceVideo::SourceVideo()
     fieldLineLength = -1;
 }
 
-SourceVideo::~SourceVideo()
+TbcSource::~TbcSource()
 {
     if (isSourceVideoOpen) inputFile.close();
 }
@@ -53,14 +53,14 @@ SourceVideo::~SourceVideo()
 
 // Open an input video data file. If filename is "-", read from stdin.
 // Returns true on success.
-bool SourceVideo::open(std::string filename, int32_t _fieldLength, int32_t _fieldLineLength)
+bool TbcSource::open(std::string filename, int32_t _fieldLength, int32_t _fieldLineLength)
 {
     fieldLength = _fieldLength;
     fieldByteLength = _fieldLength * 2;
     if (_fieldLineLength != -1) {
         fieldLineLength = _fieldLineLength * 2;
     } else fieldLineLength = -1;
-    chd::log::debug() << "SourceVideo::open(): Called with field byte length =" << fieldByteLength;
+    chd::log::debug() << "TbcSource::open(): Called with field byte length =" << fieldByteLength;
 
     if (isSourceVideoOpen) {
         // Video file is already open, close it
@@ -88,7 +88,7 @@ bool SourceVideo::open(std::string filename, int32_t _fieldLength, int32_t _fiel
         inputFile.seekg(0, std::ios::beg);
         int64_t tAvailableFields = (fileSize / fieldByteLength);
         availableFields = static_cast<int32_t>(tAvailableFields);
-        chd::log::debug() << "SourceVideo::open(): Successful -" << availableFields << "fields available";
+        chd::log::debug() << "TbcSource::open(): Successful -" << availableFields << "fields available";
     }
 
     // Initialise cache
@@ -101,46 +101,87 @@ bool SourceVideo::open(std::string filename, int32_t _fieldLength, int32_t _fiel
 }
 
 // Close an input video data file
-void SourceVideo::close()
+void TbcSource::close()
 {
     if (!isSourceVideoOpen) {
-        chd::log::debug() << "SourceVideo::close(): Called but no source video input file is open";
+        chd::log::debug() << "TbcSource::close(): Called but no source video input file is open";
         return;
     }
 
-    chd::log::debug() << "SourceVideo::close(): Called, closing the source video file and emptying the frame cache";
+    chd::log::debug() << "TbcSource::close(): Called, closing the source video file and emptying the frame cache";
     inputFile.close();
     isSourceVideoOpen = false;
     inputFilePos = -1;
 
-    chd::log::debug() << "SourceVideo::close(): Source video input file closed";
+    chd::log::debug() << "TbcSource::close(): Source video input file closed";
 }
 
 // Get the validity of the source video file
-bool SourceVideo::isSourceValid()
+bool TbcSource::isSourceValid() const
 {
     return isSourceVideoOpen;
 }
 
 // Get the number of fields available from the source video file.
 // Returns -1 if the length is unknown (e.g. we're reading from stdin).
-int32_t SourceVideo::getNumberOfAvailableFields()
+int32_t TbcSource::getNumberOfAvailableFields() const
 {
     return availableFields;
 }
 
 // Get the number of samples in a field
-int32_t SourceVideo::getFieldLength()
+int32_t TbcSource::getFieldLength() const
 {
     return fieldLength;
+}
+
+// Bind the VideoParameters owned by the C ABI's chd_video handle so
+// parameters() can return them. The pointer is non-owning and must outlive
+// this source.
+void TbcSource::bindVideoParameters(const chd::metadata::LdDecodeMetaData::VideoParameters &vp)
+{
+    boundParameters = &vp;
+}
+
+const chd::metadata::LdDecodeMetaData::VideoParameters &TbcSource::parameters() const
+{
+    if (boundParameters == nullptr) {
+        throw std::runtime_error("TbcSource::parameters(): called before bindVideoParameters()");
+    }
+    return *boundParameters;
+}
+
+chd::format::SignalState TbcSource::signalState() const
+{
+    // TBC files always have time-base correction applied (that's what
+    // .tbc means). The subcarrier-locked flag is recorded per-capture in the
+    // sqlite/json sidecar.
+    if (boundParameters != nullptr && boundParameters->isSubcarrierLocked) {
+        return chd::format::SignalState::STANDARD_TBC_LOCKED;
+    }
+    return chd::format::SignalState::STANDARD_TBC_UNLOCKED;
+}
+
+chd::format::SampleEncoding TbcSource::sampleEncoding() const
+{
+    // The .tbc on-disk format stores 10-bit values shifted left 6
+    // bits in unsigned 16-bit words — i.e. exactly the CVBS_U16_4FSC sample
+    // encoding from the CVBS spec.
+    return chd::format::SampleEncoding::CVBS_U16_4FSC;
 }
 
 // Frame data retrieval methods ---------------------------------------------------------------------------------------
 
 // Method to retrieve a range of field lines from a single video field.
 // If startFieldLine and endFieldLine are both -1, read the whole field.
-SourceVideo::Data SourceVideo::getVideoField(int32_t fieldNumber, int32_t startFieldLine, int32_t endFieldLine)
+TbcSource::Data TbcSource::getVideoField(int32_t fieldNumber, int32_t startFieldLine, int32_t endFieldLine)
 {
+    // Serialise concurrent access from worker threads. The whole
+    // body — seek, read, cache lookup/insert, scratch-buffer reuse — sits
+    // under one mutex; the cost is acceptable and avoids the
+    // sharded-cache complexity a more advanced design would need.
+    std::lock_guard<std::mutex> lock(ioMutex);
+
     // Adjust the field number to index from zero
     fieldNumber--;
 

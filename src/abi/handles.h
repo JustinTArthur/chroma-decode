@@ -17,13 +17,13 @@
 #include <vector>
 
 #include "../metadata/core.h"
-#include "../reader/tbc_source.h"
+#include "../reader/source.h"
 
 extern "C" {
 struct chd_video {
     std::unique_ptr<chd::metadata::LdDecodeMetaData> metadata;
-    std::unique_ptr<chd::reader::SourceVideo> source;
+    std::unique_ptr<chd::reader::ISource> source;
     std::string tbcPath;
-    std::vector<std::unique_ptr<chd::reader::SourceVideo>> extraSources;
+    std::vector<std::unique_ptr<chd::reader::ISource>> extraSources;
 };
 }  // extern "C"

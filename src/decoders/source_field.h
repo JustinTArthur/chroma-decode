@@ -30,20 +30,20 @@
 #include <vector>
 
 #include "../metadata/core.h"
-#include "../reader/tbc_source.h"
+#include "../reader/source.h"
 
 namespace chd::decoders {
 
 // A field read from the input, with metadata and data
 struct SourceField {
     chd::metadata::LdDecodeMetaData::Field field;
-    chd::reader::SourceVideo::Data data;
+    chd::reader::Data data;
 
     // Load a sequence of frames from the input files.
     //
     // fields will contain {lookbehind fields... [startIndex] real fields... [endIndex] lookahead fields...}.
     // Fields requested outside the bounds of the file will have dummy metadata and black data.
-    static void loadFields(chd::reader::SourceVideo &sourceVideo, chd::metadata::LdDecodeMetaData &ldDecodeMetaData,
+    static void loadFields(chd::reader::ISource &sourceVideo, chd::metadata::LdDecodeMetaData &ldDecodeMetaData,
                            int32_t firstFrameNumber, int32_t numFrames,
                            int32_t lookBehindFrames, int32_t lookAheadFrames,
                            std::vector<SourceField> &fields, int32_t &startIndex, int32_t &endIndex);

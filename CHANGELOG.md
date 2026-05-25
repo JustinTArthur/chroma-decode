@@ -14,9 +14,27 @@ All notable changes to this project will be documented in this file. Format:
 - TBC metadata reader and source video reader, built on the C++17
   standard library and `sqlite3` instead of Qt:
   `chd::metadata::LdDecodeMetaData`, `DropOuts`,
-  `SqliteReader`/`SqliteWriter`, `chd::reader::SourceVideo`. The C
-  ABI exposes `chd_video_open_composite`, `chd_video_get_info`,
+  `SqliteReader`/`SqliteWriter`, `chd::reader::TbcSource` (renamed
+  from `SourceVideo`). The C ABI exposes
+  `chd_video_open_composite`, `chd_video_get_info`,
   `chd_video_add_extra_source_composite`, `chd_video_free`.
+- CVBS file format support (CVBS file format specification, SQLite
+  `user_version = 7`): `chd::reader::ISource` abstract field-reader
+  interface with three concrete implementations: `TbcSource` (`.tbc`), `chd::reader::CvbsCompositeSource` (`.composite`),
+  `chd::reader::CvbsYcSource` (dual-file `.y` + `.c`). Static preset
+  tables for the three Video Standards (PAL, NTSC, PAL_M), five
+  Sample Encodings (`CVBS_U10_4FSC`, `CVBS_U16_4FSC`,
+  `CVBS_TPG21_4FSC`, `RAW_S16_28M`, `RAW_S16_40M`), and six Signal
+  States in `src/format/`. CVBS `.meta` sidecar reader at
+  `chd::metadata::readCvbsMetadata`. The C ABI exposes
+  `chd_video_open_composite`, `chd_video_open_yc`,
+  `chd_video_add_extra_source_composite`,
+  `chd_video_add_extra_source_yc`. Parameter resolution chain:
+  explicit `meta_path` → auto-located `<basename>.meta` →
+  caller-supplied `chd_video_params_t` → `CHD_E_METADATA_MISSING`.
+- Per-source mutex on `TbcSource::getVideoField` and the new CVBS
+  source classes so concurrent field reads from worker threads are
+  race-free.
 - Decoder framework: `chd::decoders::Decoder` synchronous interface,
   `SourceField` data container, `chd::output::ComponentFrame` and
   `chd::output::OutputWriter`. Filter library
