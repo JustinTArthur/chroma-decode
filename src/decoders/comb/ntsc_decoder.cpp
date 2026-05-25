@@ -29,6 +29,10 @@
 
 #include "../../common/log.h"
 
+#if defined(CHD_WITH_NN)
+#include "../../nn/ort_session.h"
+#endif
+
 namespace chd::decoders::comb {
 
 NtscDecoder::NtscDecoder(const Comb::Configuration &combConfig)
@@ -68,5 +72,12 @@ void NtscDecoder::decodeFrames(const std::vector<chd::decoders::SourceField> &in
     // Decode fields to frames
     comb.decodeFrames(inputFields, startIndex, endIndex, componentFrames);
 }
+
+#if defined(CHD_WITH_NN)
+void NtscDecoder::setNnModel(std::shared_ptr<chd::nn::OrtSession> session)
+{
+    comb.setNnModel(std::move(session));
+}
+#endif
 
 }  // namespace chd::decoders::comb

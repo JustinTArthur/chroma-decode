@@ -46,6 +46,12 @@ if has_nn
     'nn/ort_env.cpp',
     'nn/ort_session.cpp',
     'nn/provider_select.cpp',
+    # nnTransform3D decoder (FFT helpers + window). The
+    # split3DnnTransform algorithm itself lives in comb.cpp behind a
+    # CHD_WITH_NN guard, so it gets pulled in via the existing comb
+    # sources without listing it separately here.
+    'decoders/nntransform3d/nntransform3d_fft_cpu.cpp',
+    'decoders/nntransform3d/nntransform3d_window.cpp',
   )
   chromadec_deps += [ort_dep]
   chromadec_cpp_args += ['-DCHD_WITH_NN=1']

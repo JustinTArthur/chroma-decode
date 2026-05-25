@@ -52,3 +52,21 @@ test_nn_framework = executable('test_nn_framework',
   include_directories: [public_inc, version_inc],
   link_with: libchromadec)
 test('nn_framework', test_nn_framework)
+
+# nnTransform3D wiring smoke test. Links the static lib for
+# internal-header access (Comb::Configuration, NtscDecoder::setNnModel,
+# chd::nn::OrtSession). When with_nn=true and a chroma_net.onnx is
+# discoverable at one of the well-known paths, it also constructs a real
+# session and binds it.
+if has_nn
+  test_nntransform3d = executable('test_nntransform3d',
+    'unit/test_nntransform3d.cpp',
+    include_directories: [public_inc, version_inc],
+    # CHD_WITH_NN matches the library build flag so the internal headers'
+    # nn-gated methods (Comb::setNnModel, NtscDecoder::setNnModel) are
+    # visible to the test.
+    cpp_args: ['-DCHD_WITH_NN=1'],
+    link_with: libchromadec.get_static_lib(),
+    dependencies: [ort_dep, threads_dep, fftw3_dep, sqlite3_dep])
+  test('nntransform3d', test_nntransform3d)
+endif

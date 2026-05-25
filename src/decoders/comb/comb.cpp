@@ -35,11 +35,21 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <map>
 #include <memory>
 #include <utility>
 #include <vector>
 
 #include "../../common/log.h"
+
+#if defined(CHD_WITH_NN)
+#include <onnxruntime_cxx_api.h>
+
+#include "../../nn/ort_session.h"
+#include "../nntransform3d/nntransform3d_fft_cpu.h"
+#include "../nntransform3d/nntransform3d_window.h"
+#endif
 
 namespace chd::decoders::comb {
 
@@ -111,7 +121,10 @@ int32_t Comb::Configuration::getLookBehind() const {
 int32_t Comb::Configuration::getLookAhead() const {
     if (dimensions == 3) {
         // ... and also the next frame
-        return 1;
+        // nnTransform3D walks tiles that span the frame boundary, so it
+        // needs one *additional* future frame for the overlap-add buffer
+        // to land in.
+        return nnTransform3D ? 2 : 1;
     }
 
     return 0;
@@ -147,11 +160,84 @@ void Comb::updateConfiguration(const chd::metadata::LdDecodeMetaData::VideoParam
     configurationSet = true;
 }
 
+#if defined(CHD_WITH_NN)
+void Comb::setNnModel(std::shared_ptr<chd::nn::OrtSession> session)
+{
+    nnSession = std::move(session);
+}
+#endif
+
 void Comb::decodeFrames(const std::vector<chd::decoders::SourceField> &inputFields, int32_t startIndex, int32_t endIndex,
                         std::vector<chd::output::ComponentFrame> &componentFrames)
 {
     assert(configurationSet);
     assert((componentFrames.size() * 2) == (endIndex - startIndex));
+
+#if defined(CHD_WITH_NN)
+    // nnTransform3D path (asdfqazsnbb / harrypm, ported from tbc-tools'
+    // Comb::decodeFrames). Uses a per-frame FrameBuffer map so each
+    // frame's split1D/split2D run once even when it's referenced as
+    // "current" and then "next" across consecutive iterations.
+    if (configuration.dimensions == 3 && configuration.nnTransform3D) {
+        std::map<int32_t, std::shared_ptr<FrameBuffer>> frameBuffers;
+        const int32_t frameCount = (endIndex - startIndex) / 2;
+
+        auto getFrameBuffer = [&](int32_t frameIndex) -> std::shared_ptr<FrameBuffer> {
+            auto existing = frameBuffers.find(frameIndex);
+            if (existing != frameBuffers.end()) return existing->second;
+
+            auto frameBuffer = std::make_shared<FrameBuffer>(videoParameters, configuration);
+            const int32_t fieldIndex = startIndex + (frameIndex * 2);
+            if (fieldIndex >= 0 && (fieldIndex + 1) < static_cast<int32_t>(inputFields.size())) {
+                frameBuffer->loadFields(inputFields[fieldIndex], inputFields[fieldIndex + 1]);
+                frameBuffer->split1D();
+                frameBuffer->split2D();
+            }
+            frameBuffers[frameIndex] = frameBuffer;
+            return frameBuffer;
+        };
+
+        for (int32_t frameIndex = 0; frameIndex < frameCount; frameIndex++) {
+            auto currentFrameBuffer = getFrameBuffer(frameIndex);
+            auto nextFrameBuffer    = getFrameBuffer(frameIndex + 1);
+
+            bool nnCompleted = false;
+            if (nnSession != nullptr) {
+                nnCompleted = currentFrameBuffer->split3DnnTransform(
+                    *nextFrameBuffer, *nnSession, nnRunMutex,
+                    configuration.nnInputMagnitudeScale);
+            } else {
+                static std::once_flag noSessionWarnedOnce;
+                std::call_once(noSessionWarnedOnce, []() {
+                    chd::log::warn() << "nnTransform3D enabled but no NN session bound; falling back to 2D chroma";
+                });
+            }
+
+            componentFrames[frameIndex].init(videoParameters);
+            currentFrameBuffer->setComponentFrame(componentFrames[frameIndex]);
+            currentFrameBuffer->copyRawToLuma();
+            if (nnCompleted) {
+                currentFrameBuffer->finalizeNnTransform3D();
+            } else {
+                currentFrameBuffer->fallbackNnTransform3DTo2D();
+            }
+
+            if (configuration.phaseCompensation) {
+                currentFrameBuffer->splitIQlocked();
+            } else {
+                currentFrameBuffer->splitIQ();
+                currentFrameBuffer->adjustY();
+            }
+            currentFrameBuffer->filterIQ();
+            currentFrameBuffer->doCNR();
+            currentFrameBuffer->doYNR();
+            currentFrameBuffer->transformIQ(configuration.chromaGain, configuration.chromaPhase);
+
+            frameBuffers.erase(frameIndex);
+        }
+        return;
+    }
+#endif  // CHD_WITH_NN
 
     // Buffers for the next, current and previous frame.
     // Because we only need three of these, we allocate them upfront then
@@ -875,5 +961,300 @@ void Comb::FrameBuffer::overlayMap(const FrameBuffer &previousFrame, const Frame
         }
     }
 }
+
+// ─── copyRawToLuma ────────────────────────────────────────────────────────────
+// Copy raw baseband samples into the component frame's Y plane. The
+// classical chd::decoders::comb path folds this into splitIQ (line 626 in
+// the splitIQ for-loop assigns `Y[h] = line[h]`); the nnTransform3D path
+// needs an explicit copy because it doesn't go through that splitIQ branch
+// the same way.
+void Comb::FrameBuffer::copyRawToLuma()
+{
+    if (componentFrame == nullptr) return;
+
+    const int32_t width = videoParameters.fieldWidth;
+    for (int32_t lineNumber = 0; lineNumber < frameHeight; lineNumber++) {
+        const uint16_t *inLine = rawbuffer.data() + (lineNumber * width);
+        double *outLine = componentFrame->y(lineNumber);
+        for (int32_t h = 0; h < width; h++) {
+            outLine[h] = inLine[h];
+        }
+    }
+}
+
+#if defined(CHD_WITH_NN)
+
+namespace {
+// Index into the 3D tile buffer used by split3DnnTransform.
+inline int32_t IDX3(int32_t t, int32_t y, int32_t x, int32_t Nt, int32_t Ny, int32_t Nx) {
+    (void)Nt;
+    return (t * Ny * Nx) + (y * Nx) + x;
+}
+}  // namespace
+
+// ─── split3DnnTransform ──────────────────────────────────────────────────────
+//
+// Per-tile 3D-FFT + CNN-mask + IFFT chroma extraction.
+// Ported from tbc-tools' Comb::FrameBuffer::split3DnnTransform.
+// Algorithm + model: asdfqazsnbb (originally Discord-distributed).
+// Public integration: harrypm (tbc-tools, first to land in a public repo).
+//
+// Departures from the tbc-tools source:
+//   - Session injected via reference (chd::nn::OrtSession), not loaded
+//     from embedded model bytes via std::call_once. The OrtEnvSingleton
+//     in src/nn/ort_env.h owns the Ort::Env.
+//   - In-loop QCoreApplication::processEvents removed (no Qt event loop).
+//   - Cancellation atomic removed; chd_cancel_t support lands later.
+//   - FFTW plans + sine windows come from
+//     chd::decoders::nntransform3d::{getThreadLocalCpuPlans,
+//     getSineWindows} rather than thread_local statics inline.
+bool Comb::FrameBuffer::split3DnnTransform(FrameBuffer &nextFrame,
+                                           chd::nn::OrtSession &session,
+                                           std::mutex &runMutex,
+                                           double inputMagnitudeScale)
+{
+    using nntransform3d::kNt;
+    using nntransform3d::kNy;
+    using nntransform3d::kNx;
+    using nntransform3d::kStepX;
+    using nntransform3d::kStepY;
+
+    // Lazy-allocate the overlap-add accumulators on both this frame and
+    // the next frame. Sized frameHeight × fieldWidth.
+    auto ensureNnBuffers = [this](FrameBuffer &fb) {
+        const size_t width = static_cast<size_t>(videoParameters.fieldWidth);
+        const size_t height = static_cast<size_t>(frameHeight);
+        if (fb.nnAccChroma.size() != height) {
+            fb.nnAccChroma.assign(height, std::vector<double>(width, 0.0));
+        }
+        if (fb.nnWeightSum.size() != height) {
+            fb.nnWeightSum.assign(height, std::vector<double>(width, 0.0));
+        }
+    };
+    ensureNnBuffers(*this);
+    ensureNnBuffers(nextFrame);
+
+    auto &plans = nntransform3d::getThreadLocalCpuPlans();
+    if (plans.forward == nullptr || plans.inverse == nullptr) {
+        chd::log::error() << "nnTransform3D: failed to acquire FFTW plans; falling back to 2D";
+        return false;
+    }
+    const auto &windows = nntransform3d::getSineWindows();
+    const double *winX = windows.x;
+    const double *winY = windows.y;
+    const double *winT = windows.t;
+
+    // Per-call tile scratch buffers — thread_local so concurrent worker
+    // threads don't fight over them.
+    static thread_local fftw_complex tileInput[kNt * kNy * kNx];
+    static thread_local fftw_complex tileSpectrum[kNt * kNy * kNx];
+    static thread_local float modelInput[2 * kNt * kNy * kNx];
+    static thread_local float magnitudes[kNt * kNy * kNx];
+    static thread_local Ort::MemoryInfo modelMemoryInfo =
+        Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    auto *in = tileInput;
+    auto *out = tileSpectrum;
+
+    FrameBuffer *frames[2] = { this, &nextFrame };
+
+    const int32_t startY = videoParameters.firstActiveFrameLine - (kNy / 2);
+    const int32_t endY   = videoParameters.lastActiveFrameLine;
+    const int32_t startX = videoParameters.activeVideoStart - (kNx / 2);
+    const int32_t endX   = videoParameters.activeVideoEnd;
+
+    for (int32_t y = startY; y < endY; y += kStepY) {
+        for (int32_t x = startX; x < endX; x += kStepX) {
+            std::memset(in, 0, sizeof(fftw_complex) * kNt * kNy * kNx);
+
+            // Pass 1: fill the tile from this+next frame's rawbuffer,
+            // tracking the per-block DC for subtraction in pass 2.
+            double blockDc = 0.0;
+            int32_t sampleCount = 0;
+
+            for (int32_t frameOffset = 0; frameOffset < 2; frameOffset++) {
+                for (int32_t subField = 0; subField < 2; subField++) {
+                    const int32_t t = (frameOffset * 2) + subField;
+                    const bool oddField = (t % 2) != 0;
+
+                    for (int32_t dy = 0; dy < kNy; dy++) {
+                        const int32_t absY = y + dy;
+                        const bool yActive = absY >= videoParameters.firstActiveFrameLine
+                                             && absY < videoParameters.lastActiveFrameLine;
+                        const bool oddLine = (absY % 2) != 0;
+                        if (!yActive || (oddLine != oddField)) continue;
+
+                        const uint16_t *lineData = frames[frameOffset]->rawbuffer.data()
+                                                   + (absY * videoParameters.fieldWidth);
+                        for (int32_t dx = 0; dx < kNx; dx++) {
+                            const int32_t absX = x + dx;
+                            const bool xActive = absX >= videoParameters.activeVideoStart
+                                                 && absX < videoParameters.activeVideoEnd;
+                            if (!xActive) continue;
+
+                            const int32_t index = IDX3(t, dy, dx, kNt, kNy, kNx);
+                            const double value = static_cast<double>(lineData[absX]);
+                            in[index][0] = value;
+                            in[index][1] = 0.0;
+                            blockDc += value;
+                            sampleCount++;
+                        }
+                    }
+                }
+            }
+
+            if (sampleCount == 0) continue;
+            blockDc /= static_cast<double>(sampleCount);
+
+            // Pass 2: DC-subtract + window + zero out inactive samples.
+            for (int32_t t = 0; t < kNt; t++) {
+                const bool oddField = (t % 2) != 0;
+                for (int32_t dy = 0; dy < kNy; dy++) {
+                    const int32_t absY = y + dy;
+                    const bool yActive = absY >= videoParameters.firstActiveFrameLine
+                                         && absY < videoParameters.lastActiveFrameLine;
+                    const bool oddLine = (absY % 2) != 0;
+                    for (int32_t dx = 0; dx < kNx; dx++) {
+                        const int32_t absX = x + dx;
+                        const bool xActive = absX >= videoParameters.activeVideoStart
+                                             && absX < videoParameters.activeVideoEnd;
+                        const int32_t index = IDX3(t, dy, dx, kNt, kNy, kNx);
+
+                        if (yActive && xActive && (oddLine == oddField)) {
+                            in[index][0] = (in[index][0] - blockDc) * winT[t] * winY[dy] * winX[dx];
+                        } else {
+                            in[index][0] = 0.0;
+                            in[index][1] = 0.0;
+                        }
+                    }
+                }
+            }
+
+            fftw_execute_dft(plans.forward, in, out);
+
+            // CNN input: stack the magnitudes + a centro-symmetric
+            // reflection so the model sees both phase polarities.
+            for (int32_t i = 0; i < kNt * kNy * kNx; i++) {
+                magnitudes[i] = std::sqrt(static_cast<float>(
+                    (out[i][0] * out[i][0]) + (out[i][1] * out[i][1])));
+            }
+            // Scale by 1/inputMagnitudeScale to match the model's training
+            // normalisation (1.0 for chroma_net v1; 128.0 for v2).
+            if (inputMagnitudeScale != 1.0) {
+                const float invScale = static_cast<float>(1.0 / inputMagnitudeScale);
+                for (int32_t i = 0; i < kNt * kNy * kNx; i++) {
+                    magnitudes[i] *= invScale;
+                }
+            }
+            std::memcpy(modelInput, magnitudes, sizeof(float) * kNt * kNy * kNx);
+
+            int32_t reflectedIndex = kNt * kNy * kNx;
+            for (int32_t ft = 0; ft < kNt; ft++) {
+                const int32_t refT = ((2 - ft) % kNt + kNt) % kNt;
+                for (int32_t fy = 0; fy < kNy; fy++) {
+                    const int32_t refY = (kNy - fy) % kNy;
+                    for (int32_t fx = 0; fx < kNx; fx++) {
+                        const int32_t refX = ((kNx / 2) - fx + kNx) % kNx;
+                        modelInput[reflectedIndex++] = magnitudes[IDX3(refT, refY, refX, kNt, kNy, kNx)];
+                    }
+                }
+            }
+
+            static const int64_t inputShape[] = { 1, 2, kNt, kNy, kNx };
+            Ort::Value modelInputTensor = Ort::Value::CreateTensor<float>(
+                modelMemoryInfo, modelInput, 2 * kNt * kNy * kNx, inputShape, 5);
+
+            // chroma_net v1/v2 input/output tensor names. If a future
+            // model uses different names this'll need to be parameterised
+            // via Comb::Configuration.
+            static const char *inputNames[]  = { "input" };
+            static const char *outputNames[] = { "output" };
+
+            std::vector<Ort::Value> modelOutputs;
+            {
+                std::lock_guard<std::mutex> runLock(runMutex);
+                try {
+                    modelOutputs = session.session().Run(
+                        Ort::RunOptions{ nullptr },
+                        inputNames, &modelInputTensor, 1,
+                        outputNames, 1);
+                } catch (const Ort::Exception &e) {
+                    chd::log::warn() << "nnTransform3D inference failed; falling back to 2D chroma:" << e.what();
+                    return false;
+                }
+            }
+
+            const float *mask = modelOutputs[0].GetTensorData<float>();
+            for (int32_t i = 0; i < kNt * kNy * kNx; i++) {
+                out[i][0] *= mask[i];
+                out[i][1] *= mask[i];
+            }
+
+            fftw_execute_dft(plans.inverse, out, in);
+
+            // Overlap-add into the chroma accumulator. Each output sample
+            // is touched by ~4 tiles (kStepX/kStepY = half block size); the
+            // weighting tracks how much each tile contributed so we can
+            // normalise in finalizeNnTransform3D.
+            for (int32_t t = 0; t < kNt; t++) {
+                const int32_t targetFrameIndex = t / 2;
+                const bool oddField = (t % 2) != 0;
+                FrameBuffer *targetFrame = frames[targetFrameIndex];
+
+                for (int32_t dy = 0; dy < kNy; dy++) {
+                    const int32_t absY = y + dy;
+                    if (absY < videoParameters.firstActiveFrameLine
+                        || absY >= videoParameters.lastActiveFrameLine) continue;
+                    if ((absY % 2 != 0) != oddField) continue;
+
+                    for (int32_t dx = 0; dx < kNx; dx++) {
+                        const int32_t absX = x + dx;
+                        if (absX < videoParameters.activeVideoStart
+                            || absX >= videoParameters.activeVideoEnd) continue;
+
+                        const int32_t index = IDX3(t, dy, dx, kNt, kNy, kNx);
+                        const double value  = in[index][0] / static_cast<double>(kNt * kNy * kNx);
+                        const double weight = winT[t] * winY[dy] * winX[dx];
+
+                        targetFrame->nnAccChroma[absY][absX] += value * weight;
+                        targetFrame->nnWeightSum[absY][absX] += weight * weight;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// Normalise the overlap-add chroma into clpbuffer[2] so the rest of the
+// chroma demodulation pipeline (splitIQ → filterIQ → ...) picks it up
+// unchanged (configuration.dimensions==3 ⇒ splitIQ reads clpbuffer[2]).
+void Comb::FrameBuffer::finalizeNnTransform3D()
+{
+    for (int32_t lineNumber = videoParameters.firstActiveFrameLine;
+         lineNumber < videoParameters.lastActiveFrameLine; lineNumber++) {
+        for (int32_t h = videoParameters.activeVideoStart;
+             h < videoParameters.activeVideoEnd; h++) {
+            const double weight = nnWeightSum[lineNumber][h];
+            clpbuffer[2].pixel[lineNumber][h] =
+                (weight > 1.0e-6) ? (nnAccChroma[lineNumber][h] / weight) : 0.0;
+        }
+    }
+}
+
+// Fallback when the NN session isn't available or inference failed
+// mid-frame: copy the 2D-filtered chroma into the 3D slot so downstream
+// processing sees consistent state.
+void Comb::FrameBuffer::fallbackNnTransform3DTo2D()
+{
+    for (int32_t lineNumber = videoParameters.firstActiveFrameLine;
+         lineNumber < videoParameters.lastActiveFrameLine; lineNumber++) {
+        for (int32_t h = videoParameters.activeVideoStart;
+             h < videoParameters.activeVideoEnd; h++) {
+            clpbuffer[2].pixel[lineNumber][h] = clpbuffer[1].pixel[lineNumber][h];
+        }
+    }
+}
+
+#endif  // CHD_WITH_NN
 
 }  // namespace chd::decoders::comb

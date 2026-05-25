@@ -35,6 +35,22 @@ All notable changes to this project will be documented in this file. Format:
 - Per-source mutex on `TbcSource::getVideoField` and the new CVBS
   source classes so concurrent field reads from worker threads are
   race-free.
+- nnTransform3D CPU decoder: per-tile 3D-FFT + CNN-mask
+  + IFFT chroma extraction, ported from tbc-tools' Comb extensions
+  (authored by **asdfqazsnbb** and integrated by **harrypm**).
+  Implemented as a `Comb::Configuration::nnTransform3D` mode plus
+  three new `Comb::FrameBuffer` methods (`split3DnnTransform`,
+  `finalizeNnTransform3D`, `fallbackNnTransform3DTo2D`); exposed at
+  the public C++ surface as `chd::decoders::comb::NtscDecoder::
+  setNnModel(std::shared_ptr<chd::nn::OrtSession>)`. Sibling-decoder
+  semantics at the C ABI (`CHD_DEC_NN_TRANSFORM3D` is a distinct
+  decoder kind) — full C ABI wiring lands later alongside
+  `chd_decoder_create` / `chd_decoder_set_nn_model`. The FFT/window
+  helpers live under `src/decoders/nntransform3d/` so the future
+  CUDA cuFFT path can swap in without touching the
+  algorithm body. Smoke test loads a real `chroma_net.onnx` and
+  binds the session; full per-frame decode validation deferred to
+  a follow-up.
 - NN framework: ONNX Runtime integration scaffolding.
   Process-wide `chd::nn::OrtEnvSingleton` (one `Ort::Env` per
   process, lazy `std::call_once` init, opt-in `shutdown()` only

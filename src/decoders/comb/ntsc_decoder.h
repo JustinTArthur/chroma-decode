@@ -29,6 +29,7 @@
 #define CHD_DECODERS_COMB_NTSC_DECODER_H
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "../../metadata/core.h"
@@ -39,6 +40,10 @@
 #include "../source_field.h"
 #include "comb.h"
 
+#if defined(CHD_WITH_NN)
+namespace chd::nn { class OrtSession; }
+#endif
+
 namespace chd::decoders::comb {
 
 // 2D/3D NTSC decoder using Comb
@@ -48,6 +53,15 @@ public:
     bool configure(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters) override;
     int32_t getLookBehind() const override;
     int32_t getLookAhead() const override;
+
+#if defined(CHD_WITH_NN)
+    // Bind the nnTransform3D ONNX session. Caller must also set
+    // config.combConfig.nnTransform3D = true (and dimensions = 3) for the
+    // session to actually be used. Passing nullptr unbinds. This is the
+    // public C++ entry point that the C ABI's chd_decoder_set_nn_model
+    // will dispatch to later; this only exposes the C++ surface.
+    void setNnModel(std::shared_ptr<chd::nn::OrtSession> session);
+#endif
 
     void decodeFrames(const std::vector<chd::decoders::SourceField> &inputFields,
                       int32_t startIndex, int32_t endIndex,

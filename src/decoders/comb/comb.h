@@ -30,6 +30,8 @@
 #define CHD_DECODERS_COMB_COMB_H
 
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <vector>
 
 #include "../../metadata/core.h"
@@ -38,6 +40,10 @@
 #include "../../reader/source.h"
 #include "../decoder_base.h"
 #include "../source_field.h"
+
+#if defined(CHD_WITH_NN)
+namespace chd::nn { class OrtSession; }
+#endif
 
 namespace chd::decoders::comb {
 
@@ -63,6 +69,14 @@ public:
         double adaptThreshold = 1.0;
         double chromaWeight = 1.0;
 
+        // nnTransform3D mode: replace the classical 3D split
+        // with the asdfqazsnbb / harrypm 3D-FFT + CNN-mask + IFFT pipeline.
+        // Requires dimensions == 3 + a session bound via Comb::setNnModel.
+        // nnInputMagnitudeScale matches the per-model normalisation
+        // constant (1.0 for the original chroma_net, 128.0 for v2).
+        bool nnTransform3D = false;
+        double nnInputMagnitudeScale = 1.0;
+
         int32_t getLookBehind() const;
         int32_t getLookAhead() const;
     };
@@ -70,6 +84,15 @@ public:
     const Configuration &getConfiguration() const;
     void updateConfiguration(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters,
                              const Configuration &configuration);
+
+#if defined(CHD_WITH_NN)
+    // Bind the ONNX Runtime session used by nnTransform3D. The session
+    // is thread-safe (Ort::Session::Run is reentrant) so one session is
+    // shared across all worker threads. Pass nullptr to unbind; the
+    // decoder will fall back to 2D chroma. Caller retains shared
+    // ownership.
+    void setNnModel(std::shared_ptr<chd::nn::OrtSession> session);
+#endif
 
     // Decode a sequence of fields into a sequence of interlaced frames
     void decodeFrames(const std::vector<chd::decoders::SourceField> &inputFields, int32_t startIndex, int32_t endIndex,
@@ -87,6 +110,16 @@ private:
     Configuration configuration;
     chd::metadata::LdDecodeMetaData::VideoParameters videoParameters;
 
+#if defined(CHD_WITH_NN)
+    // Bound nnTransform3D session (nullptr ⇒ fall back to 2D chroma even
+    // when configuration.nnTransform3D is true). Shared by all worker
+    // threads via the DecoderPool — Ort::Session is documented as
+    // thread-safe; concurrent Run() calls inside the per-tile
+    // loop are serialised by nnRunMutex below to match tbc-tools.
+    std::shared_ptr<chd::nn::OrtSession> nnSession;
+    std::mutex nnRunMutex;
+#endif
+
     // An input frame in the process of being decoded
     class FrameBuffer {
     public:
@@ -97,6 +130,31 @@ private:
         void split1D();
         void split2D();
         void split3D(const FrameBuffer &previousFrame, const FrameBuffer &nextFrame);
+
+#if defined(CHD_WITH_NN)
+        // Run the nnTransform3D 3D-FFT + CNN-mask + IFFT chroma extraction
+        // for this frame and its successor. Reads `rawbuffer` of `this` and
+        // `nextFrame`; accumulates into `this->nnAccChroma` and
+        // `this->nnWeightSum` (plus `nextFrame->nnAccChroma/Sum` for the
+        // overlapping tiles that span the frame boundary). Caller must
+        // call finalizeNnTransform3D() afterwards to normalise.
+        //
+        // `session` is the shared Ort::Session; `runMutex` serialises
+        // concurrent Run() calls inside this method (matches tbc-tools).
+        // Returns true on success, false if the session became unusable
+        // mid-frame (in which case the caller should fall back to 2D).
+        bool split3DnnTransform(FrameBuffer &nextFrame,
+                                chd::nn::OrtSession &session,
+                                std::mutex &runMutex,
+                                double inputMagnitudeScale);
+        void finalizeNnTransform3D();
+        void fallbackNnTransform3DTo2D();
+#endif
+
+        // Copy raw baseband samples into the component frame's Y plane.
+        // Used by the nnTransform3D path before splitIQ; the classical
+        // path's splitIQ does this fold inline.
+        void copyRawToLuma();
 
         void setComponentFrame(chd::output::ComponentFrame &_componentFrame) {
             componentFrame = &_componentFrame;
@@ -134,6 +192,16 @@ private:
         struct Sample {
             double pixel[MAX_HEIGHT][MAX_WIDTH];
         } clpbuffer[3];
+
+#if defined(CHD_WITH_NN)
+        // Per-pixel overlap-add accumulators for the nnTransform3D pass.
+        // Sized frameHeight × videoParameters.fieldWidth, lazily allocated
+        // on first split3DnnTransform call. After finalizeNnTransform3D
+        // the normalised chroma lands in clpbuffer[2] (the 3D-chroma
+        // slot) so splitIQ picks it up unchanged.
+        std::vector<std::vector<double>> nnAccChroma;
+        std::vector<std::vector<double>> nnWeightSum;
+#endif
 
         // Result of evaluating a 3D candidate
         struct Candidate {
