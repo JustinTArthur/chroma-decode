@@ -458,6 +458,95 @@ int testMultiSourceDropoutAbi(const fs::path &dir) {
     return 0;
 }
 
+// ─── Test 4 (hardening follow-up): parallel async dispatch. ────────────────
+//
+// thread_count=4, 12 indices. Each worker owns its own decoder instance,
+// pulls next-index from an atomic counter, fires the callback with its
+// own frame. We verify all 12 callbacks land with CHD_OK and a valid Y
+// plane (black point Y_ZERO=4096). The result set must cover every
+// requested index exactly once — proves the atomic counter doesn't
+// double-dispatch and the workers actually drain the queue.
+int testParallelAsyncDispatch(const fs::path &dir) {
+    const std::string tbc     = (dir / "par.tbc").string();
+    const std::string sidecar = (dir / "par.tbc.db").string();
+    constexpr int32_t fieldWidth  = 910;
+    constexpr int32_t fieldHeight = 263;
+    constexpr int32_t numFrames   = 16;
+    constexpr int32_t numFields   = numFrames * 2;
+
+    REQUIRE(writeBlackTbc(tbc, fieldWidth, fieldHeight, numFields));
+    REQUIRE(writeTbcSidecar(sidecar, numFields));
+
+    chd_video_t *video = nullptr;
+    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+
+    chd_decoder_t *dec = nullptr;
+    REQUIRE(chd_decoder_create(video, CHD_DEC_MONO, &dec) == CHD_OK);
+    REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_PADDING_MULTIPLE, 1) == CHD_OK);
+    // Force a concrete worker count so the test exercises the
+    // multi-worker dispatch (thread_count=0 would also work but its
+    // effective W depends on std::thread::hardware_concurrency()).
+    REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_THREAD_COUNT, 4) == CHD_OK);
+    REQUIRE(chd_decoder_commit(dec) == CHD_OK);
+
+    constexpr size_t N = 12;
+    std::vector<int64_t> idxs(N);
+    for (size_t i = 0; i < N; i++) idxs[i] = static_cast<int64_t>(i);
+
+    struct Sink {
+        std::mutex                 mu;
+        std::vector<int64_t>       returned;
+        std::vector<chd_status_t>  statuses;
+        std::vector<chd_frame_t *> frames;
+    } sink;
+
+    auto cb = +[](void *user, chd_status_t s, int64_t idx, chd_frame_t *f) {
+        auto *sk = static_cast<Sink *>(user);
+        std::lock_guard<std::mutex> lock(sk->mu);
+        sk->returned.push_back(idx);
+        sk->statuses.push_back(s);
+        sk->frames.push_back(f);
+    };
+
+    REQUIRE(chd_decode_frames_async(dec, idxs.data(), N, cb, &sink, nullptr) == CHD_OK);
+
+    REQUIRE(sink.returned.size() == N);
+    // Build a presence vector keyed by returned frame index; the order of
+    // callbacks is not deterministic across W workers but the set must
+    // exactly cover [0, N).
+    std::vector<int> seen(N, 0);
+    for (size_t i = 0; i < N; i++) {
+        REQUIRE(sink.statuses[i] == CHD_OK);
+        REQUIRE(sink.frames[i] != nullptr);
+        const int64_t idx = sink.returned[i];
+        REQUIRE(idx >= 0);
+        REQUIRE(idx < static_cast<int64_t>(N));
+        seen[idx]++;
+
+        // Spot-check each frame's Y plane: black input ⇒ Y_ZERO=4096
+        // across every pixel.
+        chd_frame_info_t finfo{};
+        REQUIRE(chd_frame_get_info(sink.frames[i], &finfo) == CHD_OK);
+        REQUIRE(finfo.frame_index == idx);
+        const void *yData = nullptr;
+        ptrdiff_t yStride = 0;
+        REQUIRE(chd_frame_get_plane(sink.frames[i], CHD_PLANE_Y, &yData, &yStride) == CHD_OK);
+        const uint16_t *yRow = static_cast<const uint16_t *>(yData);
+        REQUIRE(yRow[0] == 4096);
+        REQUIRE(yRow[finfo.width / 2] == 4096);
+
+        chd_frame_free(sink.frames[i]);
+    }
+    for (size_t i = 0; i < N; i++) REQUIRE(seen[i] == 1);
+
+    chd_decoder_free(dec);
+    chd_video_free(video);
+
+    fs::remove(tbc);
+    fs::remove(sidecar);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -467,6 +556,7 @@ int main() {
     if (int rc = testSyncDecodeBlackMono(dir);    rc != 0) return rc;
     if (int rc = testCvbsPrimaryWithTbcExtra(dir); rc != 0) return rc;
     if (int rc = testMultiSourceDropoutAbi(dir);  rc != 0) return rc;
+    if (int rc = testParallelAsyncDispatch(dir);  rc != 0) return rc;
 
     fs::remove(dir);
     std::cout << "test_decode_frame_abi: PASS\n";

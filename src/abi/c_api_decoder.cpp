@@ -11,7 +11,8 @@
 
 #include <chromadec/decoder.h>
 
-#include <future>
+#include <algorithm>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -131,7 +132,13 @@ void componentFrameToFloatPlanes(const chd::output::ComponentFrame &cf,
     }
 }
 
-chd_status_t decodeFrameLocked(chd_decoder_t *d, int64_t frame_index, chd_frame_t **out) {
+// Decode one frame using the worker-`workerIdx` decoder. Caller MUST hold
+// d->decoderMutexes[workerIdx] for the entire call — Decoder subclasses
+// keep mutable per-call scratch that isn't reentrant. The shared
+// OutputWriter is read-only after commit so workers don't need to
+// serialise on it. lastDropoutStats is published under d->statsMutex.
+chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
+                               int64_t frame_index, chd_frame_t **out) {
     chd::metadata::LdDecodeMetaData *meta = d->video->metadata.get();
     if (meta == nullptr) {
         chd::detail::set_last_error("chd_decode_frame: missing metadata");
@@ -206,7 +213,7 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, int64_t frame_index, chd_frame_
 
     std::vector<chd::output::ComponentFrame> componentFrames(1);
     try {
-        d->decoder->decodeFrames(fields, startIndex, endIndex, componentFrames);
+        d->decoders[workerIdx]->decodeFrames(fields, startIndex, endIndex, componentFrames);
     } catch (const std::exception &e) {
         chd::detail::set_last_error(std::string("chd_decode_frame: decoder threw: ") + e.what());
         return CHD_E_INTERNAL;
@@ -244,9 +251,12 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, int64_t frame_index, chd_frame_
     }
     frame->info.frame_index = frame_index;
 
-    d->lastDropoutStats.corrected      = stats.corrected;
-    d->lastDropoutStats.failed         = stats.failed;
-    d->lastDropoutStats.total_distance = stats.totalDistance;
+    {
+        std::lock_guard<std::mutex> sl(d->statsMutex);
+        d->lastDropoutStats.corrected      = stats.corrected;
+        d->lastDropoutStats.failed         = stats.failed;
+        d->lastDropoutStats.total_distance = stats.totalDistance;
+    }
 
     *out = frame.release();
     return CHD_OK;
@@ -325,8 +335,11 @@ chd_status_t chd_decoder_set_nn_model(chd_decoder_t *d, chd_nn_model_t *m) {
 
 chd_status_t chd_decoder_commit(chd_decoder_t *d) {
     if (d == nullptr) return set_arg_error("chd_decoder_commit");
-    std::lock_guard<std::mutex> lock(d->decodeMutex);
     if (d->committed) return CHD_OK;  // idempotent: re-commit is a no-op
+    // Caller contract: chd_decoder_commit + chd_decoder_set_option_* +
+    // chd_decode_frame must not be called concurrently with each other
+    // (the public header documents this on chd_decoder_set_option_*).
+    // No lifecycle mutex needed.
 
     if (d->video == nullptr || d->video->source == nullptr) {
         chd::detail::set_last_error("chd_decoder_commit: video has no source");
@@ -335,26 +348,6 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
 
     const chd::metadata::VideoSystem system = d->video->source->parameters().system;
     const chd_decoder_kind_t resolved = chd::decoders::registry::resolveAuto(d->kind, system);
-
-    auto decoder = chd::decoders::registry::build(resolved, d->optionMaps);
-    if (!decoder) {
-        chd::detail::set_last_error("chd_decoder_commit: unknown or unsupported decoder kind");
-        return CHD_E_DECODER_UNKNOWN;
-    }
-
-#if defined(CHD_WITH_NN)
-    if (d->nnModelPending) {
-        if (!chd::decoders::registry::applyNnModel(resolved, *decoder, d->nnModelPending)) {
-            chd::detail::set_last_error(
-                "chd_decoder_commit: NN model bound to a non-NN decoder kind");
-            return CHD_E_DECODER_INCOMPATIBLE;
-        }
-    } else if (chd::decoders::registry::kindUsesNn(resolved)) {
-        chd::detail::set_last_error(
-            "chd_decoder_commit: NN decoder kind requires chd_decoder_set_nn_model first");
-        return CHD_E_NN_MODEL_LOAD;
-    }
-#endif
 
     chd::output::OutputWriter::Configuration outCfg;
     outCfg.paddingAmount = 8;
@@ -395,13 +388,59 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
     applyLineOverrides(vp, d->optionMaps);
 
     // OutputWriter::updateConfiguration mutates vp (active region padding);
-    // the decoder configures against the same post-padding vp.
+    // every per-worker decoder configures against the same post-padding vp.
     d->outputWriter.updateConfiguration(vp, outCfg);
 
-    if (!decoder->configure(vp)) {
+    // Resolve worker count before building decoders.
+    int32_t threadCount = 0;
+    {
+        auto it = d->optionMaps.i32.find(CHD_OPT_THREAD_COUNT);
+        threadCount = (it != d->optionMaps.i32.end()) ? it->second : 0;
+        if (threadCount <= 0) {
+            const unsigned hc = std::thread::hardware_concurrency();
+            threadCount = hc == 0 ? 2 : static_cast<int32_t>(hc);
+        }
+    }
+
+    // Build threadCount decoder instances so chd_decode_frames_async
+    // workers can each own one without locking. Configure each; bind the
+    // shared NN session to each if applicable. NN kinds without a model
+    // bound fail fast.
+#if defined(CHD_WITH_NN)
+    const bool needsNn = chd::decoders::registry::kindUsesNn(resolved);
+    if (needsNn && !d->nnModelPending) {
         chd::detail::set_last_error(
-            "chd_decoder_commit: decoder rejected input (incompatible video standard?)");
-        return CHD_E_DECODER_INCOMPATIBLE;
+            "chd_decoder_commit: NN decoder kind requires chd_decoder_set_nn_model first");
+        return CHD_E_NN_MODEL_LOAD;
+    }
+#endif
+
+    std::vector<std::unique_ptr<chd::decoders::Decoder>> built;
+    std::vector<std::unique_ptr<std::mutex>>             builtMutexes;
+    built.reserve(threadCount);
+    builtMutexes.reserve(threadCount);
+    for (int32_t w = 0; w < threadCount; w++) {
+        auto inst = chd::decoders::registry::build(resolved, d->optionMaps);
+        if (!inst) {
+            chd::detail::set_last_error("chd_decoder_commit: unknown or unsupported decoder kind");
+            return CHD_E_DECODER_UNKNOWN;
+        }
+#if defined(CHD_WITH_NN)
+        if (d->nnModelPending) {
+            if (!chd::decoders::registry::applyNnModel(resolved, *inst, d->nnModelPending)) {
+                chd::detail::set_last_error(
+                    "chd_decoder_commit: NN model bound to a non-NN decoder kind");
+                return CHD_E_DECODER_INCOMPATIBLE;
+            }
+        }
+#endif
+        if (!inst->configure(vp)) {
+            chd::detail::set_last_error(
+                "chd_decoder_commit: decoder rejected input (incompatible video standard?)");
+            return CHD_E_DECODER_INCOMPATIBLE;
+        }
+        built.push_back(std::move(inst));
+        builtMutexes.push_back(std::make_unique<std::mutex>());
     }
 
     // The metadata's VideoParameters stay at their pre-padding values:
@@ -412,21 +451,14 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
     // independent padding choices.
 
     d->resolvedKind = resolved;
-    d->decoder = std::move(decoder);
+    d->decoders = std::move(built);
+    d->decoderMutexes = std::move(builtMutexes);
     d->videoParameters = vp;
     d->outputConfig = outCfg;
     d->outputPixelFormat = abiFormat;
-    d->lookBehind = d->decoder->getLookBehind();
-    d->lookAhead  = d->decoder->getLookAhead();
-
-    {
-        auto it = d->optionMaps.i32.find(CHD_OPT_THREAD_COUNT);
-        d->threadCount = (it != d->optionMaps.i32.end()) ? it->second : 0;
-        if (d->threadCount <= 0) {
-            const unsigned hc = std::thread::hardware_concurrency();
-            d->threadCount = hc == 0 ? 2 : static_cast<int32_t>(hc);
-        }
-    }
+    d->lookBehind = d->decoders.front()->getLookBehind();
+    d->lookAhead  = d->decoders.front()->getLookAhead();
+    d->threadCount = threadCount;
 
     d->committed = true;
     return CHD_OK;
@@ -441,14 +473,11 @@ chd_status_t chd_decode_frame(chd_decoder_t *d, int64_t frame_index, chd_frame_t
         chd::detail::set_last_error("chd_decode_frame: chd_decoder_commit not called");
         return CHD_E_INVALID_ARG;
     }
-    // Decoder subclasses keep mutable per-call state (FrameBuffer,
-    // TransformPal buffers, OutputWriter line scratch) that isn't
-    // documented as reentrant. Serialise here; chd_decode_frames_async
-    // serialises through the same mutex, so async currently provides API
-    // surface rather than true parallelism. Per-worker decoder instances
-    // are a follow-up.
-    std::lock_guard<std::mutex> lock(d->decodeMutex);
-    return decodeFrameLocked(d, frame_index, out);
+    // Sync decode uses worker 0's decoder + its own mutex. Concurrent
+    // chd_decode_frames_async calls can run on workers 1..N-1 against
+    // different decoder instances; they don't contend with sync.
+    std::lock_guard<std::mutex> lock(*d->decoderMutexes[0]);
+    return decodeFrameLocked(d, /*workerIdx=*/0, frame_index, out);
 }
 
 // ── Async decode ─────────────────────────────────────────────────────────────
@@ -463,30 +492,36 @@ chd_status_t chd_decode_frames_async(chd_decoder_t *d,
         chd::detail::set_last_error("chd_decode_frames_async: chd_decoder_commit not called");
         return CHD_E_INVALID_ARG;
     }
+    if (n == 0) return CHD_OK;
 
-    std::vector<std::future<void>> tasks;
-    tasks.reserve(n);
-    for (size_t i = 0; i < n; i++) {
-        const int64_t idx = indices[i];
-        tasks.emplace_back(std::async(std::launch::async, [d, idx, cb, user, cancel]() {
-            if (cancel != nullptr && cancel->requested.load(std::memory_order_acquire)) {
-                cb(user, CHD_E_CANCELLED, idx, nullptr);
-                return;
-            }
-            chd_frame_t *frame = nullptr;
-            chd_status_t rc;
-            {
-                std::lock_guard<std::mutex> lock(d->decodeMutex);
+    // W workers; each owns decoder[w] + decoderMutexes[w] for the duration
+    // of the call. Workers race-pull next-index from `next` so unequal
+    // frame costs balance automatically. The mutex per worker is needed
+    // only because `chd_decode_frame` (sync) may run concurrently against
+    // worker 0 — without sync contention, the mutex would just be the
+    // worker's stack discipline.
+    const size_t W = std::min<size_t>(n, d->decoders.size());
+    std::atomic<size_t> next{0};
+    std::vector<std::thread> workers;
+    workers.reserve(W);
+    for (size_t w = 0; w < W; w++) {
+        workers.emplace_back([d, indices, n, cb, user, cancel, w, &next]() {
+            std::lock_guard<std::mutex> lock(*d->decoderMutexes[w]);
+            while (true) {
+                const size_t i = next.fetch_add(1, std::memory_order_relaxed);
+                if (i >= n) return;
+                const int64_t idx = indices[i];
                 if (cancel != nullptr && cancel->requested.load(std::memory_order_acquire)) {
                     cb(user, CHD_E_CANCELLED, idx, nullptr);
-                    return;
+                    continue;
                 }
-                rc = decodeFrameLocked(d, idx, &frame);
+                chd_frame_t *frame = nullptr;
+                const chd_status_t rc = decodeFrameLocked(d, w, idx, &frame);
+                cb(user, rc, idx, frame);
             }
-            cb(user, rc, idx, frame);
-        }));
+        });
     }
-    for (auto &t : tasks) t.get();
+    for (auto &t : workers) t.join();
     return CHD_OK;
 }
 

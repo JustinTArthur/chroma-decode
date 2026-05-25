@@ -86,8 +86,8 @@ struct chd_decoder {
     chd_dropout_opts_t dropoutOpts{};
 
     // Per-frame dropout stats from the most recent chd_decode_frame call.
-    // Guarded by decodeMutex when multiple threads call chd_decode_frame
-    // concurrently on the same handle (the API permits this).
+    // Guarded by statsMutex (below); with concurrent async workers, the
+    // value reflects whichever frame finished last.
     chd_dropout_stats_t lastDropoutStats{};
 
     // Set by commit. Once true, the fields below are populated and the
@@ -95,11 +95,25 @@ struct chd_decoder {
     bool committed = false;
 
     chd_decoder_kind_t resolvedKind = CHD_DEC_AUTO;
-    std::unique_ptr<chd::decoders::Decoder> decoder;
+
+    // Hardening follow-up: N decoder instances, one per worker
+    // thread. Each Decoder subclass keeps mutable per-call scratch (Comb
+    // FrameBuffer, TransformPal FFTW plans, OutputWriter line buffers)
+    // that isn't documented as reentrant, so true async parallelism
+    // requires per-worker instances. They share the same OrtSession for
+    // NN kinds (Ort::Session::Run is thread-safe per the ORT docs); the
+    // Comb body serialises its own Run() calls via a per-instance
+    // nnRunMutex which is fine.
+    //
+    // decoderMutexes is the same size as decoders — one mutex per
+    // instance so async workers never wait on each other.
+    std::vector<std::unique_ptr<chd::decoders::Decoder>> decoders;
+    std::vector<std::unique_ptr<std::mutex>>             decoderMutexes;
 
     // Configured pipeline state. videoParameters is the post-padding
     // copy from OutputWriter::updateConfiguration (which mutates the
-    // active-region bounds when padding > 1).
+    // active-region bounds when padding > 1). OutputWriter::convert is
+    // stateless after updateConfiguration so workers share one writer.
     chd::metadata::LdDecodeMetaData::VideoParameters videoParameters{};
     chd::output::OutputWriter outputWriter;
     chd::output::OutputWriter::Configuration outputConfig{};
@@ -109,11 +123,9 @@ struct chd_decoder {
     int32_t lookBehind = 0;
     int32_t lookAhead  = 0;
 
-    // Serialises commit() vs chd_decode_frame, and serialises updates to
-    // lastDropoutStats. The Decoder subclasses themselves are NOT
-    // documented as thread-safe (each owns mutable per-frame state), so
-    // chd_decode_frame holds this around the actual decodeFrames call too.
-    std::mutex decodeMutex;
+    // Protects lastDropoutStats updates + reads. Small fast path —
+    // worker takes it after the decode body to publish the stats.
+    std::mutex statsMutex;
 };
 
 // chd_frame owns the rendered pixel data for one decoded frame. The format

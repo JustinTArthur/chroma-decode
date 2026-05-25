@@ -7,6 +7,21 @@ All notable changes to this project will be documented in this file. Format:
 ## [Unreleased]
 
 ### Added
+- True per-worker async parallelism: `chd_decoder_commit`
+  now builds `thread_count` decoder instances (one per worker), each with
+  its own `std::mutex` and configured against the same post-padding
+  `VideoParameters`. NN sessions are shared via `shared_ptr` (Ort::Session
+  is thread-safe per ORT docs). `chd_decode_frames_async` spawns
+  `min(n, threadCount)` `std::thread` workers that race-pull next-index
+  from a `std::atomic<size_t>` — unequal frame costs balance
+  automatically; sync `chd_decode_frame` uses worker 0 and can run
+  concurrently with async on workers 1..N-1. Replaces the previous
+  std::async-per-index + single-mutex pattern that provided API surface
+  but no real parallelism. `lastDropoutStats` updates now run under a
+  dedicated small mutex (`statsMutex`) since multiple workers can
+  publish concurrently.
+
+### Added
 - Multi-source dropout correction at the C ABI:
   `chd_decode_frame` now builds a `std::vector<chd::dropout::ExtraSourceFrame>`
   from each `chd_video_extra` on the primary and runs the multi-source
