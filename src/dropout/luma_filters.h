@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     filters.h
@@ -22,23 +23,23 @@
 
 ************************************************************************/
 
-#ifndef FILTERS_H
-#define FILTERS_H
+#ifndef CHD_DROPOUT_LUMA_FILTERS_H
+#define CHD_DROPOUT_LUMA_FILTERS_H
 
-#include <QVector>
-#include <QDebug>
+#include <cstdint>
+
+namespace chd::dropout {
 
 class Filters
 {
 public:
-    void palLumaFirFilter(quint16 *data, qint32 dataPoints);
-    void palLumaFirFilter(QVector<qint32> &data);
+    void palLumaFirFilter(uint16_t *data, int32_t dataPoints);
 
-    void ntscLumaFirFilter(quint16 *data, qint32 dataPoints);
-    void ntscLumaFirFilter(QVector<qint32> &data);
+    void ntscLumaFirFilter(uint16_t *data, int32_t dataPoints);
 
-    void palMLumaFirFilter(quint16 *data, qint32 dataPoints);
-    void palMLumaFirFilter(QVector<qint32> &data);
+    void palMLumaFirFilter(uint16_t *data, int32_t dataPoints);
 };
 
-#endif // FILTERS_H
+}  // namespace chd::dropout
+
+#endif // CHD_DROPOUT_LUMA_FILTERS_H

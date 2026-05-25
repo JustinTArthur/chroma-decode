@@ -29,6 +29,7 @@ chromadec_sources = files(
   'decoders/palcolour/transform_pal_3d.cpp',
   'decoders/comb/comb.cpp',
   'decoders/comb/ntsc_decoder.cpp',
+  'dropout/luma_filters.cpp',
   'pipeline/decoder_pool.cpp',
   'output/component_frame.cpp',
   'output/output_writer.cpp',

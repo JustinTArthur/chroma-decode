@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     filters.cpp
@@ -22,11 +23,14 @@
 
 ************************************************************************/
 
-#include "filters.h"
+#include "luma_filters.h"
 
-#include "firfilter.h"
+#include "../decoders/filter/firfilter.h"
 
 #include <array>
+#include <vector>
+
+namespace chd::dropout {
 
 // PAL - Filter at Fsc/2 (Fsc = 4433618 (/2 = 2,216,809), sample rate = 17,734,472)
 // 2.2 MHz LPF - 5 Taps
@@ -36,7 +40,7 @@ static constexpr std::array<double, 5> palLumaFilterCoeffs {
     0.03283437,  0.23959832,  0.45513461,  0.23959832,  0.03283437
 };
 
-static constexpr auto palLumaFilter = makeFIRFilter(palLumaFilterCoeffs);
+static constexpr auto palLumaFilter = chd::decoders::filter::makeFIRFilter(palLumaFilterCoeffs);
 
 // NTSC - Filter at Fsc/2 (Fsc = 3579545 (/2 = 1,789,772.5), sample rate = 14,318,180)
 // (PAL-M's fSC is very close to NTSC's, so we can use the same filter for both.)
@@ -46,68 +50,46 @@ static constexpr auto palLumaFilter = makeFIRFilter(palLumaFilterCoeffs);
 static constexpr std::array<double, 5> ntscLumaFilterCoeffs {
     0.03275786,  0.23955702,  0.45537024,  0.23955702,  0.03275786
 };
-static constexpr auto ntscLumaFilter = makeFIRFilter(ntscLumaFilterCoeffs);
+static constexpr auto ntscLumaFilter = chd::decoders::filter::makeFIRFilter(ntscLumaFilterCoeffs);
 
 // Public methods ----------------------------------------------------------------------------------------------------
 
 // Apply a FIR filter to remove PAL chroma leaving just luma
-// Accepts quint16 greyscale data and returns the filtered data into
+// Accepts uint16_t greyscale data and returns the filtered data into
 // the same array
-void Filters::palLumaFirFilter(quint16 *data, qint32 dataPoints)
+void Filters::palLumaFirFilter(uint16_t *data, int32_t dataPoints)
 {
     // Filter into a temporary buffer
-    QVector<quint16> tmp(dataPoints);
+    std::vector<uint16_t> tmp(dataPoints);
     palLumaFilter.apply(data, tmp.data(), dataPoints);
 
     // Copy the result over the original array
-    for (qint32 i = 0; i < dataPoints; i++) {
+    for (int32_t i = 0; i < dataPoints; i++) {
         data[i] = tmp[i];
     }
 }
 
-// Apply a FIR filter to remove PAL chroma leaving just luma
-// Accepts qint32 greyscale data and returns the filtered data into
-// the same array
-void Filters::palLumaFirFilter(QVector<qint32> &data)
-{
-    palLumaFilter.apply(data);
-}
-
 // Apply a FIR filter to remove NTSC chroma leaving just luma
-// Accepts quint16 greyscale data and returns the filtered data into
+// Accepts uint16_t greyscale data and returns the filtered data into
 // the same array
-void Filters::ntscLumaFirFilter(quint16 *data, qint32 dataPoints)
+void Filters::ntscLumaFirFilter(uint16_t *data, int32_t dataPoints)
 {
     // Filter into a temporary buffer
-    QVector<quint16> tmp(dataPoints);
+    std::vector<uint16_t> tmp(dataPoints);
     ntscLumaFilter.apply(data, tmp.data(), dataPoints);
 
     // Copy the result over the original array
-    for (qint32 i = 0; i < dataPoints; i++) {
+    for (int32_t i = 0; i < dataPoints; i++) {
         data[i] = tmp[i];
     }
 }
 
-// Apply a FIR filter to remove NTSC chroma leaving just luma
-// Accepts qint32 greyscale data and returns the filtered data into
-// the same array
-void Filters::ntscLumaFirFilter(QVector<qint32> &data)
-{
-    ntscLumaFilter.apply(data);
-}
-
 // Apply a FIR filter to remove PAL-M chroma leaving just luma
-// Accepts quint16 greyscale data and returns the filtered data into
+// Accepts uint16_t greyscale data and returns the filtered data into
 // the same array
-void Filters::palMLumaFirFilter(quint16 *data, qint32 dataPoints)
+void Filters::palMLumaFirFilter(uint16_t *data, int32_t dataPoints)
 {
     ntscLumaFirFilter(data, dataPoints);
 }
 
-// Apply a FIR filter to remove PAL-M chroma leaving just luma
-// Accepts qint32 greyscale data and returns the filtered data into
-// the same array
-void Filters::palMLumaFirFilter(QVector<qint32> &data)
-{
-    ntscLumaFirFilter(data);
-}
+}  // namespace chd::dropout
