@@ -43,6 +43,17 @@ test_cvbs_reader = executable('test_cvbs_reader',
   dependencies: [sqlite3_dep])
 test('cvbs_reader', test_cvbs_reader)
 
+# dropout corrector. Builds a synthetic NTSC field pair, injects
+# dropouts, runs DropoutCorrector::correctFrame, and asserts stats + sample
+# replacement. Links the static lib because the corrector + metadata
+# headers it consumes are internal.
+test_dropout_corrector = executable('test_dropout_corrector',
+  'unit/test_dropout_corrector.cpp',
+  include_directories: [public_inc, version_inc],
+  link_with: libchromadec.get_static_lib(),
+  dependencies: [sqlite3_dep])
+test('dropout_corrector', test_dropout_corrector)
+
 # NN framework smoke tests (Ort::Env lifecycle, provider
 # availability, chd_nn_model_load error path). The body self-skips when
 # the library was built with with_nn=false. Links the shared lib so the
