@@ -7,6 +7,18 @@ All notable changes to this project will be documented in this file. Format:
 ## [Unreleased]
 
 ### Added
+- Golden-frame comparison against the legacy ld-chroma-decoder
+  binary pinned at ld-decode commit f39e59e18 (the last good before
+  the `tools/` deletion in a4e403be). When the `CHD_LD_CHROMA_DECODER`
+  env var points at a built ld-chroma-decoder binary, the test runs it
+  against the same encode-orc fixture used in
+  `testEncodeOrcColourBars` and asserts the chd C ABI's YUV444P16
+  output matches pixel-for-pixel against the reference. Confirmed
+  bit-exact (max|diff|=0 across all 368,600 pixels in all three
+  planes) for NTSC 2D comb against the f39e59e18 reference. Skips
+  cleanly with PASS when either env var is unset.
+
+### Added
 - Integration test driving encode-orc → chd_decode_frame end
   to end (`tests/unit/test_integration.cpp`). When the
   `CHD_ENCODE_ORC` env var points at a built encode-orc binary, the
