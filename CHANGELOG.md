@@ -7,6 +7,21 @@ All notable changes to this project will be documented in this file. Format:
 ## [Unreleased]
 
 ### Added
+- Integration coverage extended to PAL + multi-frame:
+  test_integration.cpp now parameterises its fixture spec
+  (encode-orc format + asset path + chd decoder kind + legacy `-f`
+  flag) and exercises both `ntsc-2d-bars` (525_5994_75_BARS.raw via
+  CHD_DEC_NTSC_2D + ntsc2d) and `pal-2d-bars` (625_50_75_BARS.raw via
+  CHD_DEC_PAL_2D + pal2d) at duration=3 frames each. Both the
+  chroma-content check (every frame asserted to have real Y/Cb/Cr
+  energy) and the golden-frame comparison (every frame matched
+  pixel-for-pixel against ld-chroma-decoder f39e59e18) run per-frame
+  per-fixture. Multi-frame fixtures catch per-frame state leakage
+  that a single-frame test would mask; PAL exercises the palcolour
+  code path that NTSC fixtures don't touch. Confirmed bit-exact on
+  all 6 frames (3 NTSC + 3 PAL) against the legacy reference.
+
+### Added
 - Golden-frame comparison against the legacy ld-chroma-decoder
   binary pinned at ld-decode commit f39e59e18 (the last good before
   the `tools/` deletion in a4e403be). When the `CHD_LD_CHROMA_DECODER`

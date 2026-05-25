@@ -5,9 +5,14 @@
 // The synthetic-black test in test_decode_frame_abi.cpp confirms the ABI
 // plumbing is sound, but it can't catch chroma-decode regressions because
 // every plane comes back at the YUV neutral point. This test fills the gap
-// by running the real encode-orc generator to synthesize an NTSC 75 %
-// colour-bars TBC, then verifying the resulting chd_frame_t carries real
-// luma + chroma energy (wide Y range + non-trivial Cb/Cr swing).
+// by running the real encode-orc generator to synthesize NTSC and PAL
+// 75 % colour-bars TBCs (three frames each), then verifying every decoded
+// chd_frame_t carries real luma + chroma energy and — when the legacy
+// reference is available — matches it pixel-for-pixel.
+//
+// Two fixture specs are exercised: one NTSC (CHD_DEC_NTSC_2D + ntsc2d) and
+// one PAL (CHD_DEC_PAL_2D + pal2d). Multi-frame (duration=3) catches any
+// per-frame state leakage that a single-frame test would mask.
 //
 // Env vars gate the integration paths:
 //   CHD_ENCODE_ORC          — absolute path to a built encode-orc binary
@@ -17,9 +22,10 @@
 //                             have the encoder.
 //   CHD_ENCODE_ORC_ASSETS   — optional. Directory containing
 //                             encode-orc's NTSC/PAL raw assets (the
-//                             `525_5994_*.raw` files). Defaults to the
-//                             sibling `assets/` directory next to the
-//                             encode-orc binary's parent build dir, i.e.
+//                             `525_5994_*.raw` and `625_50_*.raw`
+//                             files). Defaults to the sibling `assets/`
+//                             directory next to the encode-orc binary's
+//                             parent build dir, i.e.
 //                             `<dir-of-CHD_ENCODE_ORC>/../assets`.
 //   CHD_LD_CHROMA_DECODER   — absolute path to a built ld-chroma-decoder
 //                             binary, ideally at ld-decode commit
@@ -27,7 +33,8 @@
 //                             tools/ deletion in a4e403be). When set,
 //                             the golden-frame comparison runs and
 //                             asserts pixel-identical Y/Cb/Cr planes
-//                             against the legacy reference.
+//                             against the legacy reference across every
+//                             frame of every fixture.
 
 #include <chromadec/chromadec.h>
 
@@ -37,6 +44,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -53,49 +61,50 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// Minimal NTSC 75 % color-bars project. duration=1 produces a single frame,
-// which is enough to exercise the SourceField → Decoder → OutputWriter
-// → chd_frame path with real chroma content. encode-orc expands the two
-// ${ENCODE_ORC_*} variables from the environment when it parses the YAML.
-const char *kProjectYaml = R"YAML(
-name: "chd-integration-integration"
-description: "Single-frame NTSC 75 % colour bars for chromadec integration tests"
+// One fixture configuration: chooses the encode-orc source asset +
+// format, the chd decoder kind, and the legacy `-f` flag used for
+// golden-frame comparison. Both NTSC and PAL drive 75 % colour bars so
+// the chroma swing thresholds in the sanity check can stay constant
+// across the two fixtures.
+struct FixtureSpec {
+    const char            *label;             // human-readable for logs
+    const char            *encodeOrcFormat;   // "ntsc-composite" / "pal-composite"
+    const char            *assetSubpath;      // relative to ENCODE_ORC_ASSETS
+    chd_video_standard_t   expectedStandard;
+    int32_t                expectedFieldWidth;
+    chd_decoder_kind_t     chdKind;
+    const char            *legacyDecoderFlag; // -f arg to ld-chroma-decoder
+    int                    durationFrames;
+};
 
-output:
-  filename: "${ENCODE_ORC_OUTPUT_ROOT}/fixture"
-  format: "ntsc-composite"
-  writer: "tbc"
-  metadata_decoder: "encode-orc"
+const FixtureSpec kNtscSpec = {
+    "ntsc-2d-bars",
+    "ntsc-composite",
+    "ntsc-raw/525_5994_75_BARS.raw",
+    CHD_STD_NTSC,
+    910,
+    CHD_DEC_NTSC_2D,
+    "ntsc2d",
+    /*durationFrames=*/3,
+};
 
-laserdisc:
-  mode: "cav"
-
-pipeline:
-  preprocessing:
-    filters:
-      chroma:
-        enabled: true
-      luma:
-        enabled: false
-
-sections:
-  - name: "Bars"
-    duration: 1
-    source:
-      type: "yuv422-image"
-      file: "${ENCODE_ORC_ASSETS}/ntsc-raw/525_5994_75_BARS.raw"
-)YAML";
+const FixtureSpec kPalSpec = {
+    "pal-2d-bars",
+    "pal-composite",
+    "pal-raw/625_50_75_BARS.raw",
+    CHD_STD_PAL,
+    1135,
+    CHD_DEC_PAL_2D,
+    "pal2d",
+    /*durationFrames=*/3,
+};
 
 std::string deriveAssetsPath(const std::string &binaryPath) {
     // encode-orc lives at $repo/build/encode-orc; assets at $repo/assets.
-    // The grandparent of the binary is the repo root.
     fs::path p(binaryPath);
     return (p.parent_path().parent_path() / "assets").string();
 }
 
-// Run a shell command and return its exit status. Output goes to the
-// child's stdout/stderr; we don't capture it because encode-orc writes
-// useful progress messages we want to see when something fails locally.
 int runShell(const std::string &cmd) {
     return std::system(cmd.c_str());
 }
@@ -107,20 +116,43 @@ bool writeFile(const std::string &path, const std::string &content) {
     return f.good();
 }
 
-// Run encode-orc against the bundled NTSC 75 % colour-bars asset and
-// return the produced fixture paths via out params. Caller owns the
-// temp dir cleanup. Returns 0 on success, non-zero on failure.
-//
-// `outDir` is the temp directory containing the fixture; `tbcOut` and
-// `sidecarOut` are the absolute paths of the resulting .tbc + .tbc.db
-// pair.
+// Render the encode-orc project YAML for the given fixture. The
+// ${ENCODE_ORC_*} placeholders are expanded by encode-orc itself when
+// it parses the YAML — we set those vars on the invocation env below.
+std::string renderProjectYaml(const FixtureSpec &spec) {
+    std::ostringstream s;
+    s << "name: \"chd-integration-" << spec.label << "\"\n"
+      << "output:\n"
+      << "  filename: \"${ENCODE_ORC_OUTPUT_ROOT}/fixture\"\n"
+      << "  format: \"" << spec.encodeOrcFormat << "\"\n"
+      << "  writer: \"tbc\"\n"
+      << "  metadata_decoder: \"encode-orc\"\n"
+      << "laserdisc:\n"
+      << "  mode: \"cav\"\n"
+      << "pipeline:\n"
+      << "  preprocessing:\n"
+      << "    filters:\n"
+      << "      chroma:\n"
+      << "        enabled: true\n"
+      << "      luma:\n"
+      << "        enabled: false\n"
+      << "sections:\n"
+      << "  - name: \"Bars\"\n"
+      << "    duration: " << spec.durationFrames << "\n"
+      << "    source:\n"
+      << "      type: \"yuv422-image\"\n"
+      << "      file: \"${ENCODE_ORC_ASSETS}/" << spec.assetSubpath << "\"\n";
+    return s.str();
+}
+
+// Run encode-orc against the given fixture spec. Returns the produced
+// fixture paths via out params. Caller owns the temp dir cleanup.
 int buildEncodeOrcFixture(const std::string &encodeOrc, const std::string &assets,
-                          const fs::path &outDir,
+                          const FixtureSpec &spec, const fs::path &outDir,
                           std::string *tbcOut, std::string *sidecarOut) {
     fs::create_directories(outDir);
-
     const std::string yamlPath = (outDir / "project.yaml").string();
-    REQUIRE(writeFile(yamlPath, kProjectYaml));
+    REQUIRE(writeFile(yamlPath, renderProjectYaml(spec)));
 
     const std::string cmd =
         "ENCODE_ORC_OUTPUT_ROOT=\"" + outDir.string() + "\" " +
@@ -130,7 +162,6 @@ int buildEncodeOrcFixture(const std::string &encodeOrc, const std::string &asset
         std::cerr << "FAIL: encode-orc invocation failed: " << cmd << "\n";
         return 1;
     }
-
     *tbcOut = (outDir / "fixture.tbc").string();
     *sidecarOut = (outDir / "fixture.tbc.db").string();
     REQUIRE(fs::exists(*tbcOut));
@@ -138,12 +169,14 @@ int buildEncodeOrcFixture(const std::string &encodeOrc, const std::string &asset
     return 0;
 }
 
-// Common skip / dispatch logic for tests that need encode-orc. Returns
-// 0 (run) or 1 (skip — caller should `return 0` immediately). Sets the
-// resolved binary + assets paths on success.
-int resolveEncodeOrc(std::string *binaryOut, std::string *assetsOut) {
+// Resolve the encode-orc binary + assets dir from env. Returns:
+//    0   run    — binaryOut/assetsOut populated
+//    1   skip   — CHD_ENCODE_ORC unset; caller should `return 0`
+//   -1   fail   — env set but file/dir doesn't exist; caller returns 1
+int resolveEncodeOrc(const FixtureSpec &spec,
+                     std::string *binaryOut, std::string *assetsOut) {
     const char *encodeOrc = std::getenv("CHD_ENCODE_ORC");
-    if (encodeOrc == nullptr || encodeOrc[0] == 0) return 1;  // skip
+    if (encodeOrc == nullptr || encodeOrc[0] == 0) return 1;
     if (!fs::exists(encodeOrc)) {
         std::cerr << "FAIL: CHD_ENCODE_ORC=" << encodeOrc << " does not exist\n";
         return -1;
@@ -152,10 +185,10 @@ int resolveEncodeOrc(std::string *binaryOut, std::string *assetsOut) {
     const std::string assets = (assetsEnv && assetsEnv[0])
                                    ? std::string(assetsEnv)
                                    : deriveAssetsPath(encodeOrc);
-    if (!fs::exists(assets + "/ntsc-raw/525_5994_75_BARS.raw")) {
-        std::cerr << "FAIL: assets dir " << assets
-                  << " missing ntsc-raw/525_5994_75_BARS.raw "
-                     "(set CHD_ENCODE_ORC_ASSETS to override)\n";
+    const std::string assetFile = assets + "/" + spec.assetSubpath;
+    if (!fs::exists(assetFile)) {
+        std::cerr << "FAIL: missing asset " << assetFile
+                  << " (set CHD_ENCODE_ORC_ASSETS to override)\n";
         return -1;
     }
     *binaryOut = encodeOrc;
@@ -163,13 +196,14 @@ int resolveEncodeOrc(std::string *binaryOut, std::string *assetsOut) {
     return 0;
 }
 
-// Decode frame 0 of a TBC via the public C ABI and pack Y|Cb|Cr planes
-// into a contiguous u16 vector. Returns the per-plane width/height in
-// `widthOut`/`heightOut`. Returns 0 on success, non-zero on failure.
-int decodeFrameViaAbi(const std::string &tbc, const std::string &sidecar,
-                     chd_decoder_kind_t kind,
-                     std::vector<uint16_t> *yuvOut,
-                     int32_t *widthOut, int32_t *heightOut) {
+// Decode `count` frames starting at `firstIdx` via the public C ABI.
+// Each frame's Y|Cb|Cr planes are concatenated into `yuvOut`; total
+// size is count × width × height × 3 × sizeof(uint16_t). Width/height
+// (post-padding) are reported for the slice math the caller does after.
+int decodeFramesViaAbi(const std::string &tbc, const std::string &sidecar,
+                       chd_decoder_kind_t kind, int64_t firstIdx, int64_t count,
+                       std::vector<uint16_t> *yuvOut,
+                       int32_t *widthOut, int32_t *heightOut) {
     chd_video_t *video = nullptr;
     REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
 
@@ -178,61 +212,57 @@ int decodeFrameViaAbi(const std::string &tbc, const std::string &sidecar,
     REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_PADDING_MULTIPLE, 1) == CHD_OK);
     REQUIRE(chd_decoder_commit(dec) == CHD_OK);
 
-    chd_frame_t *frame = nullptr;
-    REQUIRE(chd_decode_frame(dec, 0, &frame) == CHD_OK);
+    int32_t w = 0, h = 0;
+    size_t planeSize = 0;
+    for (int64_t k = 0; k < count; k++) {
+        chd_frame_t *frame = nullptr;
+        REQUIRE(chd_decode_frame(dec, firstIdx + k, &frame) == CHD_OK);
 
-    chd_frame_info_t fi{};
-    REQUIRE(chd_frame_get_info(frame, &fi) == CHD_OK);
-    REQUIRE(fi.format == CHD_PIXEL_YUV444P16);
+        chd_frame_info_t fi{};
+        REQUIRE(chd_frame_get_info(frame, &fi) == CHD_OK);
+        REQUIRE(fi.format == CHD_PIXEL_YUV444P16);
 
-    const size_t plane = static_cast<size_t>(fi.width) * fi.height;
-    yuvOut->resize(plane * 3);
+        if (k == 0) {
+            w = fi.width;
+            h = fi.height;
+            planeSize = static_cast<size_t>(w) * h;
+            yuvOut->resize(planeSize * 3 * static_cast<size_t>(count));
+        } else {
+            // Every frame in a fixture must agree on dimensions — a
+            // mismatch would mean OutputWriter padding state leaked
+            // between frames, which would corrupt the output.
+            REQUIRE(fi.width == w && fi.height == h);
+        }
 
-    const void *yp = nullptr, *cbp = nullptr, *crp = nullptr;
-    ptrdiff_t s = 0;
-    REQUIRE(chd_frame_get_plane(frame, CHD_PLANE_Y,  &yp,  &s) == CHD_OK);
-    REQUIRE(chd_frame_get_plane(frame, CHD_PLANE_CB, &cbp, &s) == CHD_OK);
-    REQUIRE(chd_frame_get_plane(frame, CHD_PLANE_CR, &crp, &s) == CHD_OK);
-    std::memcpy(yuvOut->data(),             yp,  plane * 2);
-    std::memcpy(yuvOut->data() + plane,     cbp, plane * 2);
-    std::memcpy(yuvOut->data() + 2 * plane, crp, plane * 2);
+        const void *yp = nullptr, *cbp = nullptr, *crp = nullptr;
+        ptrdiff_t s = 0;
+        REQUIRE(chd_frame_get_plane(frame, CHD_PLANE_Y,  &yp,  &s) == CHD_OK);
+        REQUIRE(chd_frame_get_plane(frame, CHD_PLANE_CB, &cbp, &s) == CHD_OK);
+        REQUIRE(chd_frame_get_plane(frame, CHD_PLANE_CR, &crp, &s) == CHD_OK);
+        const size_t base = static_cast<size_t>(k) * planeSize * 3;
+        std::memcpy(yuvOut->data() + base,                 yp,  planeSize * 2);
+        std::memcpy(yuvOut->data() + base + planeSize,     cbp, planeSize * 2);
+        std::memcpy(yuvOut->data() + base + 2 * planeSize, crp, planeSize * 2);
 
-    *widthOut  = fi.width;
-    *heightOut = fi.height;
+        chd_frame_free(frame);
+    }
+    *widthOut = w;
+    *heightOut = h;
 
-    chd_frame_free(frame);
     chd_decoder_free(dec);
     chd_video_free(video);
     return 0;
 }
 
-int testEncodeOrcColourBars() {
-    std::string encodeOrc, assets;
-    int rc = resolveEncodeOrc(&encodeOrc, &assets);
-    if (rc < 0) return 1;
-    if (rc > 0) {
-        std::cout << "test_integration: CHD_ENCODE_ORC unset — "
-                     "skipping encode-orc integration\n";
-        return 0;
-    }
-
-    const fs::path dir = fs::temp_directory_path() / "chd_integration_chroma";
-    fs::remove_all(dir);
-
-    std::string tbc, sidecar;
-    if (buildEncodeOrcFixture(encodeOrc, assets, dir, &tbc, &sidecar) != 0) return 1;
-
-    std::vector<uint16_t> yuv;
-    int32_t w = 0, h = 0;
-    if (decodeFrameViaAbi(tbc, sidecar, CHD_DEC_NTSC_2D, &yuv, &w, &h) != 0) return 1;
-
-    const size_t plane = static_cast<size_t>(w) * h;
-    const uint16_t *y  = yuv.data();
-    const uint16_t *cb = yuv.data() + plane;
-    const uint16_t *cr = yuv.data() + 2 * plane;
-
-    // Walk every pixel; gather min/max. Color bars produce wide chroma
-    // swings — the synthetic-black fixtures elsewhere can't see this.
+// Examine one frame's three planes; assert chroma swing thresholds
+// indicating the carrier was actually demodulated to YUV. Both NTSC
+// and PAL 75 % colour bars produce chroma swings well above ±5000 u16
+// codes from C_ZERO=32768; the bar is set wide enough to survive
+// future decoder tweaks but tight enough that a regression flattening
+// chroma to neutral shows up immediately.
+int assertChromaSwing(const FixtureSpec &spec, int64_t frameIdx,
+                      const uint16_t *y, const uint16_t *cb, const uint16_t *cr,
+                      size_t plane) {
     int yMin = 65535, yMax = 0;
     int cbMin = 65535, cbMax = 0;
     int crMin = 65535, crMax = 0;
@@ -244,126 +274,131 @@ int testEncodeOrcColourBars() {
         if (cr[i] < crMin) crMin = cr[i];
         if (cr[i] > crMax) crMax = cr[i];
     }
-
-    // Sanity thresholds — wide enough to survive future decoder tweaks,
-    // tight enough that a regression flattening chroma to C_ZERO shows
-    // up immediately. 75 % colour bars give chroma swings on the order
-    // of 20000 u16 codes in each direction from C_ZERO; ±5000 leaves
-    // plenty of headroom.
     REQUIRE(yMax  - yMin  > 30000);
     REQUIRE(cbMax - cbMin > 10000);
     REQUIRE(crMax - crMin > 10000);
-    // Chroma must straddle the neutral point — pure-positive or
-    // pure-negative would mean we lost the carrier demod.
     REQUIRE(cbMin < 32768 && cbMax > 32768);
     REQUIRE(crMin < 32768 && crMax > 32768);
-
-    std::cout << "test_integration: encode-orc colour bars OK"
+    std::cout << "  " << spec.label << " frame " << frameIdx
               << "  Y=[" << yMin << "," << yMax << "]"
               << "  Cb=[" << cbMin << "," << cbMax << "]"
               << "  Cr=[" << crMin << "," << crMax << "]\n";
+    return 0;
+}
+
+// Per-fixture chroma-content test: synthesize the fixture, decode all
+// `durationFrames`, assert each frame's chroma planes carry real swing.
+int runChromaContentCheck(const std::string &encodeOrc, const std::string &assets,
+                          const FixtureSpec &spec) {
+    const fs::path dir = fs::temp_directory_path() /
+                         (std::string("chd_integration_chroma_") + spec.label);
+    fs::remove_all(dir);
+
+    std::string tbc, sidecar;
+    if (buildEncodeOrcFixture(encodeOrc, assets, spec, dir, &tbc, &sidecar) != 0) return 1;
+
+    // Confirm chd sees the expected video standard + field geometry up front.
+    {
+        chd_video_t *v = nullptr;
+        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &v) == CHD_OK);
+        chd_video_info_t info{};
+        REQUIRE(chd_video_get_info(v, &info) == CHD_OK);
+        REQUIRE(info.standard    == spec.expectedStandard);
+        REQUIRE(info.field_width == spec.expectedFieldWidth);
+        REQUIRE(info.num_frames  >= spec.durationFrames);
+        chd_video_free(v);
+    }
+
+    std::vector<uint16_t> yuv;
+    int32_t w = 0, h = 0;
+    if (decodeFramesViaAbi(tbc, sidecar, spec.chdKind, 0, spec.durationFrames,
+                           &yuv, &w, &h) != 0) return 1;
+    const size_t plane = static_cast<size_t>(w) * h;
+
+    std::cout << "test_integration: " << spec.label
+              << " " << w << "x" << h << " * " << spec.durationFrames << " frames\n";
+    for (int64_t k = 0; k < spec.durationFrames; k++) {
+        const uint16_t *base = yuv.data() + static_cast<size_t>(k) * plane * 3;
+        if (assertChromaSwing(spec, k, base, base + plane, base + 2 * plane, plane) != 0) return 1;
+    }
 
     fs::remove_all(dir);
     return 0;
 }
 
-// Golden-frame comparison: run the legacy ld-chroma-decoder (at the
-// pinned f39e59e18 commit) against the encode-orc fixture and assert
-// chd's YUV444P16 output matches pixel-for-pixel. The port of
-// the upstream Comb / PALColour / OutputWriter chain should produce
-// bit-identical results to the reference; any drift here means a
-// regression in the chroma pipeline.
-int testGoldenFrameComparison() {
-    const char *ldChroma = std::getenv("CHD_LD_CHROMA_DECODER");
-    if (ldChroma == nullptr || ldChroma[0] == 0) {
-        std::cout << "test_integration: CHD_LD_CHROMA_DECODER unset — "
-                     "skipping golden-frame comparison\n";
-        return 0;
-    }
-    if (!fs::exists(ldChroma)) {
-        std::cerr << "FAIL: CHD_LD_CHROMA_DECODER=" << ldChroma
-                  << " does not exist\n";
-        return 1;
-    }
-
-    std::string encodeOrc, assets;
-    int rc = resolveEncodeOrc(&encodeOrc, &assets);
-    if (rc < 0) return 1;
-    if (rc > 0) {
-        // Golden compare needs encode-orc too; quietly skip in that case
-        // rather than failing — the encode-orc test above already
-        // explains the situation.
-        std::cout << "test_integration: CHD_ENCODE_ORC unset — "
-                     "skipping golden-frame comparison\n";
-        return 0;
-    }
-
-    const fs::path dir = fs::temp_directory_path() / "chd_integration_golden";
+// Per-fixture golden-frame compare: synthesize the fixture, decode
+// every frame via chd, run the legacy ld-chroma-decoder against the
+// same TBC with -l = durationFrames, diff Y/Cb/Cr planes frame by
+// frame. Each frame must match bit-exactly.
+int runGoldenCompare(const std::string &encodeOrc, const std::string &assets,
+                     const std::string &ldChroma, const FixtureSpec &spec) {
+    const fs::path dir = fs::temp_directory_path() /
+                         (std::string("chd_integration_golden_") + spec.label);
     fs::remove_all(dir);
 
     std::string tbc, sidecar;
-    if (buildEncodeOrcFixture(encodeOrc, assets, dir, &tbc, &sidecar) != 0) return 1;
+    if (buildEncodeOrcFixture(encodeOrc, assets, spec, dir, &tbc, &sidecar) != 0) return 1;
 
-    // Drive the legacy decoder with the same options the chd ABI uses
-    // (NTSC 2D comb, padding=1, YUV output). The reference reads the
-    // sidecar from `--input-metadata` by default.
     const std::string goldenPath = (dir / "golden.yuv").string();
-    const std::string cmd =
-        "\"" + std::string(ldChroma) + "\""
-        " -f ntsc2d -p yuv --pad 1 --quiet"
-        " --input-metadata \"" + sidecar + "\""
-        " \"" + tbc + "\""
-        " \"" + goldenPath + "\"";
-    if (runShell(cmd) != 0) {
-        std::cerr << "FAIL: ld-chroma-decoder invocation failed: " << cmd << "\n";
+    std::ostringstream cmd;
+    cmd << "\"" << ldChroma << "\""
+        << " -f " << spec.legacyDecoderFlag
+        << " -p yuv --pad 1 --quiet"
+        << " -l " << spec.durationFrames
+        << " --input-metadata \"" << sidecar << "\""
+        << " \"" << tbc << "\""
+        << " \"" << goldenPath << "\"";
+    if (runShell(cmd.str()) != 0) {
+        std::cerr << "FAIL: ld-chroma-decoder invocation failed: " << cmd.str() << "\n";
         return 1;
     }
     REQUIRE(fs::exists(goldenPath));
 
     std::vector<uint16_t> chdYuv;
     int32_t w = 0, h = 0;
-    if (decodeFrameViaAbi(tbc, sidecar, CHD_DEC_NTSC_2D, &chdYuv, &w, &h) != 0) return 1;
-
+    if (decodeFramesViaAbi(tbc, sidecar, spec.chdKind, 0, spec.durationFrames,
+                           &chdYuv, &w, &h) != 0) return 1;
     const size_t plane = static_cast<size_t>(w) * h;
-    std::vector<uint16_t> goldenYuv(plane * 3);
+    const size_t frameU16 = plane * 3;
+    const size_t totalU16 = frameU16 * static_cast<size_t>(spec.durationFrames);
+
+    std::vector<uint16_t> goldenYuv(totalU16);
     {
         std::ifstream gf(goldenPath, std::ios::binary);
         REQUIRE(gf.is_open());
         gf.read(reinterpret_cast<char *>(goldenYuv.data()),
-                static_cast<std::streamsize>(plane * 3 * 2));
+                static_cast<std::streamsize>(totalU16 * 2));
         REQUIRE(gf.good());
     }
 
-    // Per-plane comparison: assert exact match. The chd port descended
-    // from the same Comb / PALColour / OutputWriter source as the
-    // legacy binary, so identity is the right bar; any drift signals
-    // a regression that needs investigating.
-    auto checkPlane = [&](const char *name,
-                           const uint16_t *a, const uint16_t *b) -> int {
-        int maxDiff = 0;
-        size_t exact = 0;
-        for (size_t i = 0; i < plane; i++) {
-            int d = static_cast<int>(a[i]) - static_cast<int>(b[i]);
-            if (d < 0) d = -d;
-            if (d > maxDiff) maxDiff = d;
-            if (d == 0) exact++;
-        }
-        std::cout << "  " << name << " plane: max|diff|=" << maxDiff
-                  << "  exact=" << exact << "/" << plane << "\n";
-        if (maxDiff != 0) {
-            std::cerr << "FAIL: " << name
-                      << " plane drifted from ld-chroma-decoder reference\n";
-            return 1;
-        }
-        return 0;
-    };
+    std::cout << "test_integration: " << spec.label
+              << " golden compare (" << w << "x" << h << ", "
+              << spec.durationFrames << " frames)\n";
 
-    std::cout << "test_integration: golden-frame comparison ("
-              << w << "x" << h << " YUV444P16)\n";
-    if (checkPlane("Y ", chdYuv.data(),             goldenYuv.data()))             return 1;
-    if (checkPlane("Cb", chdYuv.data() + plane,     goldenYuv.data() + plane))     return 1;
-    if (checkPlane("Cr", chdYuv.data() + 2 * plane, goldenYuv.data() + 2 * plane)) return 1;
-    std::cout << "test_integration: golden frame OK (bit-exact)\n";
+    for (int64_t k = 0; k < spec.durationFrames; k++) {
+        const uint16_t *chdBase    = chdYuv.data()    + static_cast<size_t>(k) * frameU16;
+        const uint16_t *goldenBase = goldenYuv.data() + static_cast<size_t>(k) * frameU16;
+        auto checkPlane = [&](const char *name,
+                              const uint16_t *a, const uint16_t *b) -> int {
+            int maxDiff = 0;
+            for (size_t i = 0; i < plane; i++) {
+                int d = static_cast<int>(a[i]) - static_cast<int>(b[i]);
+                if (d < 0) d = -d;
+                if (d > maxDiff) maxDiff = d;
+            }
+            if (maxDiff != 0) {
+                std::cerr << "FAIL: " << spec.label << " frame " << k
+                          << " " << name << " plane drifted (max|diff|="
+                          << maxDiff << ")\n";
+                return 1;
+            }
+            return 0;
+        };
+        if (checkPlane("Y",  chdBase,             goldenBase))             return 1;
+        if (checkPlane("Cb", chdBase + plane,     goldenBase + plane))     return 1;
+        if (checkPlane("Cr", chdBase + 2 * plane, goldenBase + 2 * plane)) return 1;
+        std::cout << "  frame " << k << ": bit-exact across all planes\n";
+    }
 
     fs::remove_all(dir);
     return 0;
@@ -372,8 +407,38 @@ int testGoldenFrameComparison() {
 }  // namespace
 
 int main() {
-    if (int rc = testEncodeOrcColourBars();   rc != 0) return rc;
-    if (int rc = testGoldenFrameComparison(); rc != 0) return rc;
+    // ── encode-orc → chd chroma-content checks ────────────────────────
+    {
+        std::string encodeOrc, assets;
+        const int rc = resolveEncodeOrc(kNtscSpec, &encodeOrc, &assets);
+        if (rc < 0) return 1;
+        if (rc > 0) {
+            std::cout << "test_integration: CHD_ENCODE_ORC unset — "
+                         "skipping encode-orc integration\n";
+            std::cout << "test_integration: PASS\n";
+            return 0;
+        }
+        // From here on encode-orc is available; the PAL spec uses the
+        // same binary + assets root with a different sub-asset.
+        if (runChromaContentCheck(encodeOrc, assets, kNtscSpec) != 0) return 1;
+        if (runChromaContentCheck(encodeOrc, assets, kPalSpec)  != 0) return 1;
+
+        // ── golden-frame compare (optional second binary) ─────────────
+        const char *ldChroma = std::getenv("CHD_LD_CHROMA_DECODER");
+        if (ldChroma == nullptr || ldChroma[0] == 0) {
+            std::cout << "test_integration: CHD_LD_CHROMA_DECODER unset — "
+                         "skipping golden-frame comparison\n";
+        } else {
+            if (!fs::exists(ldChroma)) {
+                std::cerr << "FAIL: CHD_LD_CHROMA_DECODER=" << ldChroma
+                          << " does not exist\n";
+                return 1;
+            }
+            if (runGoldenCompare(encodeOrc, assets, ldChroma, kNtscSpec) != 0) return 1;
+            if (runGoldenCompare(encodeOrc, assets, ldChroma, kPalSpec)  != 0) return 1;
+        }
+    }
+
     std::cout << "test_integration: PASS\n";
     return 0;
 }
