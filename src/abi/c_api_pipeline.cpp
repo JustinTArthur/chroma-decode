@@ -2,24 +2,31 @@
 #include <chromadec/pipeline.h>
 
 #include "../common/error_state.h"
+#include "handles.h"
 
 extern "C" {
 
-static chd_status_t not_yet(const char *what) {
-    chd::detail::set_last_error(std::string("chromadec: ") + what + " is not implemented yet");
-    return CHD_E_INTERNAL;
+chd_status_t chd_cancel_create(chd_cancel_t **out) {
+    if (out == nullptr) {
+        chd::detail::set_last_error("chd_cancel_create: null argument");
+        return CHD_E_INVALID_ARG;
+    }
+    *out = new chd_cancel();
+    return CHD_OK;
 }
 
-chd_status_t chd_cancel_create(chd_cancel_t **) {
-    return not_yet("chd_cancel_create");
+void chd_cancel_request(chd_cancel_t *c) {
+    if (c == nullptr) return;
+    c->requested.store(true, std::memory_order_release);
 }
 
-void chd_cancel_request(chd_cancel_t *) {}
-
-int chd_cancel_is_requested(const chd_cancel_t *) {
-    return 0;
+int chd_cancel_is_requested(const chd_cancel_t *c) {
+    if (c == nullptr) return 0;
+    return c->requested.load(std::memory_order_acquire) ? 1 : 0;
 }
 
-void chd_cancel_free(chd_cancel_t *) {}
+void chd_cancel_free(chd_cancel_t *c) {
+    delete c;
+}
 
 }  // extern "C"

@@ -21,6 +21,7 @@ chromadec_sources = files(
   'reader/cvbs_composite_source.cpp',
   'reader/cvbs_yc_source.cpp',
   'reader/tbc_source.cpp',
+  'decoders/registry.cpp',
   'decoders/source_field.cpp',
   'decoders/mono/mono_decoder.cpp',
   'decoders/palcolour/palcolour.cpp',

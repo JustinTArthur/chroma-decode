@@ -7,6 +7,30 @@ All notable changes to this project will be documented in this file. Format:
 ## [Unreleased]
 
 ### Added
+- C ABI decode loop: `chd_decoder_set_option_*` /
+  `chd_decoder_has_option` / `chd_decoder_set_nn_model` /
+  `chd_decoder_commit` / `chd_decode_frame` (sync, random-access by
+  frame index) / `chd_decode_frames_async` / `chd_cancel_*` and the
+  full `chd_frame_*` accessor set (`chd_frame_get_info`,
+  `chd_frame_get_plane`, `chd_frame_get_plane_float`,
+  `chd_frame_copy_plane_float`, `chd_frame_free`). Supports all four
+  pixel formats: `YUV444P16`, `YUV444_FLOAT` (zero-copy float planes
+  rendered direct from `ComponentFrame`), `RGB48` (interleaved with
+  per-plane byte-offset accessors), and `GRAY16`. Dropout correction
+  is wired into the decode worker between `SourceField::loadFields`
+  and `Decoder::decodeFrames`; per-frame stats land in
+  `chd_decoder_get_last_dropout_stats`. CVBS primaries (which the corrector
+  defers from the legacy `LdDecodeMetaData`) get a synthesized
+  metadata in-flight so the same code path works for TBC + CVBS.
+- Decoder registry (`src/decoders/registry.{h,cpp}`): translates the
+  thirteen `chd_decoder_kind_t` enumerators into concrete
+  `chd::decoders::Decoder` subclasses + applies caller-supplied
+  options from the C ABI option maps. Centralises option-name →
+  option-type → applicable-kinds validation behind
+  `optionApplies` (backing `chd_decoder_has_option` and every
+  `chd_decoder_set_option_*` call) and `kindUsesNn` (gating NN model
+  binding). `CHD_DEC_AUTO` resolves to `NTSC_2D` for NTSC primaries
+  and `PAL_2D` for PAL/PAL_M.
 - Initial skeleton: meson build, public C header stubs, repo layout.
 - Preserved git history extracted from `ld-decode` via `git filter-repo`
   (paths `tools/ld-chroma-decoder/` + `tools/library/`, ~478 commits)

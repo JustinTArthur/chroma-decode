@@ -54,6 +54,19 @@ test_dropout_corrector = executable('test_dropout_corrector',
   dependencies: [sqlite3_dep])
 test('dropout_corrector', test_dropout_corrector)
 
+# end-to-end C ABI decode loop (chd_decoder_create →
+# chd_decoder_set_option_* → chd_decoder_commit → chd_decode_frame →
+# chd_frame_get_plane). Links the shared lib so the test goes through the
+# public C ABI; the synthetic-TBC fixture is built in-test (same shape as
+# test_encode_orc_color_bars). Also covers chd_decode_frames_async +
+# chd_cancel_t.
+test_decode_frame_abi = executable('test_decode_frame_abi',
+  'unit/test_decode_frame_abi.cpp',
+  include_directories: [public_inc, version_inc],
+  link_with: libchromadec,
+  dependencies: [sqlite3_dep, threads_dep])
+test('decode_frame_abi', test_decode_frame_abi)
+
 # NN framework smoke tests (Ort::Env lifecycle, provider
 # availability, chd_nn_model_load error path). The body self-skips when
 # the library was built with with_nn=false. Links the shared lib so the

@@ -12,14 +12,20 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 #include <chromadec/decoder.h>
 #include <chromadec/dropout.h>
+#include <chromadec/frame.h>
 
+#include "../decoders/decoder_base.h"
+#include "../decoders/registry.h"
 #include "../metadata/core.h"
+#include "../output/output_writer.h"
 #include "../reader/source.h"
 
 // chd_nn_model is only populated when the build has NN support (the C ABI
@@ -37,20 +43,83 @@ struct chd_video {
     std::vector<std::unique_ptr<chd::reader::ISource>> extraSources;
 };
 
-// chd_decoder is intentionally minimal here: the actual decoder
-// pipeline lives in C++ internals (chd::pipeline::DecoderPool +
-// chd::decoders::*) and the ABI wrappers chd_decoder_commit /
-// chd_decode_frame stay stubbed for now. The handle still gets
-// allocated by chd_decoder_create so the dropout-option setters can
-// store caller-supplied config + return last-frame stats by handle.
+// Per-decoder state. The lifecycle has two phases:
+//   1. Uncommitted: allocated by chd_decoder_create; options are stashed
+//      into the optionMaps + nnModelPending; commit() has not run yet so
+//      `decoder` and `committed` are unset.
+//   2. Committed: chd_decoder_commit has built the concrete Decoder,
+//      configured it, snapshotted the post-padding VideoParameters, and
+//      wired up the OutputWriter. From here on, set_option_* + set_nn_model
+//      reject changes (commit is one-shot per the public header).
 struct chd_decoder {
     chd_video_t *video = nullptr;        // non-owning back-pointer
     chd_decoder_kind_t kind = CHD_DEC_AUTO;
 
+    // Pending options stashed by chd_decoder_set_option_*. Drained on
+    // commit; left around afterwards in case future surfaces want
+    // to inspect what the caller asked for.
+    chd::decoders::registry::OptionMaps optionMaps;
+#if defined(CHD_WITH_NN)
+    std::shared_ptr<chd::nn::OrtSession> nnModelPending;
+#endif
+
     bool dropoutOptsSet = false;
     chd_dropout_opts_t dropoutOpts{};
 
+    // Per-frame dropout stats from the most recent chd_decode_frame call.
+    // Guarded by decodeMutex when multiple threads call chd_decode_frame
+    // concurrently on the same handle (the API permits this).
     chd_dropout_stats_t lastDropoutStats{};
+
+    // Set by commit. Once true, the fields below are populated and the
+    // decode entry points work.
+    bool committed = false;
+
+    chd_decoder_kind_t resolvedKind = CHD_DEC_AUTO;
+    std::unique_ptr<chd::decoders::Decoder> decoder;
+
+    // Configured pipeline state. videoParameters is the post-padding
+    // copy from OutputWriter::updateConfiguration (which mutates the
+    // active-region bounds when padding > 1).
+    chd::metadata::LdDecodeMetaData::VideoParameters videoParameters{};
+    chd::output::OutputWriter outputWriter;
+    chd::output::OutputWriter::Configuration outputConfig{};
+    chd_pixel_format_t outputPixelFormat = CHD_PIXEL_YUV444P16;
+    int32_t threadCount = 0;
+
+    int32_t lookBehind = 0;
+    int32_t lookAhead  = 0;
+
+    // Serialises commit() vs chd_decode_frame, and serialises updates to
+    // lastDropoutStats. The Decoder subclasses themselves are NOT
+    // documented as thread-safe (each owns mutable per-frame state), so
+    // chd_decode_frame holds this around the actual decodeFrames call too.
+    std::mutex decodeMutex;
+};
+
+// chd_frame owns the rendered pixel data for one decoded frame. The format
+// field follows the configured output pixel format from chd_decoder_commit;
+// for u16 formats `u16Plane` holds the OutputWriter convert() output, and
+// for CHD_PIXEL_YUV444_FLOAT the three `floatPlane`s hold contiguous
+// float planes converted directly from the decoder's ComponentFrame.
+struct chd_frame {
+    chd_frame_info_t info{};
+    chd_pixel_format_t format = CHD_PIXEL_YUV444P16;
+
+    // YUV444P16 / RGB48 / GRAY16: packed/planar as written by
+    // chd::output::OutputWriter::convert. activeWidth/outputHeight match
+    // info.width / info.height (post-padding).
+    chd::output::OutputFrame u16Plane;
+
+    // YUV444_FLOAT: three contiguous planes, each width*height floats.
+    std::vector<float> floatPlane[3];
+
+    int32_t activeWidth  = 0;
+    int32_t outputHeight = 0;
+};
+
+struct chd_cancel {
+    std::atomic<bool> requested{false};
 };
 
 #if defined(CHD_WITH_NN)
