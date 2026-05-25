@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     dropoutcorrect.cpp
@@ -23,118 +24,122 @@
 
 ************************************************************************/
 
-#include "dropoutcorrect.h"
-#include "correctorpool.h"
-#include "filters.h"
-#include "tbc/logging.h"
+#include "dropout_corrector.h"
 
-DropOutCorrect::DropOutCorrect(QAtomicInt& _abort, CorrectorPool& _correctorPool, QObject *parent)
-    : QThread(parent), abort(_abort), correctorPool(_correctorPool)
+#include <cstdlib>
+
+#include "luma_filters.h"
+
+namespace chd::dropout {
+
+DropoutCorrector::DropoutCorrector(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParams)
+    : videoParameters(videoParams)
 {
 }
 
-void DropOutCorrect::run()
+// Single-source convenience: delegates to multi-source with no extras
+void DropoutCorrector::correctFrame(chd::decoders::SourceField &firstField,
+                                    chd::decoders::SourceField &secondField,
+                                    bool overCorrect, bool intraField,
+                                    DropoutCorrectionStats *stats)
 {
-    // Variables for getInputFrame
-    qint32 frameNumber;
-    QVector<qint32> firstFieldSeqNo;
-    QVector<qint32> secondFieldSeqNo;
-    QVector<SourceVideo::Data> firstSourceField;
-    QVector<SourceVideo::Data> secondSourceField;
-    QVector<LdDecodeMetaData::Field> firstFieldMetadata;
-    QVector<LdDecodeMetaData::Field> secondFieldMetadata;
-    bool reverse, intraField, overCorrect;
-    QVector<qint32> availableSourcesForFrame;
-    QVector<double> sourceFrameQuality;
+    correctFrame(firstField, secondField, {}, overCorrect, intraField, stats);
+}
 
-    // Statistics
-    Statistics statistics;
+// Multi-source correction
+void DropoutCorrector::correctFrame(chd::decoders::SourceField &primaryFirst,
+                                    chd::decoders::SourceField &primarySecond,
+                                    const std::vector<ExtraSourceFrame> &extraSources,
+                                    bool overCorrect, bool intraField,
+                                    DropoutCorrectionStats *stats)
+{
+    // Determine broadcast field order from metadata
+    chd::decoders::SourceField &broadcastFirst  = primaryFirst.field.isFirstField ? primaryFirst  : primarySecond;
+    chd::decoders::SourceField &broadcastSecond = primaryFirst.field.isFirstField ? primarySecond : primaryFirst;
 
-    while(!abort) {
-        // Get the next field to process from the input file
-        if (!correctorPool.getInputFrame(frameNumber, firstFieldSeqNo, firstSourceField, firstFieldMetadata,
-                                       secondFieldSeqNo, secondSourceField, secondFieldMetadata,
-                                       videoParameters, reverse, intraField, overCorrect,
-                                       availableSourcesForFrame, sourceFrameQuality)) {
-            // No more input fields -- exit
-            break;
-        }
+    // Build total source count: primary (0) + extras (1..N)
+    const int32_t totalSources = 1 + static_cast<int32_t>(extraSources.size());
 
-        // Reset statistics
-        statistics.sameSourceConcealment = 0;
-        statistics.multiSourceConcealment = 0;
-        statistics.multiSourceCorrection = 0;
-        statistics.totalReplacementDistance = 0;
+    // Collect all field data + per-field metadata + per-source VP, indexed by source.
+    std::vector<chd::reader::Data> allFirstFieldData(totalSources);
+    std::vector<chd::reader::Data> allSecondFieldData(totalSources);
+    std::vector<chd::metadata::LdDecodeMetaData::Field> allFirstFieldMeta(totalSources);
+    std::vector<chd::metadata::LdDecodeMetaData::Field> allSecondFieldMeta(totalSources);
+    std::vector<chd::metadata::LdDecodeMetaData::VideoParameters> allVideoParams(totalSources);
+    std::vector<double> sourceQuality(totalSources);
 
-        qint32 totalAvailableSources = firstFieldSeqNo.size();
-        tbcDebugStream().nospace() << "DropOutCorrect::process(): Frame #" << frameNumber << " - There are " << totalAvailableSources << " sources available of which " <<
-                              availableSourcesForFrame.size() << " contain the required frame";
+    // Source 0 = primary
+    allFirstFieldData[0]  = broadcastFirst.data;
+    allSecondFieldData[0] = broadcastSecond.data;
+    allFirstFieldMeta[0]  = broadcastFirst.field;
+    allSecondFieldMeta[0] = broadcastSecond.field;
+    allVideoParams[0]     = videoParameters;
+    // Primary quality from VITS bPSNR average across both fields.
+    sourceQuality[0] = (broadcastFirst.field.vitsMetrics.bPSNR
+                       + broadcastSecond.field.vitsMetrics.bPSNR) / 2.0;
 
-        // Copy the input frames' data to the target frames.
-        // We'll use these both as source and target during correction, which
-        // is OK because we're careful not to copy data from another dropout.
-        QVector<SourceVideo::Data> firstFieldData = firstSourceField;
-        QVector<SourceVideo::Data> secondFieldData = secondSourceField;
-
-        // Check if the frame contains drop-outs
-        if (firstFieldMetadata[0].dropOuts.empty() && secondFieldMetadata[0].dropOuts.empty()) {
-            // No correction required...
-            tbcDebugStream() << "DropOutCorrect::process(): Skipping fields [" <<
-                        firstFieldSeqNo[0] << "/" << secondFieldSeqNo[0] << "]";
-        } else {
-            // Perform correction...
-            tbcDebugStream().nospace() << "DropOutCorrect::process(): Correcting fields [" <<
-                        firstFieldSeqNo[0] << "/" << secondFieldSeqNo[0] << "] containing " <<
-                        firstFieldMetadata[0].dropOuts.size() + secondFieldMetadata[0].dropOuts.size() <<
-                        " drop-outs";
-
-            // Analyse the drop out locations in the first field
-            QVector<QVector<DropOutLocation>> firstFieldDropouts(totalAvailableSources);
-            for (qint32 i = 0; i < availableSourcesForFrame.size(); i++) {
-                qint32 currentSource = availableSourcesForFrame[i];
-                if (firstFieldMetadata[currentSource].dropOuts.size() > 0)
-                    firstFieldDropouts[currentSource] = setDropOutLocations(populateDropoutsVector(firstFieldMetadata[currentSource], overCorrect));
-            }
-
-            // Analyse the drop out locations in the second field
-            QVector<QVector<DropOutLocation>> secondFieldDropouts(totalAvailableSources);
-            for (qint32 i = 0; i < availableSourcesForFrame.size(); i++) {
-                qint32 currentSource = availableSourcesForFrame[i];
-                if (secondFieldMetadata[currentSource].dropOuts.size() > 0)
-                    secondFieldDropouts[currentSource] = setDropOutLocations(populateDropoutsVector(secondFieldMetadata[currentSource], overCorrect));
-            }
-
-            // Correct the first field
-            correctField(firstFieldDropouts, secondFieldDropouts, firstFieldData, secondFieldData, true, intraField, availableSourcesForFrame, sourceFrameQuality,
-                         statistics);
-
-            // Correct the second field
-            correctField(secondFieldDropouts, firstFieldDropouts, secondFieldData, firstFieldData, false, intraField, availableSourcesForFrame, sourceFrameQuality,
-                         statistics);
-        }
-
-        // Return the processed fields
-        correctorPool.setOutputFrame(frameNumber, firstFieldData[0], secondFieldData[0], firstFieldSeqNo[0], secondFieldSeqNo[0],
-                statistics.sameSourceConcealment, statistics.multiSourceConcealment, statistics.multiSourceCorrection ,statistics.totalReplacementDistance);
+    // Sources 1..N = extras
+    for (int32_t i = 0; i < static_cast<int32_t>(extraSources.size()); i++) {
+        allFirstFieldData[i + 1]  = extraSources[i].firstFieldData;
+        allSecondFieldData[i + 1] = extraSources[i].secondFieldData;
+        allFirstFieldMeta[i + 1]  = extraSources[i].firstFieldMeta;
+        allSecondFieldMeta[i + 1] = extraSources[i].secondFieldMeta;
+        allVideoParams[i + 1]     = extraSources[i].videoParams;
+        sourceQuality[i + 1]      = extraSources[i].quality;
     }
+
+    // Determine which sources are available (all of them, since the caller
+    // only passes extras that have the required frame).
+    std::vector<int32_t> availableSources;
+    availableSources.reserve(totalSources);
+    for (int32_t i = 0; i < totalSources; i++) availableSources.push_back(i);
+
+    // Skip if no dropouts in primary fields
+    if (allFirstFieldMeta[0].dropOuts.empty() && allSecondFieldMeta[0].dropOuts.empty()) {
+        return;
+    }
+
+    // Build dropout location vectors for all sources
+    std::vector<std::vector<DropOutLocation>> firstFieldDropouts(totalSources);
+    std::vector<std::vector<DropOutLocation>> secondFieldDropouts(totalSources);
+    for (int32_t i = 0; i < totalSources; i++) {
+        if (!allFirstFieldMeta[i].dropOuts.empty())
+            firstFieldDropouts[i] = setDropOutLocations(populateDropoutsVector(allFirstFieldMeta[i], allVideoParams[i], overCorrect));
+        if (!allSecondFieldMeta[i].dropOuts.empty())
+            secondFieldDropouts[i] = setDropOutLocations(populateDropoutsVector(allSecondFieldMeta[i], allVideoParams[i], overCorrect));
+    }
+
+    // Correct both fields
+    correctField(firstFieldDropouts, secondFieldDropouts, allFirstFieldData, allSecondFieldData,
+                 true, intraField, availableSources, sourceQuality, allVideoParams, stats);
+    correctField(secondFieldDropouts, firstFieldDropouts, allSecondFieldData, allFirstFieldData,
+                 false, intraField, availableSources, sourceQuality, allVideoParams, stats);
+
+    // Write corrected primary data back
+    broadcastFirst.data  = allFirstFieldData[0];
+    broadcastSecond.data = allSecondFieldData[0];
 }
 
 // Correct dropouts within one field
-void DropOutCorrect::correctField(const QVector<QVector<DropOutLocation>> &thisFieldDropouts,
-                                  const QVector<QVector<DropOutLocation>> &otherFieldDropouts,
-                                  QVector<SourceVideo::Data> &thisFieldData, const QVector<SourceVideo::Data> &otherFieldData,
-                                  bool thisFieldIsFirst, bool intraField, const QVector<qint32> &availableSourcesForFrame,
-                                  const QVector<double> &sourceFrameQuality, Statistics &statistics)
+void DropoutCorrector::correctField(const std::vector<std::vector<DropOutLocation>> &thisFieldDropouts,
+                                    const std::vector<std::vector<DropOutLocation>> &otherFieldDropouts,
+                                    std::vector<chd::reader::Data> &thisFieldData,
+                                    const std::vector<chd::reader::Data> &otherFieldData,
+                                    bool thisFieldIsFirst, bool intraField,
+                                    const std::vector<int32_t> &availableSources,
+                                    const std::vector<double> &sourceQuality,
+                                    const std::vector<chd::metadata::LdDecodeMetaData::VideoParameters> &allVideoParams,
+                                    DropoutCorrectionStats *stats)
 {
-    for (qint32 dropoutIndex = 0; dropoutIndex < thisFieldDropouts[0].size(); dropoutIndex++) {
+    for (int32_t dropoutIndex = 0; dropoutIndex < static_cast<int32_t>(thisFieldDropouts[0].size()); dropoutIndex++) {
         Replacement replacement, chromaReplacement;
 
         // Is the current dropout in the colour burst?
         if (thisFieldDropouts[0][dropoutIndex].location == Location::colourBurst) {
             replacement = findReplacementLine(thisFieldDropouts, otherFieldDropouts,
                                               dropoutIndex, thisFieldIsFirst, true,
-                                              true, intraField, availableSourcesForFrame,
-                                              sourceFrameQuality);
+                                              true, intraField, availableSources,
+                                              sourceQuality, allVideoParams);
         }
 
         // Is the current dropout in the visible video line?
@@ -142,33 +147,48 @@ void DropOutCorrect::correctField(const QVector<QVector<DropOutLocation>> &thisF
             // Find separate replacements for luma and chroma
             replacement = findReplacementLine(thisFieldDropouts, otherFieldDropouts,
                                               dropoutIndex, thisFieldIsFirst, false,
-                                              false, intraField, availableSourcesForFrame,
-                                              sourceFrameQuality);
+                                              false, intraField, availableSources,
+                                              sourceQuality, allVideoParams);
             chromaReplacement = findReplacementLine(thisFieldDropouts, otherFieldDropouts,
                                                     dropoutIndex, thisFieldIsFirst, true,
-                                                    false, intraField, availableSourcesForFrame,
-                                                    sourceFrameQuality);
+                                                    false, intraField, availableSources,
+                                                    sourceQuality, allVideoParams);
+        }
+
+        // Record stats from the chosen replacement (matches vapoursynth-analog's
+        // outer accounting rather than the upstream's same/multi-source split).
+        if (stats) {
+            if (replacement.fieldLine == -1) {
+                stats->failed++;
+            } else {
+                stats->corrected++;
+                stats->totalDistance += replacement.distance;
+            }
         }
 
         // Correct the data
-        correctDropOut(thisFieldDropouts[0][dropoutIndex], replacement, chromaReplacement, thisFieldData, otherFieldData, statistics);
+        correctDropOut(thisFieldDropouts[0][dropoutIndex], replacement, chromaReplacement,
+                       thisFieldData, otherFieldData);
     }
 }
 
 // Populate the dropouts vector
-QVector<DropOutCorrect::DropOutLocation> DropOutCorrect::populateDropoutsVector(LdDecodeMetaData::Field field, bool overCorrect)
+std::vector<DropoutCorrector::DropOutLocation> DropoutCorrector::populateDropoutsVector(
+    const chd::metadata::LdDecodeMetaData::Field &field,
+    const chd::metadata::LdDecodeMetaData::VideoParameters &vp,
+    bool overCorrect)
 {
-    QVector<DropOutLocation> fieldDropOuts;
+    std::vector<DropOutLocation> fieldDropOuts;
 
-    for (qint32 dropOutIndex = 0; dropOutIndex < field.dropOuts.size(); dropOutIndex++) {
+    for (int32_t dropOutIndex = 0; dropOutIndex < field.dropOuts.size(); dropOutIndex++) {
         DropOutLocation dropOutLocation;
         dropOutLocation.startx = field.dropOuts.startx(dropOutIndex);
         dropOutLocation.endx = field.dropOuts.endx(dropOutIndex);
         dropOutLocation.fieldLine = field.dropOuts.fieldLine(dropOutIndex);
-        dropOutLocation.location = DropOutCorrect::Location::unknown;
+        dropOutLocation.location = DropoutCorrector::Location::unknown;
 
         // Ignore dropouts outside the field's data
-        if (dropOutLocation.fieldLine < 1 || dropOutLocation.fieldLine > videoParameters[0].fieldHeight) {
+        if (dropOutLocation.fieldLine < 1 || dropOutLocation.fieldLine > vp.fieldHeight) {
             continue;
         }
 
@@ -179,50 +199,50 @@ QVector<DropOutCorrect::DropOutLocation> DropOutCorrect::populateDropoutsVector(
             // damaged discs where drop-outs can 'slope' in and out fooling ld-decode's
             // detection mechanisms
 
-            qint32 overCorrectionDots = 24;
+            int32_t overCorrectionDots = 24;
             if (dropOutLocation.startx > overCorrectionDots) dropOutLocation.startx -= overCorrectionDots;
             else dropOutLocation.startx = 0;
-            if (dropOutLocation.endx < videoParameters[0].fieldWidth - overCorrectionDots) dropOutLocation.endx += overCorrectionDots;
-            else dropOutLocation.endx = videoParameters[0].fieldWidth;
+            if (dropOutLocation.endx < vp.fieldWidth - overCorrectionDots) dropOutLocation.endx += overCorrectionDots;
+            else dropOutLocation.endx = vp.fieldWidth;
         }
 
-        fieldDropOuts.append(dropOutLocation);
+        fieldDropOuts.push_back(dropOutLocation);
     }
 
     return fieldDropOuts;
 }
 
 // Figure out where drop-outs occur and split them if in more than one area
-QVector<DropOutCorrect::DropOutLocation> DropOutCorrect::setDropOutLocations(QVector<DropOutCorrect::DropOutLocation> dropOuts)
+std::vector<DropoutCorrector::DropOutLocation> DropoutCorrector::setDropOutLocations(std::vector<DropoutCorrector::DropOutLocation> dropOuts)
 {
     // Split count shows if a drop-out has been split (i.e. the original
     // drop-out covered more than one area).
     //
     // Since a drop-out can span multiple areas, we have to keep
     // splitting the drop-outs until there is nothing left to split
-    qint32 splitCount = 0;
+    int32_t splitCount = 0;
 
     do {
-        qint32 noOfDropOuts = dropOuts.size();
+        int32_t noOfDropOuts = static_cast<int32_t>(dropOuts.size());
         splitCount = 0;
 
-        for (qint32 index = 0; index < noOfDropOuts; index++) {
+        for (int32_t index = 0; index < noOfDropOuts; index++) {
             // Does the drop-out start in the colour burst area?
-            if (dropOuts[index].startx <= videoParameters[0].colourBurstEnd) {
+            if (dropOuts[index].startx <= videoParameters.colourBurstEnd) {
                 dropOuts[index].location = Location::colourBurst;
 
                 // Does the drop-out end in the colour burst area?
-                if (dropOuts[index].endx > videoParameters[0].colourBurstEnd) {
+                if (dropOuts[index].endx > videoParameters.colourBurstEnd) {
                     // Split the drop-out in two
                     DropOutLocation tempDropOut;
-                    tempDropOut.startx = videoParameters[0].colourBurstEnd + 1;
+                    tempDropOut.startx = videoParameters.colourBurstEnd + 1;
                     tempDropOut.endx = dropOuts[index].endx;
                     tempDropOut.fieldLine = dropOuts[index].fieldLine;
                     tempDropOut.location = Location::colourBurst;
-                    dropOuts.append(tempDropOut);
+                    dropOuts.push_back(tempDropOut);
 
                     // Shorten the original drop out
-                    dropOuts[index].endx = videoParameters[0].colourBurstEnd;
+                    dropOuts[index].endx = videoParameters.colourBurstEnd;
 
                     splitCount++;
                 }
@@ -231,15 +251,15 @@ QVector<DropOutCorrect::DropOutLocation> DropOutCorrect::setDropOutLocations(QVe
             // Does the drop-out start in the active video area?
             // Note: Here we use the colour burst end as the active video start (to prevent a case where the
             // drop out begins between the colour burst level end and active video start and would go undetected)
-            else if (dropOuts[index].startx > videoParameters[0].colourBurstEnd && dropOuts[index].startx <= videoParameters[0].activeVideoEnd) {
+            else if (dropOuts[index].startx > videoParameters.colourBurstEnd && dropOuts[index].startx <= videoParameters.activeVideoEnd) {
                 dropOuts[index].location = Location::visibleLine;
 
                 // Does the drop-out end in the active video area?
-                if (dropOuts[index].endx > videoParameters[0].activeVideoEnd) {
+                if (dropOuts[index].endx > videoParameters.activeVideoEnd) {
                     // No need to split as we don't care about the sync area
 
                     // Shorten the original drop out
-                    dropOuts[index].endx = videoParameters[0].activeVideoEnd;
+                    dropOuts[index].endx = videoParameters.activeVideoEnd;
 
                     splitCount++;
                 }
@@ -253,22 +273,23 @@ QVector<DropOutCorrect::DropOutLocation> DropOutCorrect::setDropOutLocations(QVe
 // Find a replacement line to take replacement data from.  This method looks both up and down the field
 // for the nearest replacement line that doesn't contain a drop-out itself (to prevent copying bad data
 // over bad data).
-DropOutCorrect::Replacement DropOutCorrect::findReplacementLine(const QVector<QVector<DropOutLocation>> &thisFieldDropouts,
-                                                                const QVector<QVector<DropOutLocation>> &otherFieldDropouts,
-                                                                qint32 dropOutIndex, bool thisFieldIsFirst, bool matchChromaPhase,
-                                                                bool isColourBurst, bool intraField,
-                                                                const QVector<qint32> &availableSourcesForFrame,
-                                                                const QVector<double> &sourceFrameQuality)
+DropoutCorrector::Replacement DropoutCorrector::findReplacementLine(const std::vector<std::vector<DropOutLocation>> &thisFieldDropouts,
+                                                                    const std::vector<std::vector<DropOutLocation>> &otherFieldDropouts,
+                                                                    int32_t dropOutIndex, bool thisFieldIsFirst, bool matchChromaPhase,
+                                                                    bool isColourBurst, bool intraField,
+                                                                    const std::vector<int32_t> &availableSources,
+                                                                    const std::vector<double> &sourceQuality,
+                                                                    const std::vector<chd::metadata::LdDecodeMetaData::VideoParameters> &allVideoParams)
 {
     // Define the minimum step size to use when searching for replacement
     // lines, and the offset to the nearest replacement line in the other
     // field.
-    qint32 stepAmount, otherFieldOffset;
+    int32_t stepAmount, otherFieldOffset;
     if (!matchChromaPhase) {
         // We're not trying to match the chroma phase, so any line will do.
         stepAmount = 1;
         otherFieldOffset = -1;
-    } else if (videoParameters[0].system == PAL || videoParameters[0].system == PAL_M) {
+    } else if (videoParameters.system == chd::metadata::PAL || videoParameters.system == chd::metadata::PAL_M) {
         // For PAL: [Poynton ch44 p529]
         //
         // - Subcarrier has 283.7516 cycles per line, so there's a (nearly) 90
@@ -312,23 +333,23 @@ DropOutCorrect::Replacement DropOutCorrect::findReplacementLine(const QVector<QV
     }
 
     // Look for potential replacement lines
-    QVector<DropOutCorrect::Replacement> candidates;
+    std::vector<DropoutCorrector::Replacement> candidates;
 
-    for (qint32 i = 0; i < availableSourcesForFrame.size(); i++) {
-        qint32 currentSource = availableSourcesForFrame[i];
+    for (int32_t i = 0; i < static_cast<int32_t>(availableSources.size()); i++) {
+        int32_t currentSource = availableSources[i];
 
         // Examine this field:
 
         // Look up the field for a replacement
         findPotentialReplacementLine(thisFieldDropouts, dropOutIndex,
                                      thisFieldDropouts, true, 0, -stepAmount,
-                                     currentSource, sourceFrameQuality,
+                                     currentSource, sourceQuality, allVideoParams,
                                      candidates);
 
         // Look down the field for a replacement
         findPotentialReplacementLine(thisFieldDropouts, dropOutIndex,
                                      thisFieldDropouts, true, stepAmount, stepAmount,
-                                     currentSource, sourceFrameQuality,
+                                     currentSource, sourceQuality, allVideoParams,
                                      candidates);
 
         // Only check the other field for visible line replacements
@@ -338,19 +359,16 @@ DropOutCorrect::Replacement DropOutCorrect::findReplacementLine(const QVector<QV
             // Look up the field for a replacement
             findPotentialReplacementLine(thisFieldDropouts, dropOutIndex,
                                          otherFieldDropouts, false, otherFieldOffset, -stepAmount,
-                                         currentSource, sourceFrameQuality,
+                                         currentSource, sourceQuality, allVideoParams,
                                          candidates);
 
             // Look down the field for a replacement
             findPotentialReplacementLine(thisFieldDropouts, dropOutIndex,
                                          otherFieldDropouts, false, otherFieldOffset + stepAmount, stepAmount,
-                                         currentSource, sourceFrameQuality,
+                                         currentSource, sourceQuality, allVideoParams,
                                          candidates);
         }
     }
-
-    tbcDebugStream() << (isColourBurst ? "Colourburst" : "Visible video") << "dropout on line"
-             << thisFieldDropouts[0][dropOutIndex].fieldLine << "of" << (thisFieldIsFirst ? "first" : "second") << "field";
 
     // If no candidate is found, return no replacement
     Replacement replacement;
@@ -365,15 +383,11 @@ DropOutCorrect::Replacement DropOutCorrect::findReplacementLine(const QVector<QV
         for (const Replacement &candidate: candidates) {
             // Work out the corresponding output frame line numbers.
             // The first field (in a .tbc, for both PAL and NTSC) contains the top frame line.
-            const qint32 dropoutFrameLine = (2 * thisFieldDropouts[0][dropOutIndex].fieldLine) + (thisFieldIsFirst ? 0 : 1);
-            const qint32 sourceFrameLine = (2 * candidate.fieldLine) + (candidate.isSameField ? (thisFieldIsFirst ? 0 : 1)
-                                                                                              : (thisFieldIsFirst ? 1 : 0));
+            const int32_t dropoutFrameLine = (2 * thisFieldDropouts[0][dropOutIndex].fieldLine) + (thisFieldIsFirst ? 0 : 1);
+            const int32_t sourceFrameLine = (2 * candidate.fieldLine) + (candidate.isSameField ? (thisFieldIsFirst ? 0 : 1)
+                                                                                               : (thisFieldIsFirst ? 1 : 0));
 
-            const qint32 distance = qAbs(dropoutFrameLine - sourceFrameLine);
-            tbcDebugStream() << (candidate.isSameField ? "This" : "Other") << "field replacement candidate for line" <<
-                        thisFieldDropouts[0][dropOutIndex].fieldLine << "is line" <<
-                        candidate.fieldLine << "distance" << distance << "of source" << candidate.sourceNumber <<
-                        "with a quality of" << candidate.quality;
+            const int32_t distance = std::abs(dropoutFrameLine - sourceFrameLine);
 
             // Choose the candidate if the distance is less
             if (distance < replacement.distance) {
@@ -389,43 +403,33 @@ DropOutCorrect::Replacement DropOutCorrect::findReplacementLine(const QVector<QV
         }
     }
 
-    if (replacement.fieldLine != -1) {
-        tbcDebugStream() << "Selected replacement is" <<
-                    (replacement.isSameField ? "same" : "other") << "field, line" <<
-                    replacement.fieldLine << "of source" << replacement.sourceNumber << (matchChromaPhase ? "(chroma phase matched)" : "(whole signal)") <<
-                    "with a quality of" << replacement.quality;
-    } else {
-        tbcDebugStream() << "No viable replacement selected for" << thisFieldDropouts[0][dropOutIndex].fieldLine;
-    }
-
-
     return replacement;
 }
 
 // Given a dropout, scan through a source field for the nearest replacement line that doesn't have overlapping dropouts.
 // Adds a Replacement to candidates if one was found.
-void DropOutCorrect::findPotentialReplacementLine(const QVector<QVector<DropOutLocation>> &targetDropouts, qint32 targetIndex,
-                                                  const QVector<QVector<DropOutLocation>> &sourceDropouts, bool isSameField,
-                                                  qint32 sourceOffset, qint32 stepAmount,
-                                                  qint32 sourceNo, const QVector<double> &sourceFrameQuality,
-                                                  QVector<Replacement> &candidates)
+void DropoutCorrector::findPotentialReplacementLine(const std::vector<std::vector<DropOutLocation>> &targetDropouts, int32_t targetIndex,
+                                                    const std::vector<std::vector<DropOutLocation>> &sourceDropouts, bool isSameField,
+                                                    int32_t sourceOffset, int32_t stepAmount,
+                                                    int32_t sourceNo, const std::vector<double> &sourceQuality,
+                                                    const std::vector<chd::metadata::LdDecodeMetaData::VideoParameters> &allVideoParams,
+                                                    std::vector<Replacement> &candidates)
 {
     // Calculate the start source line, applying sourceOffset to find a line with the right chroma phase
-    qint32 sourceLine = targetDropouts[0][targetIndex].fieldLine + sourceOffset;
+    int32_t sourceLine = targetDropouts[0][targetIndex].fieldLine + sourceOffset;
 
     // Is the line within the active range?
-    if ((sourceLine - 1) < videoParameters[sourceNo].firstActiveFieldLine
-        || (sourceLine - 1) >= videoParameters[sourceNo].lastActiveFieldLine) {
-        tbcDebugStream() << "Line" << sourceLine << "is not in active range - ignoring";
+    if ((sourceLine - 1) < allVideoParams[sourceNo].firstActiveFieldLine
+        || (sourceLine - 1) >= allVideoParams[sourceNo].lastActiveFieldLine) {
         return;
     }
 
     // Hunt for a replacement, stopping at the last full line before the half-line between fields
-    while ((sourceLine - 1) >= videoParameters[sourceNo].firstActiveFieldLine
-           && sourceLine < videoParameters[sourceNo].lastActiveFieldLine) {
+    while ((sourceLine - 1) >= allVideoParams[sourceNo].firstActiveFieldLine
+           && sourceLine < allVideoParams[sourceNo].lastActiveFieldLine) {
         // Is there a dropout that overlaps the one we're trying to replace?
         bool hasOverlap = false;
-        for (qint32 sourceIndex = 0; sourceIndex < sourceDropouts[sourceNo].size(); sourceIndex++) {
+        for (int32_t sourceIndex = 0; sourceIndex < static_cast<int32_t>(sourceDropouts[sourceNo].size()); sourceIndex++) {
             if (sourceDropouts[sourceNo][sourceIndex].fieldLine == sourceLine &&
                 (targetDropouts[0][targetIndex].endx - sourceDropouts[sourceNo][sourceIndex].startx) >= 0 &&
                 (sourceDropouts[sourceNo][sourceIndex].endx - targetDropouts[0][targetIndex].startx) >= 0) {
@@ -445,7 +449,7 @@ void DropOutCorrect::findPotentialReplacementLine(const QVector<QVector<DropOutL
             replacement.sourceNumber = sourceNo;
 
             // Set the quality of the replacement
-            replacement.quality = sourceFrameQuality[sourceNo];
+            replacement.quality = sourceQuality[sourceNo];
 
             candidates.push_back(replacement);
             return;
@@ -454,28 +458,26 @@ void DropOutCorrect::findPotentialReplacementLine(const QVector<QVector<DropOutL
 }
 
 // Correct a dropout by copying data from a replacement line.
-void DropOutCorrect::correctDropOut(const DropOutLocation &dropOut,
-                                    const Replacement &replacement, const Replacement &chromaReplacement,
-                                    QVector<SourceVideo::Data> &thisFieldData, const QVector<SourceVideo::Data> &otherFieldData,
-                                    Statistics &statistics)
+void DropoutCorrector::correctDropOut(const DropOutLocation &dropOut,
+                                      const Replacement &replacement, const Replacement &chromaReplacement,
+                                      std::vector<chd::reader::Data> &thisFieldData,
+                                      const std::vector<chd::reader::Data> &otherFieldData)
 {
     if (replacement.fieldLine == -1) {
         // No correction needed
         return;
     }
 
-    const quint16 *sourceLine = (replacement.isSameField ? thisFieldData[replacement.sourceNumber].data()
-                                                         : otherFieldData[replacement.sourceNumber].data())
-                                + ((replacement.fieldLine - 1) * videoParameters[0].fieldWidth);
-    quint16 *targetLine = thisFieldData[0].data() + ((dropOut.fieldLine - 1) * videoParameters[0].fieldWidth);
+    const uint16_t *sourceLine = (replacement.isSameField ? thisFieldData[replacement.sourceNumber].data()
+                                                          : otherFieldData[replacement.sourceNumber].data())
+                                + ((replacement.fieldLine - 1) * videoParameters.fieldWidth);
+    uint16_t *targetLine = thisFieldData[0].data() + ((dropOut.fieldLine - 1) * videoParameters.fieldWidth);
 
     // Choose whole signal or just chroma replacement
     // Don't use chroma if the source of the replacement is > 0 and coming from the same line in another source
     if ((chromaReplacement.fieldLine == -1) || ((dropOut.fieldLine == replacement.fieldLine) && (dropOut.fieldLine == chromaReplacement.fieldLine))) {
         // No separate chroma replacement; just copy the whole signal
-        tbcDebugStream() << "Whole signal replacement - Source is fieldline" << replacement.fieldLine << "from source" << replacement.sourceNumber;
-
-        for (qint32 pixel = dropOut.startx; pixel < dropOut.endx; pixel++) {
+        for (int32_t pixel = dropOut.startx; pixel < dropOut.endx; pixel++) {
             targetLine[pixel] = sourceLine[pixel];
         }
     } else {
@@ -483,15 +485,12 @@ void DropOutCorrect::correctDropOut(const DropOutLocation &dropOut,
         // frequencies (mostly chroma) from chromaReplacement. As this is only
         // a 1D filter, it won't achieve very good separation, but it's good
         // enough for the purposes of replacing a dropout.
-        tbcDebugStream() << "Luma replacement - Source is fieldline" << replacement.fieldLine << "from source" << replacement.sourceNumber;
-        tbcDebugStream() << "Chroma replacement - Source is fieldline" << chromaReplacement.fieldLine << "from source" << chromaReplacement.sourceNumber;
-
         Filters filters;
-        QVector<quint16> lineBuf(videoParameters[0].fieldWidth);
+        std::vector<uint16_t> lineBuf(videoParameters.fieldWidth);
         auto filterLineBuf = [&] {
-            if (videoParameters[0].system == PAL) {
+            if (videoParameters.system == chd::metadata::PAL) {
                 filters.palLumaFirFilter(lineBuf.data(), lineBuf.size());
-            } else if (videoParameters[0].system == NTSC) {
+            } else if (videoParameters.system == chd::metadata::NTSC) {
                 filters.ntscLumaFirFilter(lineBuf.data(), lineBuf.size());
             } else {
                 filters.palMLumaFirFilter(lineBuf.data(), lineBuf.size());
@@ -499,32 +498,26 @@ void DropOutCorrect::correctDropOut(const DropOutLocation &dropOut,
         };
 
         // Extract LF from replacement
-        for (qint32 pixel = 0; pixel < videoParameters[0].fieldWidth; pixel++) {
+        for (int32_t pixel = 0; pixel < videoParameters.fieldWidth; pixel++) {
             lineBuf[pixel] = sourceLine[pixel];
         }
         filterLineBuf();
-        for (qint32 pixel = dropOut.startx; pixel < dropOut.endx; pixel++) {
+        for (int32_t pixel = dropOut.startx; pixel < dropOut.endx; pixel++) {
             targetLine[pixel] = lineBuf[pixel];
         }
 
         // Extract HF from chromaReplacement (by extracting LF, then subtracting from the original)
-        const quint16 *chromaLine = (chromaReplacement.isSameField ? thisFieldData[replacement.sourceNumber].data()
-                                                                   : otherFieldData[replacement.sourceNumber].data())
-                                    + ((chromaReplacement.fieldLine - 1) * videoParameters[0].fieldWidth);
-        for (qint32 pixel = 0; pixel < videoParameters[0].fieldWidth; pixel++) {
+        const uint16_t *chromaLine = (chromaReplacement.isSameField ? thisFieldData[chromaReplacement.sourceNumber].data()
+                                                                    : otherFieldData[chromaReplacement.sourceNumber].data())
+                                    + ((chromaReplacement.fieldLine - 1) * videoParameters.fieldWidth);
+        for (int32_t pixel = 0; pixel < videoParameters.fieldWidth; pixel++) {
             lineBuf[pixel] = chromaLine[pixel];
         }
         filterLineBuf();
-        for (qint32 pixel = dropOut.startx; pixel < dropOut.endx; pixel++) {
+        for (int32_t pixel = dropOut.startx; pixel < dropOut.endx; pixel++) {
             targetLine[pixel] += chromaLine[pixel] - lineBuf[pixel];
         }
     }
-
-    // Update statistics
-    if (replacement.sourceNumber == 0) statistics.sameSourceConcealment++;
-    else {
-        if (replacement.distance == 0) statistics.multiSourceCorrection++;
-        else statistics.multiSourceConcealment++;
-    }
-    statistics.totalReplacementDistance += replacement.distance;
 }
+
+}  // namespace chd::dropout

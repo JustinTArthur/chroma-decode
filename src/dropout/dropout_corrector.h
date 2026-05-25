@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     dropoutcorrect.h
@@ -23,28 +24,55 @@
 
 ************************************************************************/
 
-#ifndef DROPOUTCORRECT_H
-#define DROPOUTCORRECT_H
+#ifndef CHD_DROPOUT_DROPOUT_CORRECTOR_H
+#define CHD_DROPOUT_DROPOUT_CORRECTOR_H
 
-#include <QObject>
-#include <QElapsedTimer>
-#include <QAtomicInt>
-#include <QThread>
-#include <QDebug>
+#include <cstdint>
+#include <vector>
 
-#include "sourcevideo.h"
-#include "lddecodemetadata.h"
+#include "../decoders/source_field.h"
+#include "../metadata/core.h"
+#include "../reader/source.h"
 
-class CorrectorPool;
+namespace chd::dropout {
 
-class DropOutCorrect : public QThread
+struct DropoutCorrectionStats {
+    int corrected = 0;       // Dropout regions successfully replaced
+    int failed = 0;          // Dropout regions where no replacement was found
+    int64_t totalDistance = 0;  // Sum of spatial distances of all replacements
+};
+
+// Per-source frame data for multi-source correction.
+// Each extra source provides its field data and metadata for one frame.
+struct ExtraSourceFrame {
+    chd::reader::Data firstFieldData;
+    chd::reader::Data secondFieldData;
+    chd::metadata::LdDecodeMetaData::Field firstFieldMeta;
+    chd::metadata::LdDecodeMetaData::Field secondFieldMeta;
+    chd::metadata::LdDecodeMetaData::VideoParameters videoParams;
+    double quality = -1.0;  // Frame quality (average bPSNR of both fields)
+};
+
+class DropoutCorrector
 {
-    Q_OBJECT
 public:
-    explicit DropOutCorrect(QAtomicInt& _abort, CorrectorPool& _correctorPool, QObject *parent = nullptr);
+    explicit DropoutCorrector(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParams);
 
-protected:
-    void run() override;
+    // Single-source correction.
+    // Modifies SourceField::data in place before chroma decoding.
+    void correctFrame(chd::decoders::SourceField &firstField,
+                      chd::decoders::SourceField &secondField,
+                      bool overCorrect, bool intraField,
+                      DropoutCorrectionStats *stats = nullptr);
+
+    // Multi-source correction.
+    // Primary fields are modified in place. Extra sources provide replacement
+    // data from additional captures aligned via caller-supplied frame mapping.
+    void correctFrame(chd::decoders::SourceField &primaryFirst,
+                      chd::decoders::SourceField &primarySecond,
+                      const std::vector<ExtraSourceFrame> &extraSources,
+                      bool overCorrect, bool intraField,
+                      DropoutCorrectionStats *stats = nullptr);
 
 private:
     enum Location {
@@ -54,60 +82,55 @@ private:
     };
 
     struct DropOutLocation {
-        qint32 fieldLine;
-        qint32 startx;
-        qint32 endx;
+        int32_t fieldLine;
+        int32_t startx;
+        int32_t endx;
         Location location;
     };
 
     struct Replacement {
         // The default value is no replacement
-        Replacement() : isSameField(true), fieldLine(-1) {}
+        Replacement() : isSameField(true), fieldLine(-1), sourceNumber(0), quality(-1.0), distance(0) {}
 
         bool isSameField;
-        qint32 fieldLine;
+        int32_t fieldLine;
 
-        qint32 sourceNumber;
+        int32_t sourceNumber;
         double quality;
 
-        qint32 distance;
+        int32_t distance;
     };
 
-    // Statistics
-    struct Statistics {
-        qint32 sameSourceConcealment;
-        qint32 multiSourceConcealment;
-        qint32 multiSourceCorrection;
-        qint32 totalReplacementDistance;
-    };
+    chd::metadata::LdDecodeMetaData::VideoParameters videoParameters;
 
-    // Decoder pool
-    QAtomicInt& abort;
-    CorrectorPool& correctorPool;
-
-    QVector<LdDecodeMetaData::VideoParameters> videoParameters;
-
-    void correctField(const QVector<QVector<DropOutLocation> > &thisFieldDropouts,
-                      const QVector<QVector<DropOutLocation> > &otherFieldDropouts,
-                      QVector<SourceVideo::Data> &thisFieldData, const QVector<SourceVideo::Data> &otherFieldData,
-                      bool thisFieldIsFirst, bool intraField, const QVector<qint32> &availableSourcesForFrame,
-                      const QVector<double> &sourceFrameQuality, Statistics &statistics);
-    QVector<DropOutLocation> populateDropoutsVector(LdDecodeMetaData::Field field, bool overCorrect);
-    QVector<DropOutLocation> setDropOutLocations(QVector<DropOutLocation> dropOuts);
-    Replacement findReplacementLine(const QVector<QVector<DropOutLocation>> &thisFieldDropouts,
-                                    const QVector<QVector<DropOutLocation>> &otherFieldDropouts,
-                                    qint32 dropOutIndex, bool thisFieldIsFirst, bool matchChromaPhase,
-                                    bool isColourBurst, bool intraField, const QVector<qint32> &availableSourcesForFrame,
-                                    const QVector<double> &sourceFrameQuality);
-    void findPotentialReplacementLine(const QVector<QVector<DropOutLocation>> &targetDropouts, qint32 targetIndex,
-                                      const QVector<QVector<DropOutLocation>> &sourceDropouts, bool isSameField,
-                                      qint32 sourceOffset, qint32 stepAmount,
-                                      qint32 sourceNo, const QVector<double> &sourceFrameQuality,
-                                      QVector<Replacement> &candidates);
+    void correctField(const std::vector<std::vector<DropOutLocation> > &thisFieldDropouts,
+                      const std::vector<std::vector<DropOutLocation> > &otherFieldDropouts,
+                      std::vector<chd::reader::Data> &thisFieldData, const std::vector<chd::reader::Data> &otherFieldData,
+                      bool thisFieldIsFirst, bool intraField, const std::vector<int32_t> &availableSources,
+                      const std::vector<double> &sourceQuality,
+                      const std::vector<chd::metadata::LdDecodeMetaData::VideoParameters> &allVideoParams,
+                      DropoutCorrectionStats *stats);
+    std::vector<DropOutLocation> populateDropoutsVector(const chd::metadata::LdDecodeMetaData::Field &field,
+                                                        const chd::metadata::LdDecodeMetaData::VideoParameters &vp,
+                                                        bool overCorrect);
+    std::vector<DropOutLocation> setDropOutLocations(std::vector<DropOutLocation> dropOuts);
+    Replacement findReplacementLine(const std::vector<std::vector<DropOutLocation>> &thisFieldDropouts,
+                                    const std::vector<std::vector<DropOutLocation>> &otherFieldDropouts,
+                                    int32_t dropOutIndex, bool thisFieldIsFirst, bool matchChromaPhase,
+                                    bool isColourBurst, bool intraField, const std::vector<int32_t> &availableSources,
+                                    const std::vector<double> &sourceQuality,
+                                    const std::vector<chd::metadata::LdDecodeMetaData::VideoParameters> &allVideoParams);
+    void findPotentialReplacementLine(const std::vector<std::vector<DropOutLocation>> &targetDropouts, int32_t targetIndex,
+                                      const std::vector<std::vector<DropOutLocation>> &sourceDropouts, bool isSameField,
+                                      int32_t sourceOffset, int32_t stepAmount,
+                                      int32_t sourceNo, const std::vector<double> &sourceQuality,
+                                      const std::vector<chd::metadata::LdDecodeMetaData::VideoParameters> &allVideoParams,
+                                      std::vector<Replacement> &candidates);
     void correctDropOut(const DropOutLocation &dropOut,
                         const Replacement &replacement, const Replacement &chromaReplacement,
-                        QVector<SourceVideo::Data> &thisFieldData, const QVector<SourceVideo::Data> &otherFieldData,
-                        Statistics &statistics);
+                        std::vector<chd::reader::Data> &thisFieldData, const std::vector<chd::reader::Data> &otherFieldData);
 };
 
-#endif // DROPOUTCORRECT_H
+}  // namespace chd::dropout
+
+#endif  // CHD_DROPOUT_DROPOUT_CORRECTOR_H
