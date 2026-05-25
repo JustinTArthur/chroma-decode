@@ -3,10 +3,23 @@
 #include <chromadec/video.h>   // chd_init / chd_shutdown declarations
 #include <cstring>
 
+#if defined(CHD_WITH_NN)
+#include "../nn/ort_env.h"
+#endif
+
 extern "C" {
 
 chd_status_t chd_init(void)     { return CHD_OK; }
-void         chd_shutdown(void) {}
+
+void chd_shutdown(void) {
+#if defined(CHD_WITH_NN)
+    // chd_shutdown() tears down the Ort::Env singleton. This
+    // is opt-in (never auto-registered with atexit),
+    // since ORT provider DLLs run their own static destructors on unload
+    // and the Windows ordering is fragile.
+    chd::nn::OrtEnvSingleton::shutdown();
+#endif
+}
 
 const char *chd_version_string(void) {
     return CHROMADEC_VERSION_STRING;
@@ -20,8 +33,31 @@ void chd_version(int *major, int *minor, int *patch) {
 
 int chd_has_feature(const char *feature) {
     if (!feature) return 0;
-    /* Nothing wired up yet. Updated as features land. */
-    (void)feature;
+    if (std::strcmp(feature, "nn") == 0) {
+#if defined(CHD_WITH_NN)
+        return 1;
+#else
+        return 0;
+#endif
+    }
+    if (std::strcmp(feature, "cuda") == 0) {
+#if defined(CHD_WITH_CUDA)
+        return 1;
+#else
+        return 0;
+#endif
+    }
+    if (std::strcmp(feature, "fftw") == 0) {
+#if defined(CHD_WITH_FFTW)
+        return 1;
+#else
+        return 0;
+#endif
+    }
+    if (std::strcmp(feature, "sqlite") == 0) {
+        // SQLite is a hard dependency; if we got here, it's on.
+        return 1;
+    }
     return 0;
 }
 

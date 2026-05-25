@@ -40,9 +40,21 @@ if not ort_dep.found() and get_option('with_nn') and get_option('onnxruntime_roo
 endif
 
 has_nn     = get_option('with_nn') and ort_dep.found()
-has_cuda   = false  # wired up in a follow-up
+has_cuda   = false  # wired up in a follow-up (CUDA FFT path)
 has_fftw   = fftw3_dep.found()
 has_sqlite = sqlite3_dep.found()
+
+# If the user explicitly requested NN support but ORT is missing, fail loudly
+# rather than silently dropping NN. The default for with_nn is `true`, so
+# silent absence would mean every Linux/macOS dev build without ORT installed
+# would quietly omit NN — and that bites later when an integration test
+# loads a model expecting NN to be present.
+if get_option('with_nn') and not ort_dep.found()
+  error('with_nn=true but ONNX Runtime was not found via pkg-config or ' +
+        '-Donnxruntime_root. Install ORT (Homebrew formula `onnxruntime`, ' +
+        'apt `libonnxruntime-dev`, or download Microsoft GitHub release) or ' +
+        'pass -Dwith_nn=false to disable NN decoders.')
+endif
 
 # ── Public headers + library (include/ defines version_h via configure_file,
 #    placed at build/include/chromadec/version.h so <chromadec/version.h> works).

@@ -42,3 +42,13 @@ test_cvbs_reader = executable('test_cvbs_reader',
   link_with: libchromadec.get_static_lib(),
   dependencies: [sqlite3_dep])
 test('cvbs_reader', test_cvbs_reader)
+
+# NN framework smoke tests (Ort::Env lifecycle, provider
+# availability, chd_nn_model_load error path). The body self-skips when
+# the library was built with with_nn=false. Links the shared lib so the
+# test goes through the public C ABI; ORT itself is not directly linked.
+test_nn_framework = executable('test_nn_framework',
+  'unit/test_nn_framework.cpp',
+  include_directories: [public_inc, version_inc],
+  link_with: libchromadec)
+test('nn_framework', test_nn_framework)

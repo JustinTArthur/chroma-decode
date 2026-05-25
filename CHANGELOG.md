@@ -35,6 +35,27 @@ All notable changes to this project will be documented in this file. Format:
 - Per-source mutex on `TbcSource::getVideoField` and the new CVBS
   source classes so concurrent field reads from worker threads are
   race-free.
+- NN framework: ONNX Runtime integration scaffolding.
+  Process-wide `chd::nn::OrtEnvSingleton` (one `Ort::Env` per
+  process, lazy `std::call_once` init, opt-in `shutdown()` only
+  reachable via `chd_shutdown()`).
+  `chd::nn::OrtSession` RAII wrapper, shared across worker threads.
+  Provider selection (`chd::nn::provider_select`) with per-OS auto
+  chains — Windows: TensorRT → CUDA → DirectML → CPU; Linux: CUDA →
+  MIGraphX → CPU; macOS: CoreML → CPU — that walks the chain and
+  reports which provider actually attached. The C ABI exposes
+  `chd_nn_model_load`, `chd_nn_model_free`,
+  `chd_nn_model_get_active_provider`, `chd_nn_provider_is_available`,
+  `chd_nn_session_opts_default`. `chd_has_feature("nn"/"cuda"/
+  "fftw"/"sqlite")` is wired through to the build-time `with_*`
+  options. nnTransform3D and ldzeug2 decoder ports are deferred to
+  a follow-up.
+
+### Dependencies
+- ONNX Runtime (required when `with_nn=true`, the default). The
+  meson build fails loudly if `with_nn=true` and ORT is not
+  discoverable via pkg-config or `-Donnxruntime_root`; pass
+  `-Dwith_nn=false` to disable.
 - Decoder framework: `chd::decoders::Decoder` synchronous interface,
   `SourceField` data container, `chd::output::ComponentFrame` and
   `chd::output::OutputWriter`. Filter library
@@ -51,7 +72,7 @@ All notable changes to this project will be documented in this file. Format:
 - Unit tests: TBC reader round-trip and end-to-end pipeline sanity
   test.
 
-### Dependencies
+### Dependencies (legacy)
 - SQLite3 (required from this release).
 - FFTW3 (required by the Transform-PAL decoders).
 

@@ -35,6 +35,28 @@ chromadec_sources = files(
   'output/frame_canvas.cpp',
 )
 
+# NN framework (Ort::Env singleton, provider selection, model
+# load). Only compiled when ORT was discovered. The C ABI shims in
+# c_api_nn.cpp + c_api_lifecycle.cpp gate on the CHD_WITH_NN preprocessor
+# define so the library still builds + links without NN support.
+chromadec_deps = [threads_dep, sqlite3_dep, fftw3_dep]
+chromadec_cpp_args = []
+if has_nn
+  chromadec_sources += files(
+    'nn/ort_env.cpp',
+    'nn/ort_session.cpp',
+    'nn/provider_select.cpp',
+  )
+  chromadec_deps += [ort_dep]
+  chromadec_cpp_args += ['-DCHD_WITH_NN=1']
+endif
+if has_fftw
+  chromadec_cpp_args += ['-DCHD_WITH_FFTW=1']
+endif
+if has_cuda
+  chromadec_cpp_args += ['-DCHD_WITH_CUDA=1']
+endif
+
 # Symbol export discipline:
 # - On ELF (Linux), restrict exported symbols via a version script.
 # - On macOS, restrict via -exported_symbols_list.
@@ -50,7 +72,8 @@ endif
 libchromadec = library('chromadec',
   chromadec_sources,
   include_directories: [public_inc, version_inc],
-  dependencies: [threads_dep, sqlite3_dep, fftw3_dep],
+  dependencies: chromadec_deps,
+  cpp_args: chromadec_cpp_args,
   # NOTE: do NOT add -fvisibility=hidden. The version script (ELF) /
   # exports list (Mach-O) is the source of truth for what's exported.
   # -fvisibility=hidden would hide every internal symbol *and* the C ABI
