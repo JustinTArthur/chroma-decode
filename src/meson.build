@@ -52,6 +52,10 @@ if has_nn
     # sources without listing it separately here.
     'decoders/nntransform3d/nntransform3d_fft_cpu.cpp',
     'decoders/nntransform3d/nntransform3d_window.cpp',
+    # ldzeug2 NN-based NTSC decoders.
+    'decoders/ldzeug/ldzeug_base.cpp',
+    'decoders/ldzeug/ldzeug_color_cnn.cpp',
+    'decoders/ldzeug/ldzeug_luma_sep.cpp',
   )
   chromadec_deps += [ort_dep]
   chromadec_cpp_args += ['-DCHD_WITH_NN=1']

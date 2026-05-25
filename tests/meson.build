@@ -69,4 +69,15 @@ if has_nn
     link_with: libchromadec.get_static_lib(),
     dependencies: [ort_dep, threads_dep, fftw3_dep, sqlite3_dep])
   test('nntransform3d', test_nntransform3d)
+
+  # ldzeug2 NN decoders. Same shape as the nnTransform3D test:
+  # links the static lib for internal-header access; loads real ONNX
+  # sessions when the bundled jsaowji weights are discoverable.
+  test_ldzeug = executable('test_ldzeug',
+    'unit/test_ldzeug.cpp',
+    include_directories: [public_inc, version_inc],
+    cpp_args: ['-DCHD_WITH_NN=1'],
+    link_with: libchromadec.get_static_lib(),
+    dependencies: [ort_dep, threads_dep, fftw3_dep, sqlite3_dep])
+  test('ldzeug', test_ldzeug)
 endif

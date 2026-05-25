@@ -35,6 +35,19 @@ All notable changes to this project will be documented in this file. Format:
 - Per-source mutex on `TbcSource::getVideoField` and the new CVBS
   source classes so concurrent field reads from worker threads are
   race-free.
+- ldzeug2 decoders: `chd::decoders::ldzeug::
+  LdzeugColorCnnDecoder` (3-channel CVBS+I-carrier+Q-carrier ⇒
+  Y+I+Q, replacing both Y/C separation and chroma demod) and
+  `LdzeugLumaSepDecoder` (NN extracts Y; chroma is derived as
+  CVBS−Y plus an analytical I/Q demod with optional `c_colorlp_b`
+  bandpass). Both share `LdzeugDecoderBase`, take a
+  `chd::nn::OrtSession` via `setNnModel`, and select between
+  per-field and weaved-frame input via `setMode`. NTSC-only (the
+  reference weights bundled by jsaowji are NTSC). Original
+  algorithm + models authored by **jsaowji**. Smoke test loads
+  three real bundled models (color_cnn_v2_alot,
+  luma_sep_2dgray_fields, luma_sep_2d_frame_gray_gray_run2_latest)
+  via CoreML on macOS (37/39 nodes attached).
 - nnTransform3D CPU decoder: per-tile 3D-FFT + CNN-mask
   + IFFT chroma extraction, ported from tbc-tools' Comb extensions
   (authored by **asdfqazsnbb** and integrated by **harrypm**).
