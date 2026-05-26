@@ -1,38 +1,26 @@
-/************************************************************************
+/******************************************************************************
+ * jsonio.h
+ * ld-decode-tools TBC library
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2022 Adam Sampson
+ *
+ * This file is part of ld-decode-tools.
+ ******************************************************************************/
 
-    jsonio.h
+#ifndef CHD_METADATA_JSON_IO_H
+#define CHD_METADATA_JSON_IO_H
 
-    ld-decode-tools TBC library
-    Copyright (C) 2022 Adam Sampson
-
-    This file is part of ld-decode-tools.
-
-    ld-decode-tools is free software: you can redistribute it and/or
-    modify it under the terms of the GNU General Public License as
-    published by the Free Software Foundation, either version 3 of the
-    License, or (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-************************************************************************/
-
-#ifndef JSONIO_H
-#define JSONIO_H
-
-#include <QString>
 #include <cassert>
+#include <cstdint>
 #include <istream>
 #include <ostream>
 #include <stdexcept>
 #include <string>
 #include <stack>
 #include <cmath>
+
+namespace chd::metadata {
 
 class JsonReader
 {
@@ -52,7 +40,7 @@ public:
     }
 
     // Numbers
-    void read(qint64 &value);
+    void read(int64_t &value);
     void read(int &value);
     void read(double &value);
 
@@ -61,7 +49,6 @@ public:
 
     // Strings
     void read(std::string &value);
-    void read(QString &value);
 
     // Objects (each member followed by a value)
     void beginObject();
@@ -109,7 +96,7 @@ public:
 
     // Numbers
     void write(int value);
-    void write(qint64 value);
+    void write(int64_t value);
     void write(double value);
 
     // Booleans
@@ -117,7 +104,6 @@ public:
 
     // Strings
     void write(const char *value);
-    void write(const QString &value);
 
     // Objects (each member followed by a value)
     void beginObject();
@@ -145,4 +131,6 @@ private:
     std::stack<bool> atStarts;
 };
 
-#endif
+} // namespace chd::metadata
+
+#endif // CHD_METADATA_JSON_IO_H

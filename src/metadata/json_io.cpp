@@ -1,28 +1,14 @@
-/************************************************************************
+/******************************************************************************
+ * jsonio.cpp
+ * ld-decode-tools TBC library
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * SPDX-FileCopyrightText: 2022 Adam Sampson
+ *
+ * This file is part of ld-decode-tools.
+ ******************************************************************************/
 
-    jsonio.cpp
-
-    ld-decode-tools TBC library
-    Copyright (C) 2022 Adam Sampson
-
-    This file is part of ld-decode-tools.
-
-    ld-decode-tools is free software: you can redistribute it and/or
-    modify it under the terms of the GNU General Public License as
-    published by the Free Software Foundation, either version 3 of the
-    License, or (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-************************************************************************/
-
-#include "jsonio.h"
+#include "json_io.h"
 
 #include <limits>
 #if (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L) || (defined(__GNUC__) && __GNUC__ >= 11 && __cplusplus >= 201703L)
@@ -33,6 +19,8 @@
 #else
 #include <sstream>
 #endif
+
+namespace chd::metadata {
 
 // Recognise JSON space characters
 static bool isAsciiSpace(char c)
@@ -56,7 +44,7 @@ void JsonReader::read(int &value)
     readSignedInteger(value);
 }
 
-void JsonReader::read(qint64 &value)
+void JsonReader::read(int64_t &value)
 {
     readSignedInteger(value);
 }
@@ -89,12 +77,6 @@ void JsonReader::read(bool &value)
 void JsonReader::read(std::string &value)
 {
     readString(value);
-}
-
-void JsonReader::read(QString &value)
-{
-    readString(buf);
-    value = QString::fromUtf8(buf.c_str());
 }
 
 void JsonReader::beginObject()
@@ -366,7 +348,7 @@ void JsonWriter::write(int value)
     output << value;
 }
 
-void JsonWriter::write(qint64 value)
+void JsonWriter::write(int64_t value)
 {
     output << value;
 }
@@ -384,11 +366,6 @@ void JsonWriter::write(bool value)
 void JsonWriter::write(const char *value)
 {
     writeString(value);
-}
-
-void JsonWriter::write(const QString &value)
-{
-    writeString(value.toUtf8());
 }
 
 void JsonWriter::beginObject()
@@ -474,4 +451,6 @@ void JsonWriter::writeString(const char *str)
 
     output.put('"');
 }
+
+} // namespace chd::metadata
 
