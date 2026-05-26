@@ -43,6 +43,7 @@ chromadec_sources = files(
 
 chromadec_deps = [threads_dep, sqlite3_dep, fftw3_dep]
 chromadec_cpp_args = []
+chromadec_cuda_args = []
 if has_nn
   chromadec_sources += files(
     'nn/ort_env.cpp',
@@ -71,6 +72,10 @@ if has_cuda
   )
   chromadec_deps += [cuda_dep]
   chromadec_cpp_args += ['-DCHD_WITH_CUDA=1']
+  # sm_60 (Pascal) is the floor for native FP64 atomicAdd, which the
+  # OLA kernel needs. The resulting PTX JITs up to Ampere/Ada/Hopper
+  # on newer GPUs at runtime.
+  chromadec_cuda_args += ['-arch=sm_60']
 endif
 
 if has_rocm
@@ -116,6 +121,7 @@ libchromadec = library('chromadec',
   include_directories: [public_inc, version_inc],
   dependencies: chromadec_deps,
   cpp_args: chromadec_cpp_args,
+  cuda_args: chromadec_cuda_args,
   # NOTE: do NOT add -fvisibility=hidden. The version script (ELF) /
   # exports list (Mach-O) is the source of truth for what's exported.
   # -fvisibility=hidden would hide every internal symbol *and* the C ABI
