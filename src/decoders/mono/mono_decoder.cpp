@@ -25,6 +25,8 @@
 
 #include "mono_decoder.h"
 
+#include <cmath>
+
 #include "../filter/deemp.h"
 
 namespace chd::decoders::mono {
