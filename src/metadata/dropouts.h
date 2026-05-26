@@ -16,6 +16,8 @@
 
 namespace chd::metadata {
 
+class JsonReader;
+class JsonWriter;
 class SqliteReader;
 class SqliteWriter;
 
@@ -59,6 +61,7 @@ public:
 
     void read(SqliteReader &reader, int captureId, int fieldId);
     void write(SqliteWriter &writer, int captureId, int fieldId) const;
+    void read(JsonReader &reader);
 
 private:
     std::vector<int32_t> m_startx;

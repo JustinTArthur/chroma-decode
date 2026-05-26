@@ -22,6 +22,8 @@
 
 namespace chd::metadata {
 
+class JsonReader;
+class JsonWriter;
 class SqliteReader;
 class SqliteWriter;
 
@@ -46,6 +48,7 @@ public:
 
         void read(SqliteReader &reader, int captureId, int fieldId);
         void write(SqliteWriter &writer, int captureId, int fieldId) const;
+        void read(JsonReader &reader);
     };
 
     // Video metadata definition
@@ -98,6 +101,7 @@ public:
 
         void read(SqliteReader &reader, int captureId);
         void write(SqliteWriter &writer, int captureId) const;
+        void read(JsonReader &reader);
     };
 
     // Specification for customising the range of active lines in VideoParameters.
@@ -119,6 +123,7 @@ public:
 
         void read(SqliteReader &reader, int captureId, int fieldId);
         void write(SqliteWriter &writer, int captureId, int fieldId) const;
+        void read(JsonReader &reader);
     };
 
     // NTSC Specific metadata definition
@@ -134,6 +139,7 @@ public:
 
         void read(SqliteReader &reader, int captureId, int fieldId, ClosedCaption &closedCaption);
         void write(SqliteWriter &writer, int captureId, int fieldId) const;
+        void read(JsonReader &reader, ClosedCaption &closedCaption);
     };
 
     // VITC timecode definition
@@ -146,6 +152,7 @@ public:
 
         void read(SqliteReader &reader, int captureId, int fieldId);
         void write(SqliteWriter &writer, int captureId, int fieldId) const;
+        void read(JsonReader &reader);
     };
 
     // Closed Caption definition
@@ -157,6 +164,7 @@ public:
 
         void read(SqliteReader &reader, int captureId, int fieldId);
         void write(SqliteWriter &writer, int captureId, int fieldId) const;
+        void read(JsonReader &reader);
     };
 
     // PCM sound metadata definition
@@ -171,6 +179,7 @@ public:
 
         void read(SqliteReader &reader, int captureId);
         void write(SqliteWriter &writer, int captureId) const;
+        void read(JsonReader &reader);
     };
 
     // Field metadata definition
@@ -197,6 +206,7 @@ public:
 
         void read(SqliteReader &reader, int captureId);
         void write(SqliteWriter &writer, int captureId) const;
+        void read(JsonReader &reader);
     };
 
     // CLV timecode (used by frame number conversion methods)
@@ -275,6 +285,9 @@ private:
     std::vector<Field> fields;
     std::vector<int32_t> pcmAudioFieldStartSampleMap;
     std::vector<int32_t> pcmAudioFieldLengthMap;
+
+    bool readSqliteImpl(const std::string &fileName);
+    bool readJsonImpl(const std::string &fileName);
 
     void initialiseVideoSystemParameters();
     int32_t getFieldNumber(int32_t frameNumber, int32_t field);

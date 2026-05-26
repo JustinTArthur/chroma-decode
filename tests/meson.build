@@ -12,6 +12,15 @@ test_tbc_reader = executable('test_tbc_reader',
   dependencies: [sqlite3_dep])
 test('tbc_reader', test_tbc_reader)
 
+# JSON sidecar back-compat: open a synthetic `.tbc.json` pair through the
+# C ABI and confirm chd_video_open_composite falls through from missing .tbc.db
+# to the .tbc.json reader (legacy ld-decode format pre-2025-SQLite-migration).
+test_tbc_json_reader = executable('test_tbc_json_reader',
+  'unit/test_tbc_json_reader.cpp',
+  include_directories: [public_inc, version_inc],
+  link_with: libchromadec)
+test('tbc_json_reader', test_tbc_json_reader)
+
 # End-to-end pipeline sanity test. Reaches into internal
 # headers (the C ABI for decode isn't wired up yet) and
 # links against the static libchromadec so internal C++ symbols are

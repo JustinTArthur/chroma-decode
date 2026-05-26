@@ -14,7 +14,9 @@
 
 #include "ld_metadata_sqlite.h"
 
+#include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <filesystem>
 #include <map>
 #include <stdexcept>
@@ -269,8 +271,25 @@ void LdDecodeMetaData::clear()
     fields.clear();
 }
 
-// Read all metadata from SQLite file
+// Dispatch metadata reading by file extension. JSON sidecars (`.tbc.json`,
+// pre-2025 ld-decode format) route to readJsonImpl; everything else is
+// treated as a SQLite sidecar (`.tbc.db`, current format).
 bool LdDecodeMetaData::read(std::string fileName)
+{
+    auto endsWith = [](const std::string &s, const std::string &suffix) {
+        return s.size() >= suffix.size()
+            && std::equal(suffix.rbegin(), suffix.rend(), s.rbegin(),
+                          [](char a, char b) { return std::tolower(a) == std::tolower(b); });
+    };
+
+    if (endsWith(fileName, ".json")) {
+        return readJsonImpl(fileName);
+    }
+    return readSqliteImpl(fileName);
+}
+
+// Read all metadata from SQLite file
+bool LdDecodeMetaData::readSqliteImpl(const std::string &fileName)
 {
     if (!std::filesystem::exists(fileName)) {
         chd::log::error() << "SQLite input file does not exist:" << fileName;
