@@ -41,14 +41,22 @@ public:
         throw Error(message);
     }
 
-    // Read capture-level metadata
+    // Read capture-level metadata.
+    //
+    // The four trailing active-line outputs are populated only when the
+    // corresponding columns exist in the capture table (tbc-tools v4+
+    // schema bump, commit a0f45b0); they're set to -1 otherwise. -1
+    // signals "no sidecar override" — the caller should leave whatever
+    // standard default getSystemDefaults() supplies in place.
     bool readCaptureMetadata(int &captureId, std::string &system, std::string &decoder,
                            std::string &gitBranch, std::string &gitCommit,
                            double &videoSampleRate, int &activeVideoStart, int &activeVideoEnd,
                            int &fieldWidth, int &fieldHeight, int &numberOfSequentialFields,
                            int &colourBurstStart, int &colourBurstEnd,
                            bool &isMapped, bool &isSubcarrierLocked, bool &isWidescreen,
-                           int &white16bIre, int &black16bIre, int &blanking16bIre, std::string &captureNotes);
+                           int &white16bIre, int &black16bIre, int &blanking16bIre, std::string &captureNotes,
+                           int &firstActiveFieldLine, int &lastActiveFieldLine,
+                           int &firstActiveFrameLine, int &lastActiveFrameLine);
 
     // Read PCM audio parameters
     bool readPcmAudioParameters(int captureId, int &bits, bool &isSigned,

@@ -307,6 +307,8 @@ bool LdDecodeMetaData::readSqliteImpl(const std::string &fileName)
         int activeVideoStart, activeVideoEnd, fieldWidth, fieldHeight, numberOfSequentialFields;
         int colourBurstStart, colourBurstEnd, white16bIre, black16bIre, blanking16bIre;
         bool isMapped, isSubcarrierLocked, isWidescreen;
+        int sidecarFirstActiveFieldLine = -1, sidecarLastActiveFieldLine = -1;
+        int sidecarFirstActiveFrameLine = -1, sidecarLastActiveFrameLine = -1;
 
         // Read capture metadata
         if (!reader.readCaptureMetadata(captureId, system, decoder, gitBranch, gitCommit,
@@ -314,7 +316,9 @@ bool LdDecodeMetaData::readSqliteImpl(const std::string &fileName)
                                        fieldWidth, fieldHeight, numberOfSequentialFields,
                                        colourBurstStart, colourBurstEnd, isMapped,
                                        isSubcarrierLocked, isWidescreen, white16bIre,
-                                       black16bIre, blanking16bIre, captureNotes)) {
+                                       black16bIre, blanking16bIre, captureNotes,
+                                       sidecarFirstActiveFieldLine, sidecarLastActiveFieldLine,
+                                       sidecarFirstActiveFrameLine, sidecarLastActiveFrameLine)) {
             chd::log::error() << "Failed to read capture metadata from SQLite file";
             return false;
         }
@@ -358,13 +362,25 @@ bool LdDecodeMetaData::readSqliteImpl(const std::string &fileName)
         // Read all fields
         readFields(reader, captureId);
 
+        // Now we know the video system, initialise the rest of VideoParameters.
+        // Run inside the try block so the sidecar's active-line overrides are
+        // applied before we leave (-1s here = no override; standard defaults stay).
+        initialiseVideoSystemParameters();
+
+        if (sidecarFirstActiveFieldLine >= 0 || sidecarLastActiveFieldLine >= 0 ||
+            sidecarFirstActiveFrameLine >= 0 || sidecarLastActiveFrameLine >= 0) {
+            LineParameters sidecarLines;
+            sidecarLines.firstActiveFieldLine = sidecarFirstActiveFieldLine;
+            sidecarLines.lastActiveFieldLine  = sidecarLastActiveFieldLine;
+            sidecarLines.firstActiveFrameLine = sidecarFirstActiveFrameLine;
+            sidecarLines.lastActiveFrameLine  = sidecarLastActiveFrameLine;
+            processLineParameters(sidecarLines);
+        }
+
     } catch (SqliteReader::Error &error) {
         chd::log::error() << "Reading SQLite file failed:" << error.what();
         return false;
     }
-
-    // Now we know the video system, initialise the rest of VideoParameters
-    initialiseVideoSystemParameters();
 
     // Generate the PCM audio map based on the field metadata
     generatePcmAudioMap();
@@ -389,14 +405,18 @@ bool LdDecodeMetaData::write(std::string fileName) const
             int existingNumberOfSequentialFields, existingColourBurstStart, existingColourBurstEnd;
             int existingWhite16bIre, existingBlack16bIre, existingBlanking16bIre;
             bool existingIsMapped, existingIsSubcarrierLocked, existingIsWidescreen;
-            
-            if (reader.readCaptureMetadata(captureId, existingSystem, existingDecoder, 
+            int existingFirstActiveFieldLine, existingLastActiveFieldLine;
+            int existingFirstActiveFrameLine, existingLastActiveFrameLine;
+
+            if (reader.readCaptureMetadata(captureId, existingSystem, existingDecoder,
                                          existingGitBranch, existingGitCommit, existingVideoSampleRate,
-                                         existingActiveVideoStart, existingActiveVideoEnd, 
+                                         existingActiveVideoStart, existingActiveVideoEnd,
                                          existingFieldWidth, existingFieldHeight, existingNumberOfSequentialFields,
                                          existingColourBurstStart, existingColourBurstEnd,
                                          existingIsMapped, existingIsSubcarrierLocked, existingIsWidescreen,
-                                         existingWhite16bIre, existingBlack16bIre, existingBlanking16bIre, existingCaptureNotes)) {
+                                         existingWhite16bIre, existingBlack16bIre, existingBlanking16bIre, existingCaptureNotes,
+                                         existingFirstActiveFieldLine, existingLastActiveFieldLine,
+                                         existingFirstActiveFrameLine, existingLastActiveFrameLine)) {
                 chd::log::debug() << "Updating existing SQLite file with capture_id:" << captureId;
             } else {
                 chd::log::warn() << "Could not read existing capture metadata, treating as new file";

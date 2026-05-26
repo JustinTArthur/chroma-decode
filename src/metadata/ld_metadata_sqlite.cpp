@@ -185,18 +185,30 @@ bool SqliteReader::readCaptureMetadata(int &captureId, std::string &system, std:
                                      int &fieldWidth, int &fieldHeight, int &numberOfSequentialFields,
                                      int &colourBurstStart, int &colourBurstEnd,
                                      bool &isMapped, bool &isSubcarrierLocked, bool &isWidescreen,
-                                     int &white16bIre, int &black16bIre, int &blanking16bIre, std::string &captureNotes)
+                                     int &white16bIre, int &black16bIre, int &blanking16bIre, std::string &captureNotes,
+                                     int &firstActiveFieldLine, int &lastActiveFieldLine,
+                                     int &firstActiveFrameLine, int &lastActiveFrameLine)
 {
-    // Check if blanking_16b_ire column exists (for backward compatibility)
+    // Detect optional columns via a single PRAGMA table_info pass.
+    // blanking_16b_ire was added upstream in ld-decode commit 1e4a33db (2025);
+    // the four active-line columns were added by tbc-tools at v4 (commit a0f45b0).
+    // We accept files with or without any of these.
     bool hasBlankingColumn = false;
-    SqliteQuery checkQuery(db);
-    checkQuery.prepare("PRAGMA table_info(capture)");
-    if (checkQuery.exec()) {
-        while (checkQuery.next()) {
-            std::string columnName = checkQuery.value("name").toString();
-            if (columnName == "blanking_16b_ire") {
-                hasBlankingColumn = true;
-                break;
+    bool hasFirstActiveFieldLine = false;
+    bool hasLastActiveFieldLine = false;
+    bool hasFirstActiveFrameLine = false;
+    bool hasLastActiveFrameLine = false;
+    {
+        SqliteQuery checkQuery(db);
+        checkQuery.prepare("PRAGMA table_info(capture)");
+        if (checkQuery.exec()) {
+            while (checkQuery.next()) {
+                const std::string columnName = checkQuery.value("name").toString();
+                if      (columnName == "blanking_16b_ire")        hasBlankingColumn        = true;
+                else if (columnName == "first_active_field_line") hasFirstActiveFieldLine  = true;
+                else if (columnName == "last_active_field_line")  hasLastActiveFieldLine   = true;
+                else if (columnName == "first_active_frame_line") hasFirstActiveFrameLine  = true;
+                else if (columnName == "last_active_frame_line")  hasLastActiveFrameLine   = true;
             }
         }
     }
@@ -207,9 +219,11 @@ bool SqliteReader::readCaptureMetadata(int &captureId, std::string &system, std:
                        "field_width, field_height, number_of_sequential_fields, "
                        "colour_burst_start, colour_burst_end, is_mapped, is_subcarrier_locked, "
                        "is_widescreen, white_16b_ire, black_16b_ire";
-    if (hasBlankingColumn) {
-        queryStr += ", blanking_16b_ire";
-    }
+    if (hasBlankingColumn)        queryStr += ", blanking_16b_ire";
+    if (hasFirstActiveFieldLine)  queryStr += ", first_active_field_line";
+    if (hasLastActiveFieldLine)   queryStr += ", last_active_field_line";
+    if (hasFirstActiveFrameLine)  queryStr += ", first_active_frame_line";
+    if (hasLastActiveFrameLine)   queryStr += ", last_active_frame_line";
     queryStr += ", capture_notes FROM capture LIMIT 1";
 
     query.prepare(queryStr);
@@ -242,7 +256,7 @@ bool SqliteReader::readCaptureMetadata(int &captureId, std::string &system, std:
     isWidescreen = SqliteValue::toBoolOrDefault(query, "is_widescreen");
     white16bIre = SqliteValue::toIntOrDefault(query, "white_16b_ire");
     black16bIre = SqliteValue::toIntOrDefault(query, "black_16b_ire");
-    
+
     // Handle blanking_16b_ire field (may not exist in old metadata files)
     if (hasBlankingColumn) {
         blanking16bIre = SqliteValue::toIntOrDefault(query, "blanking_16b_ire");
@@ -250,7 +264,14 @@ bool SqliteReader::readCaptureMetadata(int &captureId, std::string &system, std:
         chd::log::warn() << "blanking_16b_ire field not found in metadata - using black_16b_ire value";
         blanking16bIre = black16bIre;
     }
-    
+
+    // Active-line range overrides — tbc-tools v4+. -1 signals "absent" so
+    // the caller leaves the standard default in place.
+    firstActiveFieldLine = hasFirstActiveFieldLine ? SqliteValue::toIntOrDefault(query, "first_active_field_line", -1) : -1;
+    lastActiveFieldLine  = hasLastActiveFieldLine  ? SqliteValue::toIntOrDefault(query, "last_active_field_line",  -1) : -1;
+    firstActiveFrameLine = hasFirstActiveFrameLine ? SqliteValue::toIntOrDefault(query, "first_active_frame_line", -1) : -1;
+    lastActiveFrameLine  = hasLastActiveFrameLine  ? SqliteValue::toIntOrDefault(query, "last_active_frame_line",  -1) : -1;
+
     captureNotes = query.value("capture_notes").toString();
 
     return true;

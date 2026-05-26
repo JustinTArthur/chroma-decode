@@ -549,6 +549,216 @@ int testParallelAsyncDispatch(const fs::path &dir) {
 
 }  // namespace
 
+// ─── Test 6: tbc-tools v4 active-line columns. ─────────────────────────────
+//
+// tbc-tools added first/last_active_field_line + first/last_active_frame_line
+// columns to the capture table at schema v4 (commit a0f45b0). When present,
+// our SQLite reader should feed them through LineParameters::applyTo so
+// the resulting VideoParameters override the standard ld-decode defaults.
+// Caller-supplied CHD_OPT_*_ACTIVE_*_LINE options should still win over
+// sidecar values, mirroring the established option precedence.
+
+// tbc-tools v4 capture schema (only the columns we need for this test —
+// PRAGMA table_info detection picks up the optional ones we set).
+const char *kTbcSchemaV4 = R"(
+PRAGMA user_version = 4;
+
+CREATE TABLE IF NOT EXISTS capture (
+    capture_id INTEGER PRIMARY KEY,
+    system TEXT NOT NULL,
+    decoder TEXT NOT NULL,
+    git_branch TEXT,
+    git_commit TEXT,
+    video_sample_rate REAL,
+    active_video_start INTEGER,
+    active_video_end INTEGER,
+    field_width INTEGER,
+    field_height INTEGER,
+    number_of_sequential_fields INTEGER,
+    colour_burst_start INTEGER,
+    colour_burst_end INTEGER,
+    is_mapped INTEGER,
+    is_subcarrier_locked INTEGER,
+    is_widescreen INTEGER,
+    white_16b_ire INTEGER,
+    black_16b_ire INTEGER,
+    blanking_16b_ire INTEGER,
+    first_active_field_line INTEGER,
+    last_active_field_line INTEGER,
+    first_active_frame_line INTEGER,
+    last_active_frame_line INTEGER,
+    capture_notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS field_record (
+    capture_id INTEGER NOT NULL,
+    field_id INTEGER NOT NULL,
+    audio_samples INTEGER,
+    decode_faults INTEGER,
+    disk_loc REAL,
+    efm_t_values INTEGER,
+    field_phase_id INTEGER,
+    file_loc INTEGER,
+    is_first_field INTEGER,
+    median_burst_ire REAL,
+    pad INTEGER,
+    sync_conf INTEGER,
+    ntsc_is_fm_code_data_valid INTEGER,
+    ntsc_fm_code_data INTEGER,
+    ntsc_field_flag INTEGER,
+    ntsc_is_video_id_data_valid INTEGER,
+    ntsc_video_id_data INTEGER,
+    ntsc_white_flag INTEGER
+);
+)";
+
+bool writeTbcSidecarV4(const std::string &path, int32_t numFields,
+                       int32_t firstFieldLine, int32_t lastFieldLine,
+                       int32_t firstFrameLine, int32_t lastFrameLine) {
+    sqlite3 *db = nullptr;
+    if (sqlite3_open(path.c_str(), &db) != SQLITE_OK) return false;
+    if (sqlite3_exec(db, kTbcSchemaV4, nullptr, nullptr, nullptr) != SQLITE_OK) {
+        sqlite3_close(db);
+        return false;
+    }
+    const char *capSql =
+        "INSERT INTO capture (capture_id, system, decoder, video_sample_rate, "
+        "  active_video_start, active_video_end, field_width, field_height, "
+        "  number_of_sequential_fields, colour_burst_start, colour_burst_end, "
+        "  is_mapped, is_subcarrier_locked, is_widescreen, "
+        "  white_16b_ire, black_16b_ire, blanking_16b_ire, "
+        "  first_active_field_line, last_active_field_line, "
+        "  first_active_frame_line, last_active_frame_line) "
+        "VALUES (1, 'NTSC', 'tbc-tools', 14318181.818, 192, 1791, 910, 263, ?, "
+        "        92, 119, 1, 1, 0, 51200, 17920, 16384, ?, ?, ?, ?);";
+    sqlite3_stmt *cap = nullptr;
+    if (sqlite3_prepare_v2(db, capSql, -1, &cap, nullptr) != SQLITE_OK) {
+        sqlite3_close(db);
+        return false;
+    }
+    sqlite3_bind_int(cap, 1, numFields);
+    sqlite3_bind_int(cap, 2, firstFieldLine);
+    sqlite3_bind_int(cap, 3, lastFieldLine);
+    sqlite3_bind_int(cap, 4, firstFrameLine);
+    sqlite3_bind_int(cap, 5, lastFrameLine);
+    if (sqlite3_step(cap) != SQLITE_DONE) {
+        sqlite3_finalize(cap);
+        sqlite3_close(db);
+        return false;
+    }
+    sqlite3_finalize(cap);
+
+    const char *fieldSql =
+        "INSERT INTO field_record (capture_id, field_id, is_first_field, "
+        "  sync_conf, median_burst_ire, ntsc_is_fm_code_data_valid, "
+        "  ntsc_fm_code_data, ntsc_field_flag, ntsc_is_video_id_data_valid, "
+        "  ntsc_video_id_data, ntsc_white_flag) "
+        "VALUES (1, ?, ?, 100, 25.0, 0, 0, 0, 0, 0, 0);";
+    sqlite3_stmt *fs = nullptr;
+    sqlite3_prepare_v2(db, fieldSql, -1, &fs, nullptr);
+    for (int32_t i = 0; i < numFields; i++) {
+        sqlite3_reset(fs);
+        sqlite3_bind_int(fs, 1, i);
+        sqlite3_bind_int(fs, 2, (i % 2 == 0) ? 1 : 0);
+        if (sqlite3_step(fs) != SQLITE_DONE) {
+            sqlite3_finalize(fs);
+            sqlite3_close(db);
+            return false;
+        }
+    }
+    sqlite3_finalize(fs);
+    sqlite3_close(db);
+    return true;
+}
+
+// Decode one frame against the given video + decoder; return the
+// chd_frame_info_t::height of frame 0. Used as a probe for active-line
+// settings: output height = (lastActiveFrameLine - firstActiveFrameLine)
+// after padding, so changes in line range surface as height changes.
+int32_t probeFrameHeight(chd_video_t *video, int32_t paddingMultiple,
+                         const std::vector<std::pair<const char *, int32_t>> &i32Options) {
+    chd_decoder_t *dec = nullptr;
+    if (chd_decoder_create(video, CHD_DEC_MONO, &dec) != CHD_OK) return -1;
+    if (chd_decoder_set_option_i32(dec, CHD_OPT_PADDING_MULTIPLE, paddingMultiple) != CHD_OK) {
+        chd_decoder_free(dec); return -1;
+    }
+    for (const auto &opt : i32Options) {
+        if (chd_decoder_set_option_i32(dec, opt.first, opt.second) != CHD_OK) {
+            chd_decoder_free(dec); return -1;
+        }
+    }
+    if (chd_decoder_commit(dec) != CHD_OK) { chd_decoder_free(dec); return -1; }
+    chd_frame_t *frame = nullptr;
+    if (chd_decode_frame(dec, 0, &frame) != CHD_OK || frame == nullptr) {
+        chd_decoder_free(dec); return -1;
+    }
+    chd_frame_info_t finfo;
+    chd_frame_get_info(frame, &finfo);
+    const int32_t h = finfo.height;
+    chd_frame_free(frame);
+    chd_decoder_free(dec);
+    return h;
+}
+
+int testActiveLineSidecarOverride(const fs::path &dir) {
+    constexpr int32_t fieldWidth  = 910;
+    constexpr int32_t fieldHeight = 263;
+    constexpr int32_t numFields   = 4;
+
+    auto runProbe = [&](const std::string &tbc, const std::string &sidecar,
+                        bool useV4, int32_t expectedHeight,
+                        const std::vector<std::pair<const char *, int32_t>> &i32Options) {
+        // Remove leftover state from any prior failing run — sqlite_open
+        // keeps existing files, so a leftover capture row would hit a
+        // UNIQUE-constraint failure on insert.
+        if (fs::exists(tbc))     fs::remove(tbc);
+        if (fs::exists(sidecar)) fs::remove(sidecar);
+
+        REQUIRE(writeBlackTbc(tbc, fieldWidth, fieldHeight, numFields));
+        if (useV4) {
+            REQUIRE(writeTbcSidecarV4(sidecar, numFields, /*ffl=*/40, /*lfl=*/241,
+                                                          /*ffrl=*/80, /*lfrl=*/480));
+        } else {
+            REQUIRE(writeTbcSidecar(sidecar, numFields));
+        }
+
+        chd_video_t *video = nullptr;
+        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+        const int32_t h = probeFrameHeight(video, /*padding=*/1, i32Options);
+        REQUIRE(h == expectedHeight);
+        chd_video_free(video);
+        fs::remove(tbc);
+        fs::remove(sidecar);
+        return 0;
+    };
+
+    // Baseline: standard ld-decode sidecar (no v4 columns). NTSC default
+    // active frame lines are 40..525 → height = 485 with padding=1.
+    if (int rc = runProbe((dir / "baseline.tbc").string(),
+                          (dir / "baseline.tbc.db").string(),
+                          /*useV4=*/false, /*expectedHeight=*/485, {});
+        rc != 0) return rc;
+
+    // tbc-tools v4 sidecar with custom frame lines 80..480 → height = 400.
+    // Verifies the SQLite reader picked up the columns and processed them
+    // through LineParameters::applyTo.
+    if (int rc = runProbe((dir / "v4.tbc").string(),
+                          (dir / "v4.tbc.db").string(),
+                          /*useV4=*/true, /*expectedHeight=*/400, {});
+        rc != 0) return rc;
+
+    // Same v4 sidecar (80..480 → 400) but the caller explicitly sets
+    // CHD_OPT_FIRST_ACTIVE_FRAME_LINE=40 → height = 440 (480-40). Verifies
+    // caller-set options override sidecar values.
+    if (int rc = runProbe((dir / "v4_override.tbc").string(),
+                          (dir / "v4_override.tbc.db").string(),
+                          /*useV4=*/true, /*expectedHeight=*/440,
+                          {{CHD_OPT_FIRST_ACTIVE_FRAME_LINE, 40}});
+        rc != 0) return rc;
+
+    return 0;
+}
+
 // ─── Test 5: CHD_OPT_REVERSE_FIELD_ORDER. ──────────────────────────────────
 //
 // Matches upstream ld-chroma-decoder `-r`: chd_decoder_commit flips the
@@ -614,7 +824,8 @@ int main() {
     if (int rc = testCvbsPrimaryWithTbcExtra(dir); rc != 0) return rc;
     if (int rc = testMultiSourceDropoutAbi(dir);  rc != 0) return rc;
     if (int rc = testParallelAsyncDispatch(dir);  rc != 0) return rc;
-    if (int rc = testReverseFieldOrder(dir);      rc != 0) return rc;
+    if (int rc = testReverseFieldOrder(dir);          rc != 0) return rc;
+    if (int rc = testActiveLineSidecarOverride(dir);  rc != 0) return rc;
 
     fs::remove(dir);
     std::cout << "test_decode_frame_abi: PASS\n";
