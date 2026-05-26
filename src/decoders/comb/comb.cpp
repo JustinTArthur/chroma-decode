@@ -49,6 +49,12 @@
 #include "../../nn/ort_session.h"
 #include "../nntransform3d/nntransform3d_fft_cpu.h"
 #include "../nntransform3d/nntransform3d_window.h"
+#if defined(CHD_WITH_CUDA)
+#include "../nntransform3d/nntransform3d_pipeline_cuda.h"
+#endif
+#if defined(CHD_WITH_ROCM)
+#include "../nntransform3d/nntransform3d_pipeline_hip.h"
+#endif
 #endif
 
 namespace chd::decoders::comb {
@@ -1033,6 +1039,37 @@ bool Comb::FrameBuffer::split3DnnTransform(FrameBuffer &nextFrame,
     };
     ensureNnBuffers(*this);
     ensureNnBuffers(nextFrame);
+
+    // ── Provider dispatch ──────────────────────────────────────────────
+    // For sessions attached to a GPU EP, hand off to a GPU pipeline that
+    // keeps the FFT output, ORT input tensor, model output, and inverse-
+    // FFT input/output all resident on the device across the entire
+    // split-block loop. The CPU body below round-trips through host
+    // memory per inference, which defeats the point on a GPU EP.
+    const chd_nn_provider_t activeProvider = session.activeProvider();
+    (void)activeProvider;
+#if defined(CHD_WITH_CUDA)
+    if (activeProvider == CHD_NN_EP_CUDA || activeProvider == CHD_NN_EP_TENSORRT) {
+        return chd::decoders::nntransform3d::runCudaPipeline(
+            videoParameters,
+            rawbuffer.data(),
+            nextFrame.rawbuffer.data(),
+            nnAccChroma, nnWeightSum,
+            nextFrame.nnAccChroma, nextFrame.nnWeightSum,
+            session, runMutex, inputMagnitudeScale);
+    }
+#endif
+#if defined(CHD_WITH_ROCM)
+    if (activeProvider == CHD_NN_EP_MIGRAPHX) {
+        return chd::decoders::nntransform3d::runHipPipeline(
+            videoParameters,
+            rawbuffer.data(),
+            nextFrame.rawbuffer.data(),
+            nnAccChroma, nnWeightSum,
+            nextFrame.nnAccChroma, nextFrame.nnWeightSum,
+            session, runMutex, inputMagnitudeScale);
+    }
+#endif
 
     auto &plans = nntransform3d::getThreadLocalCpuPlans();
     if (plans.forward == nullptr || plans.inverse == nullptr) {

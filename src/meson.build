@@ -41,10 +41,6 @@ chromadec_sources = files(
   'output/frame_canvas.cpp',
 )
 
-# NN framework (Ort::Env singleton, provider selection, model
-# load). Only compiled when ORT was discovered. The C ABI shims in
-# c_api_nn.cpp + c_api_lifecycle.cpp gate on the CHD_WITH_NN preprocessor
-# define so the library still builds + links without NN support.
 chromadec_deps = [threads_dep, sqlite3_dep, fftw3_dep]
 chromadec_cpp_args = []
 if has_nn
@@ -52,13 +48,8 @@ if has_nn
     'nn/ort_env.cpp',
     'nn/ort_session.cpp',
     'nn/provider_select.cpp',
-    # nnTransform3D decoder (FFT helpers + window). The
-    # split3DnnTransform algorithm itself lives in comb.cpp behind a
-    # CHD_WITH_NN guard, so it gets pulled in via the existing comb
-    # sources without listing it separately here.
     'decoders/nntransform3d/nntransform3d_fft_cpu.cpp',
     'decoders/nntransform3d/nntransform3d_window.cpp',
-    # ldzeug2 NN-based NTSC decoders.
     'decoders/ldzeug/ldzeug_base.cpp',
     'decoders/ldzeug/ldzeug_color_cnn.cpp',
     'decoders/ldzeug/ldzeug_luma_sep.cpp',
@@ -70,6 +61,15 @@ if has_fftw
   chromadec_cpp_args += ['-DCHD_WITH_FFTW=1']
 endif
 if has_cuda
+  # nnTransform3D's device-resident pipeline: cuFFT for the 3D FFTs +
+  # ORT IoBinding so the CUDA / TensorRT EP can read inputs and write
+  # outputs from device memory without round-tripping through the
+  # host. .cu sources are compiled by nvcc (meson dispatches via the
+  # `cuda` language declared in the top-level meson.build).
+  chromadec_sources += files(
+    'decoders/nntransform3d/nntransform3d_pipeline_cuda.cu',
+  )
+  chromadec_deps += [cuda_dep]
   chromadec_cpp_args += ['-DCHD_WITH_CUDA=1']
 endif
 

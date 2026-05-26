@@ -5,6 +5,7 @@ project('chromadec', 'cpp', 'c',
         default_options: [
             'cpp_std=c++17',
             'c_std=c11',
+            'cuda_std=c++17',
             'warning_level=2',
             'default_library=both',
             'b_ndebug=if-release',
@@ -40,9 +41,33 @@ if not ort_dep.found() and get_option('with_nn') and get_option('onnxruntime_roo
 endif
 
 has_nn     = get_option('with_nn') and ort_dep.found()
-has_cuda   = false  # wired up in a follow-up (CUDA FFT path)
 has_fftw   = fftw3_dep.found()
 has_sqlite = sqlite3_dep.found()
+
+# ── CUDA toolkit discovery ────────────────────────────────────────────────────
+# When `with_cuda=auto` (the default), the build tries to find the CUDA
+# toolkit + cuFFT and silently falls back to the CPU FFTW path if either
+# isn't installed. `enabled` turns missing dependencies into a configure
+# error; `disabled` forces the CPU path even where CUDA is available.
+#
+# The runtime EP-select chain in src/nn/provider_select.cpp is independent
+# of this flag: a session can still attach the CUDA / TensorRT EP, the
+# library just can't take the device-resident pipeline shortcut without
+# this build option — every inference round-trips through host memory.
+cuda_opt = get_option('with_cuda')
+has_cuda = false
+if not cuda_opt.disabled() and has_nn
+  cuda_dep = dependency('cuda',
+                        version: '>=11.0',
+                        modules: ['cudart', 'cufft'],
+                        required: cuda_opt)
+  if cuda_dep.found()
+    cuda_lang_ok = add_languages('cuda', required: cuda_opt, native: false)
+    if cuda_lang_ok
+      has_cuda = true
+    endif
+  endif
+endif
 
 # If the user explicitly requested NN support but ORT is missing, fail loudly
 # rather than silently dropping NN. The default for with_nn is `true`, so
