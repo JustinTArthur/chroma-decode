@@ -387,6 +387,18 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
     chd::metadata::LdDecodeMetaData::VideoParameters vp = meta->getVideoParameters();
     applyLineOverrides(vp, d->optionMaps);
 
+    // Apply REVERSE_FIELD_ORDER. Matches upstream ld-chroma-decoder `-r`
+    // flag: flips the metadata-wide isFirstFieldFirst flag, which
+    // SourceField::loadFields consumes via getFirstFieldNumber /
+    // getSecondFieldNumber to swap which physical field is treated as
+    // "first" within each frame. Default (no option, or option=false)
+    // restores still-frame default of first-field-first.
+    {
+        auto it = d->optionMaps.boolean.find(CHD_OPT_REVERSE_FIELD_ORDER);
+        const bool reverse = (it != d->optionMaps.boolean.end()) && it->second;
+        meta->setIsFirstFieldFirst(!reverse);
+    }
+
     // OutputWriter::updateConfiguration mutates vp (active region padding);
     // every per-worker decoder configures against the same post-padding vp.
     d->outputWriter.updateConfiguration(vp, outCfg);

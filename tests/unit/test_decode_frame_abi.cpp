@@ -549,6 +549,63 @@ int testParallelAsyncDispatch(const fs::path &dir) {
 
 }  // namespace
 
+// ─── Test 5: CHD_OPT_REVERSE_FIELD_ORDER. ──────────────────────────────────
+//
+// Matches upstream ld-chroma-decoder `-r`: chd_decoder_commit flips the
+// metadata's isFirstFieldFirst flag. The fixture has 6 sequential fields
+// with isFirstField alternating (1,0,1,0,1,0). With the default flag,
+// getNumberOfFrames() = 3 and is_first_field_first = 1. After commit with
+// REVERSE_FIELD_ORDER, the flag flips and getNumberOfFrames() reports 2
+// (field 0 is now treated as a leftover that doesn't open a still-frame),
+// observable via a fresh chd_video_get_info call.
+int testReverseFieldOrder(const fs::path &dir) {
+    const std::string tbc     = (dir / "rev.tbc").string();
+    const std::string sidecar = (dir / "rev.tbc.db").string();
+    constexpr int32_t fieldWidth  = 910;
+    constexpr int32_t fieldHeight = 263;
+    constexpr int32_t numFields   = 6;
+
+    REQUIRE(writeBlackTbc(tbc, fieldWidth, fieldHeight, numFields));
+    REQUIRE(writeTbcSidecar(sidecar, numFields));
+
+    chd_video_t *video = nullptr;
+    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+
+    chd_video_info_t info;
+    REQUIRE(chd_video_get_info(video, &info) == CHD_OK);
+    REQUIRE(info.num_frames == 3);
+    REQUIRE(info.is_first_field_first == 1);
+
+    // REVERSE_FIELD_ORDER is universally valid on all decoder kinds (it's
+    // an output-side metadata option, not algorithm-specific).
+    chd_decoder_t *dec = nullptr;
+    REQUIRE(chd_decoder_create(video, CHD_DEC_MONO, &dec) == CHD_OK);
+    REQUIRE(chd_decoder_has_option(dec, CHD_OPT_REVERSE_FIELD_ORDER) == CHD_OK);
+    REQUIRE(chd_decoder_set_option_bool(dec, CHD_OPT_REVERSE_FIELD_ORDER, 1) == CHD_OK);
+    REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_PADDING_MULTIPLE, 1) == CHD_OK);
+    REQUIRE(chd_decoder_commit(dec) == CHD_OK);
+
+    // After commit, the metadata flag should be flipped. Both observable
+    // effects: num_frames drops by 1 (the leftover field doesn't form a
+    // frame) and is_first_field_first toggles.
+    chd_video_info_t info2;
+    REQUIRE(chd_video_get_info(video, &info2) == CHD_OK);
+    REQUIRE(info2.num_frames == 2);
+    REQUIRE(info2.is_first_field_first == 0);
+
+    // Decode still succeeds against the reversed assignment (black either way).
+    chd_frame_t *frame = nullptr;
+    REQUIRE(chd_decode_frame(dec, 0, &frame) == CHD_OK);
+    REQUIRE(frame != nullptr);
+    chd_frame_free(frame);
+
+    chd_decoder_free(dec);
+    chd_video_free(video);
+    fs::remove(tbc);
+    fs::remove(sidecar);
+    return 0;
+}
+
 int main() {
     const fs::path dir = fs::temp_directory_path() / "chd_phase_g_test";
     fs::create_directories(dir);
@@ -557,6 +614,7 @@ int main() {
     if (int rc = testCvbsPrimaryWithTbcExtra(dir); rc != 0) return rc;
     if (int rc = testMultiSourceDropoutAbi(dir);  rc != 0) return rc;
     if (int rc = testParallelAsyncDispatch(dir);  rc != 0) return rc;
+    if (int rc = testReverseFieldOrder(dir);      rc != 0) return rc;
 
     fs::remove(dir);
     std::cout << "test_decode_frame_abi: PASS\n";
