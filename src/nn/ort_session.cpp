@@ -24,6 +24,15 @@ void applyCommonOptions(Ort::SessionOptions &so, const SessionOptions &opts)
 
 OrtSession::OrtSession(const std::string &modelPath, const SessionOptions &opts)
 {
+    // Force-init the process-wide Ort::Env BEFORE any provider attach
+    // touches ORT internals. From ORT 1.25 onward, UpdateCUDAProviderOptions
+    // (and likely other V2 provider-options mutators) log through the
+    // default Logger that the Ort::Env constructor registers; without an
+    // Env in scope they abort with "Attempt to use DefaultLogger but none
+    // has been registered." Older ORT versions tolerated the reversed
+    // order, which is why this was latent on the macOS CoreML path.
+    (void)OrtEnvSingleton::get();
+
     Ort::SessionOptions sessionOptions;
     applyCommonOptions(sessionOptions, opts);
 
