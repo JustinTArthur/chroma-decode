@@ -403,11 +403,40 @@ bool attachTensorRT(Ort::SessionOptions &options, std::string *outError)
 // ─── MIGraphX attach (Linux / AMD) ───────────────────────────────────────
 // AMD's ROCm-backed EP. Plain device-0 attach via the legacy C API; no
 // V2 provider-options struct yet (matches the DirectML shape).
+//
+// Pre-built ONNX Runtime distributions are vendor-specific: the GPU
+// release for x86_64 includes CUDA + TensorRT but NOT MIGraphX, while
+// the ROCm release includes MIGraphX but NOT CUDA/TensorRT. So we
+// can't take a hard link-time dependency on this symbol or the
+// CUDA-only build will fail to link. dlsym resolves it at runtime
+// against the loaded onnxruntime; absence means "this ORT build
+// doesn't have MIGraphX baked in" and we report it as unavailable.
+#if defined(__linux__)
+#include <dlfcn.h>
+namespace {
+using MIGraphXAttachFn = OrtStatus *(*)(OrtSessionOptions *, int);
+MIGraphXAttachFn lookupMIGraphX()
+{
+    static std::once_flag flag;
+    static MIGraphXAttachFn fn = nullptr;
+    std::call_once(flag, []() {
+        fn = reinterpret_cast<MIGraphXAttachFn>(
+            dlsym(RTLD_DEFAULT, "OrtSessionOptionsAppendExecutionProvider_MIGraphX"));
+    });
+    return fn;
+}
+}  // namespace
+#endif
 bool attachMIGraphX(Ort::SessionOptions &options, std::string *outError)
 {
 #if defined(__linux__)
+    auto fn = lookupMIGraphX();
+    if (fn == nullptr) {
+        if (outError) *outError = "MIGraphX provider not present in this ORT build";
+        return false;
+    }
     try {
-        OrtStatus *status = OrtSessionOptionsAppendExecutionProvider_MIGraphX(options, /*device_id*/ 0);
+        OrtStatus *status = fn(options, /*device_id*/ 0);
         if (status != nullptr) {
             if (outError) {
                 *outError = std::string("OrtSessionOptionsAppendExecutionProvider_MIGraphX: ") +
