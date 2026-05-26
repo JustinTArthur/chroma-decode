@@ -77,9 +77,27 @@ endif
 rocm_opt = get_option('with_rocm')
 has_rocm = false
 if not rocm_opt.disabled() and has_nn and host_machine.system() == 'linux'
-  hipcc      = find_program('hipcc',  required: rocm_opt)
-  hipfft_dep = dependency('hipfft',   required: rocm_opt)
-  hip_rt_dep = dependency('hip-lang', required: rocm_opt)
+  hipcc = find_program('hipcc', required: rocm_opt)
+  # Always include /opt/rocm (AMD's apt/dnf default on Ubuntu/RHEL/SLES);
+  # CMake silently ignores it on distros installing under /usr. User-set
+  # rocm_root takes precedence for non-standard installs.
+  hip_cmake_prefixes = ['/opt/rocm']
+  rocm_root = get_option('rocm_root')
+  if rocm_root != ''
+    hip_cmake_prefixes = [rocm_root] + hip_cmake_prefixes
+  endif
+  hip_cmake_args = ['-DCMAKE_PREFIX_PATH=' + ';'.join(hip_cmake_prefixes)]
+  hipfft_dep = dependency('hipfft',
+                          cmake_args: hip_cmake_args,
+                          required: rocm_opt)
+  # `hip::host` is the host-only imported target — propagates
+  # libamdhip64.so and `-D__HIP_PLATFORM_AMD__=1`. Bypasses
+  # `hip::device` (CMake's default) which pulls in GPU bitcode meant
+  # for hipcc, not the host C++ linker.
+  hip_rt_dep = dependency('hip',
+                          modules: ['hip::host'],
+                          cmake_args: hip_cmake_args,
+                          required: rocm_opt)
   if hipcc.found() and hipfft_dep.found() and hip_rt_dep.found()
     has_rocm = true
   endif

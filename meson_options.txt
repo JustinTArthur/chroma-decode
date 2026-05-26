@@ -25,3 +25,7 @@ option('with_debug_overlay',
 option('onnxruntime_root',
        type: 'string', value: '',
        description: 'Manual ONNX Runtime install prefix (used as a fallback when pkg-config and system probes both fail)')
+
+option('rocm_root',
+       type: 'string', value: '',
+       description: 'ROCm install prefix used as CMAKE_PREFIX_PATH for the hipfft + hip dependency lookups. Empty (default) relies on the default CMake search path, which works on distros that install ROCm into /usr (Gentoo). Set to /opt/rocm on Ubuntu/RHEL/SLES with AMD\'s apt/dnf packaging.')
