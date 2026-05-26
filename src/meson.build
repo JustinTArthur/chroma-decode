@@ -73,6 +73,32 @@ if has_cuda
   chromadec_cpp_args += ['-DCHD_WITH_CUDA=1']
 endif
 
+if has_rocm
+  # AMD ROCm counterpart of the CUDA path. Meson has no first-class HIP
+  # language, so the pipeline source is compiled by hipcc via
+  # custom_target and the resulting object is linked into the library.
+  # ROCm install prefix + ORT include path are passed explicitly because
+  # custom_target doesn't propagate include dirs from dependency objects.
+  rocm_compile_args = [
+    '-c', '-fPIC', '-std=c++17', '-O2',
+    '-I' + meson.project_source_root() / 'include',
+    '-I' + meson.project_source_root() / 'src',
+    '-I' + meson.project_build_root() / 'include',
+  ]
+  if get_option('onnxruntime_root') != ''
+    rocm_compile_args += '-I' + get_option('onnxruntime_root') / 'include'
+  endif
+  hip_pipeline_o = custom_target(
+    'nntransform3d_pipeline_hip',
+    input: 'decoders/nntransform3d/nntransform3d_pipeline_hip.cpp',
+    output: 'nntransform3d_pipeline_hip.o',
+    command: [hipcc] + rocm_compile_args + ['@INPUT@', '-o', '@OUTPUT@'],
+  )
+  chromadec_sources += hip_pipeline_o
+  chromadec_deps += [hipfft_dep, hip_rt_dep]
+  chromadec_cpp_args += ['-DCHD_WITH_ROCM=1']
+endif
+
 # Symbol export discipline:
 # - On ELF (Linux), restrict exported symbols via a version script.
 # - On macOS, restrict via -exported_symbols_list.

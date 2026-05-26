@@ -69,6 +69,22 @@ if not cuda_opt.disabled() and has_nn
   endif
 endif
 
+# ── ROCm / HIP toolkit discovery ──────────────────────────────────────────────
+# Mirror of the CUDA discovery block, but for AMD's HIP runtime + hipFFT.
+# Meson has no first-class HIP language, so the HIP pipeline source is
+# compiled by hipcc via a custom_target in src/meson.build rather than
+# being listed alongside the C++ sources. ROCm is Linux-only.
+rocm_opt = get_option('with_rocm')
+has_rocm = false
+if not rocm_opt.disabled() and has_nn and host_machine.system() == 'linux'
+  hipcc      = find_program('hipcc',  required: rocm_opt)
+  hipfft_dep = dependency('hipfft',   required: rocm_opt)
+  hip_rt_dep = dependency('hip-lang', required: rocm_opt)
+  if hipcc.found() and hipfft_dep.found() and hip_rt_dep.found()
+    has_rocm = true
+  endif
+endif
+
 # If the user explicitly requested NN support but ORT is missing, fail loudly
 # rather than silently dropping NN. The default for with_nn is `true`, so
 # silent absence would mean every Linux/macOS dev build without ORT installed
@@ -117,11 +133,12 @@ cmake_mod.configure_package_config_file(
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 summary({
-  'NN decoders (ONNX Runtime)': has_nn,
-  'CUDA FFT path':              has_cuda,
-  'FFTW3 (Transform-PAL)':      has_fftw,
-  'SQLite3 (metadata)':         has_sqlite,
-  'Tests':                      get_option('with_tests'),
-  'Examples':                   get_option('with_examples'),
-  'Debug overlay':              get_option('with_debug_overlay'),
+  'NN decoders (ONNX Runtime)':    has_nn,
+  'CUDA cuFFT pipeline (NV/TRT)':  has_cuda,
+  'HIP hipFFT pipeline (ROCm/MX)': has_rocm,
+  'FFTW3 (Transform-PAL)':         has_fftw,
+  'SQLite3 (metadata)':            has_sqlite,
+  'Tests':                         get_option('with_tests'),
+  'Examples':                      get_option('with_examples'),
+  'Debug overlay':                 get_option('with_debug_overlay'),
 }, section: 'Optional features')

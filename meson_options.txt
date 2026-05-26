@@ -4,7 +4,11 @@ option('with_nn',
 
 option('with_cuda',
        type: 'feature', value: 'auto',
-       description: 'Build CUDA FFT path for nnTransform3D')
+       description: 'Build CUDA cuFFT pipeline for nnTransform3D (CUDA + TensorRT EPs)')
+
+option('with_rocm',
+       type: 'feature', value: 'auto',
+       description: 'Build HIP/hipFFT pipeline for nnTransform3D (ROCm + MIGraphX EPs)')
 
 option('with_tests',
        type: 'boolean', value: true,
