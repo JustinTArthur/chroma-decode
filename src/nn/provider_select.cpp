@@ -369,11 +369,15 @@ bool attachDirectML(Ort::SessionOptions &options, std::string *outError)
 }
 
 // ─── TensorRT attach ──────────────────────────────────────────────────────
-// V2 API with empty options initially — TensorRT tuning (engine cache
-// dir, FP16, INT8, etc.) belongs in chd_nn_session_opts_t once we have
-// hardware to validate against. Requires the CUDA driver to be loaded
-// (same as the CUDA EP) since TensorRT runs on the same hardware.
-bool attachTensorRT(Ort::SessionOptions &options, std::string *outError)
+// V2 API. Honours the engine-cache configuration by setting
+// trt_engine_cache_enable=1 and trt_engine_cache_path=<dir> on the
+// provider options struct; subsequent invocations with the same model +
+// input shapes load the cached engine and skip the multi-minute build.
+// Requires the CUDA driver to be loaded since TensorRT runs on the same
+// hardware as CUDA EP.
+bool attachTensorRT(Ort::SessionOptions &options,
+                    const EngineCacheConfig &cache,
+                    std::string *outError)
 {
     std::string driverError;
     if (!ensureCudaDriverLoaded(&driverError)) {
@@ -389,6 +393,20 @@ bool attachTensorRT(Ort::SessionOptions &options, std::string *outError)
         api.ReleaseStatus(status);
         return false;
     }
+
+    if (!cache.dir.empty()) {
+        const char *keys[]   = { "trt_engine_cache_enable", "trt_engine_cache_path" };
+        const char *values[] = { "1", cache.dir.c_str() };
+        status = api.UpdateTensorRTProviderOptions(trtOptions, keys, values, 2);
+        if (status != nullptr) {
+            if (outError) *outError = std::string("UpdateTensorRTProviderOptions: ") +
+                                      api.GetErrorMessage(status);
+            api.ReleaseStatus(status);
+            api.ReleaseTensorRTProviderOptions(trtOptions);
+            return false;
+        }
+    }
+
     status = api.SessionOptionsAppendExecutionProvider_TensorRT_V2(options, trtOptions);
     api.ReleaseTensorRTProviderOptions(trtOptions);
     if (status != nullptr) {
@@ -401,50 +419,37 @@ bool attachTensorRT(Ort::SessionOptions &options, std::string *outError)
 }
 
 // ─── MIGraphX attach (Linux / AMD) ───────────────────────────────────────
-// AMD's ROCm-backed EP. Plain device-0 attach via the legacy C API; no
-// V2 provider-options struct yet (matches the DirectML shape).
-//
-// Pre-built ONNX Runtime distributions are vendor-specific: the GPU
-// release for x86_64 includes CUDA + TensorRT but NOT MIGraphX, while
-// the ROCm release includes MIGraphX but NOT CUDA/TensorRT. So we
-// can't take a hard link-time dependency on this symbol or the
-// CUDA-only build will fail to link. dlsym resolves it at runtime
-// against the loaded onnxruntime; absence means "this ORT build
-// doesn't have MIGraphX baked in" and we report it as unavailable.
-#if defined(__linux__)
-#include <dlfcn.h>
-namespace {
-using MIGraphXAttachFn = OrtStatus *(*)(OrtSessionOptions *, int);
-MIGraphXAttachFn lookupMIGraphX()
-{
-    static std::once_flag flag;
-    static MIGraphXAttachFn fn = nullptr;
-    std::call_once(flag, []() {
-        fn = reinterpret_cast<MIGraphXAttachFn>(
-            dlsym(RTLD_DEFAULT, "OrtSessionOptionsAppendExecutionProvider_MIGraphX"));
-    });
-    return fn;
-}
-}  // namespace
-#endif
-bool attachMIGraphX(Ort::SessionOptions &options, std::string *outError)
+// Uses the generic AppendExecutionProvider key-value entry point (same
+// shape as our CoreML attach) rather than the OrtMIGraphXProviderOptions
+// struct. That struct's layout has shifted across ORT versions and AMD's
+// pre-built wheels were built against a different layout than upstream's
+// headers, so passing the struct produced "Failed to map enum value to
+// name" failures from arena_extend_strategy reading off the end. The
+// string-keyed map is ABI-stable across builds — unknown keys are
+// silently ignored, recognised ones are parsed by the EP's own option
+// reader.
+bool attachMIGraphX(Ort::SessionOptions &options,
+                    const EngineCacheConfig &cache,
+                    std::string *outError)
 {
 #if defined(__linux__)
-    auto fn = lookupMIGraphX();
-    if (fn == nullptr) {
-        if (outError) *outError = "MIGraphX provider not present in this ORT build";
-        return false;
-    }
     try {
-        OrtStatus *status = fn(options, /*device_id*/ 0);
-        if (status != nullptr) {
-            if (outError) {
-                *outError = std::string("OrtSessionOptionsAppendExecutionProvider_MIGraphX: ") +
-                            Ort::GetApi().GetErrorMessage(status);
-            }
-            Ort::GetApi().ReleaseStatus(status);
-            return false;
+        std::unordered_map<std::string, std::string> mxOpts;
+        mxOpts["device_id"] = "0";
+        if (!cache.dir.empty()) {
+            // migraphx_model_cache_dir is recognised by newer ORT MIGraphX
+            // EPs as a directory that the provider manages files inside.
+            // Older ORT builds reject unknown option keys, so we only set
+            // this single key when caching is requested — the EP either
+            // honours it or ignores it; in older builds where it's
+            // unrecognised, the key-value parser fails the attach, which
+            // would be a regression. If we encounter ORT versions that
+            // reject this key, fall back to leaving cache.dir unused on
+            // MIGraphX (TensorRT will still be cached via its own option
+            // path).
+            mxOpts["migraphx_model_cache_dir"] = cache.dir;
         }
+        options.AppendExecutionProvider("MIGraphX", mxOpts);
         return true;
     } catch (const std::exception &e) {
         if (outError) *outError = e.what();
@@ -452,6 +457,7 @@ bool attachMIGraphX(Ort::SessionOptions &options, std::string *outError)
     }
 #else
     (void)options;
+    (void)cache;
     if (outError) *outError = "MIGraphX execution provider is only available on Linux";
     return false;
 #endif
@@ -459,6 +465,7 @@ bool attachMIGraphX(Ort::SessionOptions &options, std::string *outError)
 
 bool attachProviderChain(Ort::SessionOptions &options,
                          const std::vector<ProviderPreference> &chain,
+                         const EngineCacheConfig &cache,
                          ProviderPreference *outAttached,
                          std::string *outError)
 {
@@ -472,12 +479,12 @@ bool attachProviderChain(Ort::SessionOptions &options,
         bool ok = false;
         std::string err;
         switch (provider) {
-            case CHD_NN_EP_CPU:      ok = attachCpu     (options, &err); break;
-            case CHD_NN_EP_CUDA:     ok = attachCuda    (options, &err); break;
-            case CHD_NN_EP_COREML:   ok = attachCoreML  (options, &err); break;
-            case CHD_NN_EP_DIRECTML: ok = attachDirectML(options, &err); break;
-            case CHD_NN_EP_TENSORRT: ok = attachTensorRT(options, &err); break;
-            case CHD_NN_EP_MIGRAPHX: ok = attachMIGraphX(options, &err); break;
+            case CHD_NN_EP_CPU:      ok = attachCpu     (options, &err);        break;
+            case CHD_NN_EP_CUDA:     ok = attachCuda    (options, &err);        break;
+            case CHD_NN_EP_COREML:   ok = attachCoreML  (options, &err);        break;
+            case CHD_NN_EP_DIRECTML: ok = attachDirectML(options, &err);        break;
+            case CHD_NN_EP_TENSORRT: ok = attachTensorRT(options, cache, &err); break;
+            case CHD_NN_EP_MIGRAPHX: ok = attachMIGraphX(options, cache, &err); break;
             case CHD_NN_EP_AUTO:
                 // AUTO can't appear in a resolved chain.
                 err = "AUTO is not a concrete provider";

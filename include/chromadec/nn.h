@@ -28,6 +28,27 @@ typedef struct chd_nn_session_opts {
      * intra-op > 1 oversubscribes CPU. */
     int32_t inter_op_threads;
     int32_t intra_op_threads;
+
+    /* Optional directory for caching compiled EP engines/binaries (TensorRT
+     * engine plans, MIGraphX compiled models). Avoids the 15-30 s graph
+     * compile that runs on the first inference call.
+     *   NULL  → library auto-picks a per-user cache dir:
+     *             Linux  : $XDG_CACHE_HOME/chromadec or $HOME/.cache/chromadec
+     *             macOS  : $HOME/Library/Caches/chromadec
+     *             Windows: %LOCALAPPDATA%/chromadec
+     *           Directory is created if absent. Auto-pick is the default.
+     *   ""    → caching disabled (recompile every load, useful for CI /
+     *           hermetic tests / cold-start benchmarking).
+     *   path  → use this absolute path (created if it doesn't exist).
+     * Currently honoured by the TensorRT and MIGraphX EPs; the CUDA EP
+     * uses its own internal PTX cache that isn't configurable here. */
+    const char *engine_cache_dir;
+
+    /* Reserved for future ABI extensions. Initialised to zero by
+     * chd_nn_session_opts_default(); set to zero by callers building the
+     * struct manually. Adding fields here keeps consumers source-compatible
+     * across minor versions. */
+    void *reserved[4];
 } chd_nn_session_opts_t;
 
 void chd_nn_session_opts_default(chd_nn_session_opts_t *out);

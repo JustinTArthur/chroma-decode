@@ -25,6 +25,11 @@ void chd_nn_session_opts_default(chd_nn_session_opts_t *out) {
     /* Default 1: the library's DecoderPool already parallelises across frames;
      * intra-op > 1 oversubscribes CPU. */
     out->intra_op_threads = 1;
+    /* NULL → auto-pick per-user cache dir; see chromadec/nn.h. */
+    out->engine_cache_dir = nullptr;
+    for (size_t i = 0; i < sizeof(out->reserved)/sizeof(out->reserved[0]); ++i) {
+        out->reserved[i] = nullptr;
+    }
 }
 
 #if defined(CHD_WITH_NN)
@@ -46,6 +51,9 @@ chd_status_t chd_nn_model_load(const char *model_path,
         opts.enableMemPattern  = opts_or_null->enable_mem_pattern != 0;
         opts.interOpThreads    = opts_or_null->inter_op_threads;
         opts.intraOpThreads    = opts_or_null->intra_op_threads;
+        if (opts_or_null->engine_cache_dir != nullptr) {
+            opts.engineCacheDir = std::string(opts_or_null->engine_cache_dir);
+        }
     }
 
     try {

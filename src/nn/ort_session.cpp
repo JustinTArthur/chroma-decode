@@ -2,9 +2,13 @@
 
 #include "ort_session.h"
 
+#include <cstdlib>
+#include <filesystem>
 #include <stdexcept>
+#include <string>
 
 #include "ort_env.h"
+#include "../common/log.h"
 
 namespace chd::nn {
 
@@ -18,6 +22,57 @@ void applyCommonOptions(Ort::SessionOptions &so, const SessionOptions &opts)
                                      ? GraphOptimizationLevel::ORT_ENABLE_ALL
                                      : GraphOptimizationLevel::ORT_DISABLE_ALL);
     if (!opts.enableMemPattern) so.DisableMemPattern();
+}
+
+// OS-appropriate per-user cache directory, following each platform's
+// conventional location. Falls back to /tmp on POSIX if $HOME is unset.
+std::string defaultCacheDir()
+{
+#if defined(_WIN32)
+    if (const char *appdata = std::getenv("LOCALAPPDATA"); appdata && *appdata) {
+        return std::string(appdata) + "\\chromadec";
+    }
+    return "C:\\chromadec-cache";
+#elif defined(__APPLE__)
+    if (const char *home = std::getenv("HOME"); home && *home) {
+        return std::string(home) + "/Library/Caches/chromadec";
+    }
+    return "/tmp/chromadec-cache";
+#else
+    if (const char *xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
+        return std::string(xdg) + "/chromadec";
+    }
+    if (const char *home = std::getenv("HOME"); home && *home) {
+        return std::string(home) + "/.cache/chromadec";
+    }
+    return "/tmp/chromadec-cache";
+#endif
+}
+
+// Resolve the caller's engine_cache_dir field per the nn.h contract.
+// Returns empty string when caching should be disabled; otherwise an
+// absolute path that has been mkdir'd. Failures to create the directory
+// are logged and treated as "disabled" so a misconfigured cache never
+// blocks model loading.
+std::string resolveEngineCacheDir(const SessionOptions &opts)
+{
+    std::string path;
+    if (!opts.engineCacheDir.has_value()) {
+        path = defaultCacheDir();
+    } else if (opts.engineCacheDir->empty()) {
+        return {};  // explicit disable
+    } else {
+        path = *opts.engineCacheDir;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(path, ec);
+    if (ec) {
+        chd::log::warn() << "chd_nn: failed to create engine cache dir" << path
+                         << ":" << ec.message() << "(caching disabled)";
+        return {};
+    }
+    return path;
 }
 
 }  // namespace
@@ -36,10 +91,14 @@ OrtSession::OrtSession(const std::string &modelPath, const SessionOptions &opts)
     Ort::SessionOptions sessionOptions;
     applyCommonOptions(sessionOptions, opts);
 
+    EngineCacheConfig cache;
+    cache.dir       = resolveEngineCacheDir(opts);
+    cache.modelPath = modelPath;
+
     const auto chain = buildAutoChain(opts.requestedProvider);
     std::string attachError;
     chd_nn_provider_t attached = CHD_NN_EP_CPU;
-    if (!attachProviderChain(sessionOptions, chain, &attached, &attachError)) {
+    if (!attachProviderChain(sessionOptions, chain, cache, &attached, &attachError)) {
         throw std::runtime_error("provider attach failed: " + attachError);
     }
     activeProvider_ = attached;

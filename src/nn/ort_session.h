@@ -14,6 +14,7 @@
 #define CHD_NN_ORT_SESSION_H
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,10 @@ struct SessionOptions {
     bool              enableMemPattern  = true;
     int32_t           interOpThreads    = 0;   // 0 = ORT default
     int32_t           intraOpThreads    = 1;   // 1 = avoid oversubscription
+    // Cache directory for compiled EP engines. nullopt = caller passed
+    // NULL on the C ABI -> auto-pick a per-user cache dir. Empty string
+    // = caller passed "" -> disable caching entirely.
+    std::optional<std::string> engineCacheDir;
 };
 
 class OrtSession {

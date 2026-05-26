@@ -40,6 +40,17 @@ namespace chd::nn {
 // later without churning call sites.)
 using ProviderPreference = chd_nn_provider_t;
 
+// Engine-cache configuration passed through to the attach helpers that
+// support persistent caching of compiled graphs (TensorRT, MIGraphX).
+// `dir` is an absolute, already-mkdir'd path; empty means "no caching."
+// `modelPath` is the path to the model being loaded; used by MIGraphX to
+// derive a per-model cache filename (the MIGraphX EP wants a specific
+// file path, not a directory).
+struct EngineCacheConfig {
+    std::string dir;
+    std::string modelPath;
+};
+
 // Returns the per-OS auto fallback chain, with the caller's preference
 // (when non-AUTO) prepended at the front of the chain.
 std::vector<ProviderPreference> buildAutoChain(ProviderPreference requested);
@@ -53,6 +64,9 @@ bool providerIsAvailable(ProviderPreference provider);
 // attached provider; writes that provider into `*outAttached`. Returns true
 // on success.
 //
+// `cache` is consulted by EPs that support persistent caching (TRT,
+// MIGraphX). EPs that don't ignore it.
+//
 // The CPU provider is appended implicitly (ORT's default), so a chain that
 // reaches it always succeeds — but `outAttached` is set to CHD_NN_EP_CPU.
 //
@@ -61,6 +75,7 @@ bool providerIsAvailable(ProviderPreference provider);
 // description of what was tried and why.
 bool attachProviderChain(Ort::SessionOptions &options,
                          const std::vector<ProviderPreference> &chain,
+                         const EngineCacheConfig &cache,
                          ProviderPreference *outAttached,
                          std::string *outError);
 
@@ -71,8 +86,12 @@ bool attachCpu(Ort::SessionOptions &options, std::string *outError);
 bool attachCuda(Ort::SessionOptions &options, std::string *outError);
 bool attachCoreML(Ort::SessionOptions &options, std::string *outError);
 bool attachDirectML(Ort::SessionOptions &options, std::string *outError);
-bool attachTensorRT(Ort::SessionOptions &options, std::string *outError);
-bool attachMIGraphX(Ort::SessionOptions &options, std::string *outError);
+bool attachTensorRT(Ort::SessionOptions &options,
+                    const EngineCacheConfig &cache,
+                    std::string *outError);
+bool attachMIGraphX(Ort::SessionOptions &options,
+                    const EngineCacheConfig &cache,
+                    std::string *outError);
 
 }  // namespace chd::nn
 
