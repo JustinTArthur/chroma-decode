@@ -24,6 +24,10 @@ std::string SqliteDb::errmsg() const {
     return db_ != nullptr ? sqlite3_errmsg(db_) : std::string();
 }
 
+int SqliteDb::exec(const char *sql, char **errMsg) {
+    return sqlite3_exec(db_, sql, nullptr, nullptr, errMsg);
+}
+
 SqliteQuery::SqliteQuery() = default;
 
 SqliteQuery::SqliteQuery(sqlite3 *db) : db_(db) {}

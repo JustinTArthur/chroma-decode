@@ -43,6 +43,11 @@ public:
     // sqlite3_close_v2. Idempotent.
     void close() noexcept;
 
+    // sqlite3_exec for one-shot DDL / pragmas / transactions that have
+    // no rows to return. Pass &errMsg to capture sqlite3's per-statement
+    // error string (caller must sqlite3_free it).
+    int exec(const char *sql, char **errMsg = nullptr);
+
     bool isOpen() const noexcept { return db_ != nullptr; }
     sqlite3 *handle() const noexcept { return db_; }
     std::string errmsg() const;

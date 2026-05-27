@@ -155,28 +155,18 @@ SqliteReader::SqliteReader(const std::string &fileName)
 {
     // Open the database in read-only mode; each instance owns its own handle
     // so cross-thread coordination is the caller's responsibility.
-    const int rc = sqlite3_open_v2(fileName.c_str(), &db,
-                                   SQLITE_OPEN_READONLY, nullptr);
+    const int rc = db.open(fileName, SQLITE_OPEN_READONLY);
     if (rc != SQLITE_OK) {
-        const std::string msg = db ? sqlite3_errmsg(db) : "unknown error";
-        sqlite3_close(db);
-        db = nullptr;
+        const std::string msg = db.isOpen() ? db.errmsg() : "unknown error";
         throwError("Failed to open database: " + msg);
     }
 }
 
-SqliteReader::~SqliteReader()
-{
-    close();
-}
+SqliteReader::~SqliteReader() = default;
 
 void SqliteReader::close()
 {
-    // Close the database connection
-    if (db != nullptr) {
-        sqlite3_close(db);
-        db = nullptr;
-    }
+    db.close();
 }
 
 bool SqliteReader::readCaptureMetadata(int &captureId, std::string &system, std::string &decoder,
@@ -448,31 +438,20 @@ SqliteWriter::SqliteWriter(const std::string &fileName)
 {
     // Open the database read-write; create if missing. Each instance owns its
     // own handle, so writer/reader coordination is the caller's responsibility.
-    const int rc = sqlite3_open_v2(fileName.c_str(), &db,
-                                   SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
-                                   nullptr);
+    const int rc = db.open(fileName, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE);
     if (rc != SQLITE_OK) {
-        const std::string msg = db ? sqlite3_errmsg(db) : "unknown error";
-        sqlite3_close(db);
-        db = nullptr;
+        const std::string msg = db.isOpen() ? db.errmsg() : "unknown error";
         throwError("Failed to open database: " + msg);
     }
     // Enable foreign keys for cascade-delete semantics in the schema.
-    sqlite3_exec(db, "PRAGMA foreign_keys = ON;", nullptr, nullptr, nullptr);
+    db.exec("PRAGMA foreign_keys = ON;");
 }
 
-SqliteWriter::~SqliteWriter()
-{
-    close();
-}
+SqliteWriter::~SqliteWriter() = default;
 
 void SqliteWriter::close()
 {
-    // Close the database connection
-    if (db != nullptr) {
-        sqlite3_close(db);
-        db = nullptr;
-    }
+    db.close();
 }
 
 bool SqliteWriter::createSchema()
@@ -482,7 +461,7 @@ bool SqliteWriter::createSchema()
     // Run the entire schema script in one call; sqlite3_exec handles multiple
     // statements separated by ';'.
     char *errMsg = nullptr;
-    const int rc = sqlite3_exec(db, SCHEMA_SQL, nullptr, nullptr, &errMsg);
+    const int rc = db.exec(SCHEMA_SQL, &errMsg);
     if (rc != SQLITE_OK) {
         chd::log::error() << "Failed to execute schema:" << (errMsg ? errMsg : "(no message)");
         sqlite3_free(errMsg);
@@ -740,17 +719,17 @@ bool SqliteWriter::writeFieldDropouts(int captureId, int fieldId, int startx, in
 
 bool SqliteWriter::beginTransaction()
 {
-    return sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr) == SQLITE_OK;
+    return db.exec("BEGIN") == SQLITE_OK;
 }
 
 bool SqliteWriter::commitTransaction()
 {
-    return sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr) == SQLITE_OK;
+    return db.exec("COMMIT") == SQLITE_OK;
 }
 
 bool SqliteWriter::rollbackTransaction()
 {
-    return sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr) == SQLITE_OK;
+    return db.exec("ROLLBACK") == SQLITE_OK;
 }
 
 }  // namespace chd::metadata

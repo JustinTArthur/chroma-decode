@@ -16,8 +16,6 @@
 
 #include "sqlite_query.h"
 
-struct sqlite3;
-
 namespace chd::metadata {
 
 class SqliteReader
@@ -80,7 +78,7 @@ public:
     bool readAllFieldDropouts(int captureId, SqliteQuery &dropoutsQuery);
 
 private:
-    sqlite3 *db = nullptr;
+    SqliteDb db;
 };
 
 class SqliteWriter
@@ -149,7 +147,7 @@ public:
     bool rollbackTransaction();
 
 private:
-    sqlite3 *db = nullptr;
+    SqliteDb db;
 };
 
 }  // namespace chd::metadata
