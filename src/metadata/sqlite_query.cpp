@@ -8,9 +8,27 @@
 
 namespace chd::metadata {
 
+int SqliteDb::open(const std::string &path, int flags) {
+    close();
+    return sqlite3_open_v2(path.c_str(), &db_, flags, nullptr);
+}
+
+void SqliteDb::close() noexcept {
+    if (db_ != nullptr) {
+        sqlite3_close_v2(db_);
+        db_ = nullptr;
+    }
+}
+
+std::string SqliteDb::errmsg() const {
+    return db_ != nullptr ? sqlite3_errmsg(db_) : std::string();
+}
+
 SqliteQuery::SqliteQuery() = default;
 
 SqliteQuery::SqliteQuery(sqlite3 *db) : db_(db) {}
+
+SqliteQuery::SqliteQuery(const SqliteDb &db) : db_(db.handle()) {}
 
 SqliteQuery::SqliteQuery(SqliteQuery &&other) noexcept
     : db_(other.db_),

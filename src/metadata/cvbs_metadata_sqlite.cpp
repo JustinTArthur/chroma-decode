@@ -21,11 +21,10 @@ const char *kSelectSql =
 
 std::optional<CvbsMetadata> readCvbsMetadata(const std::string &metaPath)
 {
-    sqlite3 *db = nullptr;
-    if (sqlite3_open_v2(metaPath.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+    SqliteDb db;
+    if (db.open(metaPath, SQLITE_OPEN_READONLY) != SQLITE_OK) {
         chd::detail::set_last_error("CVBS metadata: could not open " + metaPath + ": " +
-                                    sqlite3_errmsg(db));
-        if (db != nullptr) sqlite3_close(db);
+                                    db.errmsg());
         return std::nullopt;
     }
 
@@ -33,7 +32,7 @@ std::optional<CvbsMetadata> readCvbsMetadata(const std::string &metaPath)
     int userVersion = -1;
     {
         sqlite3_stmt *vstmt = nullptr;
-        if (sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &vstmt, nullptr) == SQLITE_OK
+        if (sqlite3_prepare_v2(db.handle(), "PRAGMA user_version", -1, &vstmt, nullptr) == SQLITE_OK
             && sqlite3_step(vstmt) == SQLITE_ROW) {
             userVersion = sqlite3_column_int(vstmt, 0);
         }
@@ -43,7 +42,6 @@ std::optional<CvbsMetadata> readCvbsMetadata(const std::string &metaPath)
         chd::detail::set_last_error(
             "CVBS metadata: user_version = " + std::to_string(userVersion) +
             " (expected 7) in " + metaPath);
-        sqlite3_close(db);
         return std::nullopt;
     }
 
@@ -52,7 +50,6 @@ std::optional<CvbsMetadata> readCvbsMetadata(const std::string &metaPath)
         chd::detail::set_last_error(
             "CVBS metadata: failed to read cvbs_file row from " + metaPath + ": " +
             query.lastError().text());
-        sqlite3_close(db);
         return std::nullopt;
     }
 
@@ -64,19 +61,16 @@ std::optional<CvbsMetadata> readCvbsMetadata(const std::string &metaPath)
     const chd::format::VideoStandardPreset *standard = chd::format::findVideoStandardByName(presetName);
     if (standard == nullptr) {
         chd::detail::set_last_error("CVBS metadata: unknown video standard preset '" + presetName + "'");
-        sqlite3_close(db);
         return std::nullopt;
     }
     const chd::format::SampleEncodingPreset *encoding = chd::format::findSampleEncodingByName(encodingName);
     if (encoding == nullptr) {
         chd::detail::set_last_error("CVBS metadata: unknown sample encoding preset '" + encodingName + "'");
-        sqlite3_close(db);
         return std::nullopt;
     }
     const chd::format::SignalStatePreset *state = chd::format::findSignalStateByName(signalName);
     if (state == nullptr) {
         chd::detail::set_last_error("CVBS metadata: unknown signal state preset '" + signalName + "'");
-        sqlite3_close(db);
         return std::nullopt;
     }
     CvbsSignalType signalType;
@@ -84,7 +78,6 @@ std::optional<CvbsMetadata> readCvbsMetadata(const std::string &metaPath)
     else if (signalTypeStr == "yc")   signalType = CvbsSignalType::Yc;
     else {
         chd::detail::set_last_error("CVBS metadata: unknown signal_type '" + signalTypeStr + "'");
-        sqlite3_close(db);
         return std::nullopt;
     }
 
@@ -108,8 +101,6 @@ std::optional<CvbsMetadata> readCvbsMetadata(const std::string &metaPath)
     auto notesVal = query.value("capture_notes");
     if (!notesVal.isNull()) meta.captureNotes = notesVal.toString();
 
-    query.finish();
-    sqlite3_close(db);
     return meta;
 }
 

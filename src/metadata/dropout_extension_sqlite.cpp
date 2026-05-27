@@ -13,6 +13,7 @@
 #include <map>
 
 #include "../common/error_state.h"
+#include "sqlite_query.h"
 
 namespace chd::metadata {
 
@@ -78,18 +79,17 @@ readCvbsDropoutsExtension(const std::string &metaPath,
                           int32_t samplesPerLine,
                           int32_t linesPerField)
 {
-    sqlite3 *db = nullptr;
-    if (sqlite3_open_v2(metaPath.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+    SqliteDb db;
+    if (db.open(metaPath, SQLITE_OPEN_READONLY) != SQLITE_OK) {
         chd::detail::set_last_error("CVBS dropouts: could not open " + metaPath + ": " +
-                                    sqlite3_errmsg(db));
-        if (db != nullptr) sqlite3_close(db);
+                                    db.errmsg());
         return std::nullopt;
     }
 
     int userVersion = -1;
     {
         sqlite3_stmt *vstmt = nullptr;
-        if (sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &vstmt, nullptr) == SQLITE_OK
+        if (sqlite3_prepare_v2(db.handle(), "PRAGMA user_version", -1, &vstmt, nullptr) == SQLITE_OK
             && sqlite3_step(vstmt) == SQLITE_ROW) {
             userVersion = sqlite3_column_int(vstmt, 0);
         }
@@ -99,15 +99,13 @@ readCvbsDropoutsExtension(const std::string &metaPath,
         chd::detail::set_last_error(
             "CVBS dropouts: user_version = " + std::to_string(userVersion) +
             " (expected " + std::to_string(kExpectedUserVersion) + ") in " + metaPath);
-        sqlite3_close(db);
         return std::nullopt;
     }
 
     sqlite3_stmt *stmt = nullptr;
-    if (sqlite3_prepare_v2(db, kSelectSql, -1, &stmt, nullptr) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db.handle(), kSelectSql, -1, &stmt, nullptr) != SQLITE_OK) {
         chd::detail::set_last_error(std::string("CVBS dropouts: prepare failed: ") +
-                                    sqlite3_errmsg(db));
-        sqlite3_close(db);
+                                    db.errmsg());
         return std::nullopt;
     }
     sqlite3_bind_int(stmt, 1, cvbsFileId);
@@ -130,7 +128,6 @@ readCvbsDropoutsExtension(const std::string &metaPath,
                                   linesPerField, frame.firstField, frame.secondField);
     }
     sqlite3_finalize(stmt);
-    sqlite3_close(db);
     if (rc != SQLITE_DONE) {
         chd::detail::set_last_error("CVBS dropouts: row iteration failed");
         return std::nullopt;

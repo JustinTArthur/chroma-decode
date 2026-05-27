@@ -9,6 +9,48 @@ struct sqlite3_stmt;
 
 namespace chd::metadata {
 
+// RAII owner for a sqlite3 database handle. Destructor uses
+// sqlite3_close_v2 (deferred close) so any prepared statements that
+// outlive an explicit close — e.g. stack-local SqliteQuery objects
+// destroyed during return-path unwinding — finalize cleanly rather
+// than leaking SQLite's internal pages. handle() is the only accessor;
+// no implicit conversion to sqlite3*, to keep `sqlite3_close(db)` from
+// compiling at call sites and re-introducing the same bug class.
+class SqliteDb {
+public:
+    SqliteDb() noexcept = default;
+    explicit SqliteDb(sqlite3 *raw) noexcept : db_(raw) {}
+    ~SqliteDb() noexcept { close(); }
+
+    SqliteDb(const SqliteDb &) = delete;
+    SqliteDb &operator=(const SqliteDb &) = delete;
+    SqliteDb(SqliteDb &&other) noexcept : db_(other.db_) { other.db_ = nullptr; }
+    SqliteDb &operator=(SqliteDb &&other) noexcept {
+        if (this != &other) {
+            close();
+            db_ = other.db_;
+            other.db_ = nullptr;
+        }
+        return *this;
+    }
+
+    // sqlite3_open_v2(path, &out, flags, nullptr). Returns the SQLite
+    // error code (SQLITE_OK on success). On error, if SQLite allocated a
+    // handle so that errmsg() is meaningful, it is still owned and will
+    // be closed by the destructor.
+    int open(const std::string &path, int flags);
+
+    // sqlite3_close_v2. Idempotent.
+    void close() noexcept;
+
+    bool isOpen() const noexcept { return db_ != nullptr; }
+    sqlite3 *handle() const noexcept { return db_; }
+    std::string errmsg() const;
+
+private:
+    sqlite3 *db_ = nullptr;
+};
+
 // QSqlQuery-shaped adapter around a sqlite3 prepared statement.
 // Designed so call sites ported from QSqlQuery keep the same shape:
 //
@@ -31,6 +73,7 @@ public:
 
     SqliteQuery();
     explicit SqliteQuery(sqlite3 *db);
+    explicit SqliteQuery(const SqliteDb &db);
     SqliteQuery(const SqliteQuery &) = delete;
     SqliteQuery &operator=(const SqliteQuery &) = delete;
     SqliteQuery(SqliteQuery &&other) noexcept;
