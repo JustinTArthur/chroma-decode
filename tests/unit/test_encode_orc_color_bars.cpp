@@ -106,7 +106,7 @@ bool writeSidecar(const std::string &path, int32_t numFields) {
         "  number_of_sequential_fields, colour_burst_start, colour_burst_end, "
         "  is_mapped, is_subcarrier_locked, is_widescreen, "
         "  white_16b_ire, black_16b_ire, blanking_16b_ire) "
-        "VALUES (1, 'NTSC', 'ld-decode', 14318181.818, 192, 1791, 910, 263, ?, "
+        "VALUES (1, 'NTSC', 'ld-decode', 14318181.818, 147, 905, 910, 263, ?, "
         "        92, 119, 1, 1, 0, 51200, 17920, 16384);";
     sqlite3_stmt *capStmt = nullptr;
     sqlite3_prepare_v2(db, capSql, -1, &capStmt, nullptr);
@@ -181,7 +181,7 @@ int runPipelineMonoSanity(const fs::path &dir) {
 
     // YUV444P16 = 3 planes * width * height * 2 bytes per sample. With
     // padding=1 the active region is unchanged (active_video_end -
-    // active_video_start = 1791 - 192 = 1599 samples wide, and
+    // active_video_start = 905 - 147 = 758 samples wide, and
     // lastActiveFrameLine - firstActiveFrameLine = 484 - 40 = 444 lines tall
     // for default NTSC defaults).
     // We just check the file is non-empty and a multiple of 6 (3 planes * 2 bytes).

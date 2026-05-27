@@ -127,7 +127,7 @@ bool writeTbcSidecar(const std::string &path, int32_t numFields,
         "  number_of_sequential_fields, colour_burst_start, colour_burst_end, "
         "  is_mapped, is_subcarrier_locked, is_widescreen, "
         "  white_16b_ire, black_16b_ire, blanking_16b_ire) "
-        "VALUES (1, 'NTSC', 'ld-decode', 14318181.818, 192, 1791, 910, 263, ?, "
+        "VALUES (1, 'NTSC', 'ld-decode', 14318181.818, 147, 905, 910, 263, ?, "
         "        92, 119, 1, 1, 0, 51200, 17920, 16384);";
     sqlite3_stmt *cap = nullptr;
     sqlite3_prepare_v2(db, capSql, -1, &cap, nullptr);
@@ -417,7 +417,7 @@ int testMultiSourceDropoutAbi(const fs::path &dir) {
     REQUIRE(writeTbcSidecar(exDb, numFields));
 
     // Drop on first field (field_id = 0 in the 0-based seqNo column), line
-    // 100, samples [200, 280). Inside the active region [192, 1791).
+    // 100, samples [200, 280). Inside the active region [147, 905).
     const DropoutRow drop{/*fieldId=*/0, /*startx=*/200, /*endx=*/280, /*fieldLine=*/100};
     REQUIRE(writeTbcSidecar(primDb, numFields, {drop}));
 
@@ -631,7 +631,7 @@ bool writeTbcSidecarV4(const std::string &path, int32_t numFields,
         "  white_16b_ire, black_16b_ire, blanking_16b_ire, "
         "  first_active_field_line, last_active_field_line, "
         "  first_active_frame_line, last_active_frame_line) "
-        "VALUES (1, 'NTSC', 'tbc-tools', 14318181.818, 192, 1791, 910, 263, ?, "
+        "VALUES (1, 'NTSC', 'tbc-tools', 14318181.818, 147, 905, 910, 263, ?, "
         "        92, 119, 1, 1, 0, 51200, 17920, 16384, ?, ?, ?, ?);";
     sqlite3_stmt *cap = nullptr;
     if (sqlite3_prepare_v2(db, capSql, -1, &cap, nullptr) != SQLITE_OK) {
