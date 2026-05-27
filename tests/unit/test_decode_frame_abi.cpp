@@ -114,6 +114,7 @@ struct DropoutRow {
 
 bool writeTbcSidecar(const std::string &path, int32_t numFields,
                      const std::vector<DropoutRow> &dropouts = {}) {
+    if (fs::exists(path)) fs::remove(path);
     sqlite3 *db = nullptr;
     if (sqlite3_open(path.c_str(), &db) != SQLITE_OK) return false;
     if (sqlite3_exec(db, kTbcSchema, nullptr, nullptr, nullptr) != SQLITE_OK) {
@@ -615,6 +616,7 @@ CREATE TABLE IF NOT EXISTS field_record (
 bool writeTbcSidecarV4(const std::string &path, int32_t numFields,
                        int32_t firstFieldLine, int32_t lastFieldLine,
                        int32_t firstFrameLine, int32_t lastFrameLine) {
+    if (fs::exists(path)) fs::remove(path);
     sqlite3 *db = nullptr;
     if (sqlite3_open(path.c_str(), &db) != SQLITE_OK) return false;
     if (sqlite3_exec(db, kTbcSchemaV4, nullptr, nullptr, nullptr) != SQLITE_OK) {
