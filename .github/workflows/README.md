@@ -4,11 +4,11 @@
 |---|---|---|
 | `build.yml` → `linux` | Build + `meson test` (with encode-orc-driven integration) + symbol-surface check, matrix on x86_64 / arm64 | Active |
 | `build.yml` → `linux-asan-ubsan` | ASan + UBSan build + `meson test` (with encode-orc-driven integration), x86_64 only | Active |
-| `build.yml` → `macos` | Build + `meson test` + symbol-surface check, matrix on arm64 / x86_64 | Active |
-| Windows | MSVC build, ORT 1.26.0 from Microsoft release tarball | Not yet — follow-up |
+| `build.yml` → `linux-tsan` | ThreadSanitizer build + `meson test` (with encode-orc-driven integration), x86_64 only | Active (untested on real CI) |
+| `build.yml` → `macos` | Build + `meson test` (with encode-orc-driven integration) + symbol-surface check, matrix on arm64 / x86_64 | Active |
+| `build.yml` → `windows` | MSVC x64 build + `meson test` + symbol-surface check via `dumpbin`; vcpkg for sqlite3/fftw3, Microsoft ORT zip | Skeleton — expects first-run iteration |
+| encode-orc on Windows | Wire `setup-encode-orc` into the Windows job | Not yet — follow-up |
 | ABI check | `abi-compliance-checker` against previous release `.so` | Not yet — added at first tagged release |
-| TSan | ThreadSanitizer pass on Linux | Not yet — follow-up |
-| encode-orc on macOS | Wire `setup-encode-orc` into the macOS matrix | Not yet — follow-up |
 | CUDA self-hosted | nnTransform3D CUDA FFT path validation | Not yet — self-hosted GPU runner |
 
 ## Reusable actions

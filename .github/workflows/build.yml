@@ -137,6 +137,59 @@ jobs:
           . .venv/bin/activate
           meson test -C build --print-errorlogs
 
+  # TSan is its own job because address+thread can't be combined in one
+  # binary. x86_64 only (the suite is identical to the ASan run; we just
+  # want to catch races in the chd_decode_frames_async path).
+  linux-tsan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config libsqlite3-dev libfftw3-dev
+
+      - name: Python venv
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install meson
+
+      - name: Download ONNX Runtime (Microsoft release, Linux x64 CPU)
+        run: |
+          ORT_VER=1.26.0
+          curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-x64-${ORT_VER}.tgz"
+          mkdir -p ${HOME}/ort
+          tar -xzf ort.tgz -C ${HOME}/ort --strip-components=1
+          echo "ORT_ROOT=${HOME}/ort" >> $GITHUB_ENV
+
+      - name: Configure (TSan)
+        run: |
+          . .venv/bin/activate
+          meson setup build \
+            -Donnxruntime_root="${ORT_ROOT}" \
+            -Db_sanitize=thread \
+            -Db_lundef=false
+
+      - name: Build
+        run: |
+          . .venv/bin/activate
+          meson compile -C build
+
+      - name: Set up encode-orc (drives integration fixtures)
+        uses: ./.github/actions/setup-encode-orc
+
+      - name: Test
+        env:
+          LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: |
+          . .venv/bin/activate
+          meson test -C build --print-errorlogs
+
   macos:
     name: macos-${{ matrix.arch }}
     strategy:
@@ -210,5 +263,70 @@ jobs:
             echo "Non-chd_ symbols leaked:"; cat /tmp/leaks.txt; exit 1
           fi
 
-  # Windows support is added in a follow-up once we have
-  # ORT download + ninja + msvc set up for the matrix.
+  # Windows MSVC. Skeleton — expected to need first-run iteration once
+  # the repo lands on GitHub (vcpkg/meson/pkg-config/MSVC environment
+  # interactions can't be fully validated locally on macOS/Linux).
+  # encode-orc is not wired in here yet: the composite action's Windows
+  # branch + a Windows-runnable encode-orc build are a separate
+  # follow-up. Without encode-orc the integration test
+  # self-skips with PASS, so the rest of the suite still gates.
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC environment (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: vcpkg deps (sqlite3 + fftw3)
+        shell: pwsh
+        run: |
+          vcpkg install sqlite3:x64-windows fftw3:x64-windows
+          $vcpkgInstalled = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
+          "PKG_CONFIG_PATH=$vcpkgInstalled\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "CMAKE_PREFIX_PATH=$vcpkgInstalled" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$vcpkgInstalled\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Python tools (meson + ninja)
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install meson ninja
+
+      - name: Download ONNX Runtime (Microsoft release, Windows x64 CPU)
+        shell: pwsh
+        run: |
+          $ORT_VER = "1.26.0"
+          Invoke-WebRequest "https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VER/onnxruntime-win-x64-$ORT_VER.zip" -OutFile ort.zip
+          Expand-Archive -Path ort.zip -DestinationPath "$env:USERPROFILE\ort_extract"
+          $ortDir = (Get-ChildItem "$env:USERPROFILE\ort_extract" | Where-Object PSIsContainer | Select-Object -First 1).FullName
+          "ORT_ROOT=$ortDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$ortDir\lib" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Configure
+        shell: pwsh
+        run: meson setup build "-Donnxruntime_root=$env:ORT_ROOT"
+
+      - name: Build
+        shell: pwsh
+        run: meson compile -C build
+
+      - name: Test
+        shell: pwsh
+        run: meson test -C build --print-errorlogs
+
+      - name: Verify exported chd_* symbols
+        shell: pwsh
+        run: |
+          $dll = (Get-ChildItem build\src\chromadec*.dll | Select-Object -First 1).FullName
+          if (-not $dll) { Write-Error "no built chromadec DLL found"; exit 1 }
+          Write-Host "Inspecting $dll"
+          $out = & dumpbin /exports $dll
+          # dumpbin export rows look like: "    1    0 00001000 chd_video_open_composite"
+          $chd  = ($out | Select-String '\bchd_\w+').Count
+          $leak = ($out | Select-String '^\s+\d+\s+\d+\s+[0-9A-Fa-f]+\s+(?!chd_)[A-Za-z_]\w*$').Count
+          Write-Host "chd_ exports: $chd  (non-chd globals: $leak)"
+          if ($chd -lt 40) { Write-Error "expected >=40 chd_ exports"; exit 1 }
+          if ($leak -gt 0) { Write-Error "non-chd symbols leaked"; exit 1 }
