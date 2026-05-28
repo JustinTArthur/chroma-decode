@@ -1,0 +1,194 @@
+name: gpu-cuda-validation
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly: Mondays 04:00 UTC.
+    - cron: '0 4 * * 1'
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+
+concurrency:
+  group: gpu-cuda
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-northeast-2
+  AWS_AZ: ap-northeast-2d
+  INSTANCE_TYPE: g5.xlarge
+  AMI_PARAM: /aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id
+  RUNNER_LABEL: chd-cuda-${{ github.run_id }}
+
+jobs:
+  launch-spot:
+    runs-on: ubuntu-latest
+    outputs:
+      instance_id: ${{ steps.launch.outputs.instance_id }}
+      runner_label: ${{ env.RUNNER_LABEL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_GPU_RUNNER_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve AMI
+        id: ami
+        run: |
+          AMI_ID=$(aws ssm get-parameter --name "$AMI_PARAM" --query 'Parameter.Value' --output text)
+          echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
+          echo "Resolved AMI: $AMI_ID"
+
+      - name: Generate runner registration token
+        id: runner-token
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TOKEN=$(gh api -X POST repos/${{ github.repository }}/actions/runners/registration-token --jq '.token')
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Launch spot instance
+        id: launch
+        env:
+          RUNNER_TOKEN: ${{ steps.runner-token.outputs.token }}
+          REPO_URL: https://github.com/${{ github.repository }}
+        run: |
+          # User-data script: install GH runner agent, register as ephemeral
+          # self-hosted runner with the per-run label, then shutdown after one
+          # job (instance-initiated-shutdown-behavior=terminate cleans up).
+          USER_DATA=$(cat <<EOF
+          #!/bin/bash
+          set -eux
+          # Hard cap: terminate after 30min no matter what.
+          (sleep 1800 && shutdown -h now) &
+
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y --no-install-recommends -qq curl ca-certificates jq
+
+          # Set up GH Actions runner under a non-root user.
+          useradd -m -s /bin/bash ghrunner
+          cd /home/ghrunner
+          RUNNER_VERSION=2.319.1
+          curl -sSL -o actions-runner.tar.gz \
+            https://github.com/actions/runner/releases/download/v\${RUNNER_VERSION}/actions-runner-linux-x64-\${RUNNER_VERSION}.tar.gz
+          tar xzf actions-runner.tar.gz
+          chown -R ghrunner:ghrunner /home/ghrunner
+
+          sudo -u ghrunner bash -c '
+            cd /home/ghrunner
+            ./config.sh \
+              --url "${REPO_URL}" \
+              --token "${RUNNER_TOKEN}" \
+              --labels "${RUNNER_LABEL},gpu,nvidia" \
+              --ephemeral \
+              --unattended \
+              --replace
+            ./run.sh
+          '
+
+          shutdown -h now
+          EOF
+          )
+
+          INSTANCE_ID=$(aws ec2 run-instances \
+            --instance-type "$INSTANCE_TYPE" \
+            --image-id "${{ steps.ami.outputs.ami_id }}" \
+            --placement "AvailabilityZone=${AWS_AZ}" \
+            --instance-market-options 'MarketType=spot' \
+            --instance-initiated-shutdown-behavior terminate \
+            --user-data "$USER_DATA" \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Project,Value=chroma-signal-decoder},{Key=Purpose,Value=ci-cuda},{Key=RunId,Value=${{ github.run_id }}},{Key=RunnerLabel,Value=${RUNNER_LABEL}}]" \
+            --query 'Instances[0].InstanceId' \
+            --output text)
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+          echo "Launched $INSTANCE_ID; waiting for runner to register..."
+
+      - name: Wait for runner to come online
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for i in $(seq 1 60); do
+            if gh api repos/${{ github.repository }}/actions/runners --paginate \
+                 --jq '.runners[] | select(.labels[].name == "'"${RUNNER_LABEL}"'") | .id' \
+                 | grep -q .; then
+              echo "Runner ${RUNNER_LABEL} is online."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Runner ${RUNNER_LABEL} did not register within 10 minutes."
+          aws ec2 terminate-instances --instance-ids "${{ steps.launch.outputs.instance_id }}" || true
+          exit 1
+
+  cuda-test:
+    needs: launch-spot
+    runs-on: [self-hosted, "${{ needs.launch-spot.outputs.runner_label }}"]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System info
+        run: |
+          uname -a
+          nvidia-smi
+          ls /usr/local/cuda*/lib64/libcudart* 2>/dev/null || true
+
+      - name: System deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends -qq \
+            ninja-build pkg-config meson cmake git file \
+            libsqlite3-dev libfftw3-dev \
+            build-essential
+
+      - name: Download ONNX Runtime (Linux x64 GPU — bundles CUDA + TensorRT EPs)
+        run: |
+          ORT_VER=1.26.0
+          curl -sSL -o ort.tgz \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-x64-gpu-${ORT_VER}.tgz"
+          mkdir -p $HOME/ort
+          tar -xzf ort.tgz -C $HOME/ort --strip-components=1
+          echo "ORT_ROOT=$HOME/ort" >> $GITHUB_ENV
+
+      - name: Configure (with_cuda=enabled)
+        run: |
+          meson setup build \
+            -Donnxruntime_root="$ORT_ROOT" \
+            -Dwith_cuda=enabled
+
+      - name: Build
+        run: meson compile -C build
+
+      - name: Set up encode-orc (drives integration fixtures)
+        uses: ./.github/actions/setup-encode-orc
+
+      - name: Test (CUDA pipeline)
+        env:
+          LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib
+        run: |
+          meson test -C build --print-errorlogs
+
+  cleanup:
+    needs: [launch-spot, cuda-test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_GPU_RUNNER_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terminate spot instance (belt and suspenders)
+        if: needs.launch-spot.outputs.instance_id != ''
+        run: |
+          aws ec2 terminate-instances \
+            --instance-ids "${{ needs.launch-spot.outputs.instance_id }}" \
+            || echo "Instance already terminated"

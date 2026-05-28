@@ -4,11 +4,12 @@
 |---|---|---|
 | `build.yml` → `linux` | Build + `meson test` (with encode-orc-driven integration) + symbol-surface check, matrix on x86_64 / arm64 | Active |
 | `build.yml` → `linux-asan-ubsan` | ASan + UBSan build + `meson test` (with encode-orc-driven integration), x86_64 only | Active |
-| `build.yml` → `linux-tsan` | ThreadSanitizer build + `meson test` (with encode-orc-driven integration), x86_64 only | Active (untested on real CI) |
+| `build.yml` → `linux-tsan` | ThreadSanitizer build + `meson test` (with encode-orc-driven integration), x86_64 only | Active |
 | `build.yml` → `macos` | Build + `meson test` (with encode-orc-driven integration) + symbol-surface check, matrix on arm64 / x86_64 | Active |
 | `build.yml` → `windows` | MSVC x64 build + `meson test` (with encode-orc-driven integration) + symbol-surface check via `dumpbin`; vcpkg for sqlite3/fftw3, Microsoft ORT zip | Active |
+| `gpu-cuda.yml` | NVIDIA A10G validation on AWS spot (`g5.xlarge` in `ap-northeast-2d`), weekly + manual; CUDA + TensorRT EPs against `chroma_net` v2 | Active (`workflow_dispatch` + weekly cron) |
+| `gpu-amd.yml` | AMD V520 validation on AWS spot (`g4ad.xlarge` in `us-east-2c`) running inside `rocm/migraphx` Docker, weekly + manual; HIP/hipFFT pipeline + MIGraphX EP | Active (`workflow_dispatch` + weekly cron) |
 | ABI check | `abi-compliance-checker` against previous release `.so` | Not yet — added at first tagged release |
-| CUDA self-hosted | nnTransform3D CUDA FFT path validation | Not yet — self-hosted GPU runner |
 
 ## Reusable actions
 
