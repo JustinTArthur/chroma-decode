@@ -36,8 +36,23 @@ runs:
       shell: bash
       run: brew install cmake ninja pkg-config yaml-cpp spdlog libpng ffmpeg
 
-    - name: Clone + build encode-orc
-      if: steps.cache.outputs.cache-hit != 'true'
+    # pkg-config-lite provides the pkg-config tool that encode-orc's
+    # CMakeLists uses to resolve the FFMPEG dependency. vcpkg is
+    # preinstalled on windows-2022.
+    - name: encode-orc deps (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        choco install -y --no-progress pkgconfiglite
+        vcpkg install sqlite3:x64-windows yaml-cpp:x64-windows spdlog:x64-windows libpng:x64-windows
+        vcpkg install "ffmpeg[avcodec,avformat,avutil,swscale]:x64-windows"
+        $vcpkgInstalled = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
+        "PKG_CONFIG_PATH=$vcpkgInstalled\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "CMAKE_PREFIX_PATH=$vcpkgInstalled" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "$vcpkgInstalled\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+    - name: Clone + build encode-orc (Linux/macOS)
+      if: runner.os != 'Windows' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
         git clone https://github.com/simoninns/encode-orc.git ~/encode-orc
@@ -46,6 +61,26 @@ runs:
         cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release
         cmake --build build
 
-    - name: Export CHD_ENCODE_ORC
+    - name: Clone + build encode-orc (Windows)
+      if: runner.os == 'Windows' && steps.cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        git clone https://github.com/simoninns/encode-orc.git "$env:USERPROFILE\encode-orc"
+        Set-Location "$env:USERPROFILE\encode-orc"
+        git checkout ${{ inputs.commit }}
+        cmake -B build -S . -G Ninja `
+          -DCMAKE_BUILD_TYPE=Release `
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
+          -DVCPKG_TARGET_TRIPLET=x64-windows
+        cmake --build build
+
+    - name: Export CHD_ENCODE_ORC (Linux/macOS)
+      if: runner.os != 'Windows'
       shell: bash
       run: echo "CHD_ENCODE_ORC=${HOME}/encode-orc/build/encode-orc" >> $GITHUB_ENV
+
+    - name: Export CHD_ENCODE_ORC (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        "CHD_ENCODE_ORC=$env:USERPROFILE\encode-orc\build\encode-orc.exe" | Out-File -FilePath $env:GITHUB_ENV -Append

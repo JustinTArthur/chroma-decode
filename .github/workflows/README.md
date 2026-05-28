@@ -6,8 +6,7 @@
 | `build.yml` → `linux-asan-ubsan` | ASan + UBSan build + `meson test` (with encode-orc-driven integration), x86_64 only | Active |
 | `build.yml` → `linux-tsan` | ThreadSanitizer build + `meson test` (with encode-orc-driven integration), x86_64 only | Active (untested on real CI) |
 | `build.yml` → `macos` | Build + `meson test` (with encode-orc-driven integration) + symbol-surface check, matrix on arm64 / x86_64 | Active |
-| `build.yml` → `windows` | MSVC x64 build + `meson test` + symbol-surface check via `dumpbin`; vcpkg for sqlite3/fftw3, Microsoft ORT zip | Skeleton — expects first-run iteration |
-| encode-orc on Windows | Wire `setup-encode-orc` into the Windows job | Not yet — follow-up |
+| `build.yml` → `windows` | MSVC x64 build + `meson test` (with encode-orc-driven integration) + symbol-surface check via `dumpbin`; vcpkg for sqlite3/fftw3, Microsoft ORT zip | Active |
 | ABI check | `abi-compliance-checker` against previous release `.so` | Not yet — added at first tagged release |
 | CUDA self-hosted | nnTransform3D CUDA FFT path validation | Not yet — self-hosted GPU runner |
 

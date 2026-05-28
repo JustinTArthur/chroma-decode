@@ -313,6 +313,9 @@ jobs:
         shell: pwsh
         run: meson compile -C build
 
+      - name: Set up encode-orc (drives integration fixtures)
+        uses: ./.github/actions/setup-encode-orc
+
       - name: Test
         shell: pwsh
         run: meson test -C build --print-errorlogs

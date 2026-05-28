@@ -152,6 +152,17 @@ int runShell(const std::string &cmd) {
     return std::system(cmd.c_str());
 }
 
+// Set an environment variable in the current process so std::system()
+// children inherit it. POSIX's setenv() and MSVC's _putenv_s() differ;
+// wrap them. Returns 0 on success.
+int setEnvVar(const char *key, const char *value) {
+#ifdef _WIN32
+    return _putenv_s(key, value);
+#else
+    return setenv(key, value, /*overwrite=*/1);
+#endif
+}
+
 bool writeFile(const std::string &path, const std::string &content) {
     std::ofstream f(path);
     if (!f.is_open()) return false;
@@ -192,9 +203,12 @@ int buildEncodeOrcFixture(const std::string &encodeOrc, const std::string &asset
     const std::string yamlPath = (outDir / "project.yaml").string();
     REQUIRE(writeFile(yamlPath, renderProjectYaml(enc)));
 
+    // Pass ENCODE_ORC_* via the process environment rather than a shell
+    // prefix so the same code works under Windows cmd.exe (which doesn't
+    // support `KEY=value command` syntax) and POSIX shells.
+    REQUIRE(setEnvVar("ENCODE_ORC_OUTPUT_ROOT", outDir.string().c_str()) == 0);
+    REQUIRE(setEnvVar("ENCODE_ORC_ASSETS",     assets.c_str())          == 0);
     const std::string cmd =
-        "ENCODE_ORC_OUTPUT_ROOT=\"" + outDir.string() + "\" " +
-        "ENCODE_ORC_ASSETS=\"" + assets + "\" " +
         "\"" + encodeOrc + "\" \"" + yamlPath + "\" --log-level warn";
     if (runShell(cmd) != 0) {
         std::cerr << "FAIL: encode-orc invocation failed: " << cmd << "\n";
@@ -254,7 +268,7 @@ int decodeFramesViaAbi(const std::string &tbc, const std::string &sidecar,
                        std::vector<uint16_t> *yuvOut,
                        int32_t *widthOut, int32_t *heightOut) {
     chd_video_t *video = nullptr;
-    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) == CHD_OK);
 
     chd_decoder_t *dec = nullptr;
     REQUIRE(chd_decoder_create(video, kind, &dec) == CHD_OK);
@@ -424,7 +438,7 @@ int runVariants(const Encoder &enc, const std::string &tbc,
                 const Variant (&variants)[N]) {
     {
         chd_video_t *v = nullptr;
-        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &v) == CHD_OK);
+        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &v) == CHD_OK);
         chd_video_info_t info{};
         REQUIRE(chd_video_get_info(v, &info) == CHD_OK);
         REQUIRE(info.standard    == enc.expectedStandard);
