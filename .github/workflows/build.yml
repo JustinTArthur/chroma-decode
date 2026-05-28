@@ -8,7 +8,18 @@ on:
 
 jobs:
   linux:
-    runs-on: ubuntu-24.04
+    name: linux-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            ort_arch: x64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            ort_arch: aarch64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -25,10 +36,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install meson
 
-      - name: Download ONNX Runtime (Microsoft release, includes Linux CPU+CUDA)
+      - name: Download ONNX Runtime (Microsoft release, Linux ${{ matrix.arch }} CPU)
         run: |
           ORT_VER=1.26.0
-          curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-x64-${ORT_VER}.tgz"
+          curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-${{ matrix.ort_arch }}-${ORT_VER}.tgz"
           mkdir -p ${HOME}/ort
           tar -xzf ort.tgz -C ${HOME}/ort --strip-components=1
           echo "ORT_ROOT=${HOME}/ort" >> $GITHUB_ENV
@@ -42,6 +53,13 @@ jobs:
         run: |
           . .venv/bin/activate
           meson compile -C build
+
+      - name: Test
+        env:
+          LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib
+        run: |
+          . .venv/bin/activate
+          meson test -C build --print-errorlogs
 
       - name: Verify exported chd_* symbols
         run: |
@@ -64,8 +82,74 @@ jobs:
           DESTDIR=/tmp/inst meson install -C build --quiet
           find /tmp/inst -type f | head -30
 
+  # x86_64 only — one sanitizer run is enough to gate the suite.
+  linux-asan-ubsan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config libsqlite3-dev libfftw3-dev
+
+      - name: Python venv
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install meson
+
+      - name: Download ONNX Runtime (Microsoft release, Linux x64 CPU)
+        run: |
+          ORT_VER=1.26.0
+          curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-x64-${ORT_VER}.tgz"
+          mkdir -p ${HOME}/ort
+          tar -xzf ort.tgz -C ${HOME}/ort --strip-components=1
+          echo "ORT_ROOT=${HOME}/ort" >> $GITHUB_ENV
+
+      - name: Configure (ASan + UBSan)
+        run: |
+          . .venv/bin/activate
+          meson setup build \
+            -Donnxruntime_root="${ORT_ROOT}" \
+            -Db_sanitize=address,undefined \
+            -Db_lundef=false
+
+      - name: Build
+        run: |
+          . .venv/bin/activate
+          meson compile -C build
+
+      - name: Test
+        env:
+          LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          . .venv/bin/activate
+          meson test -C build --print-errorlogs
+
   macos:
-    runs-on: macos-latest
+    name: macos-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+            ort_arch: arm64
+            # 1.26.0 is current; macOS arm64 has shipped every release.
+            ort_ver: '1.26.0'
+          - arch: x86_64
+            runner: macos-13
+            ort_arch: x86_64
+            # Microsoft dropped onnxruntime-osx-x86_64 after 1.23.2;
+            # 1.24.0+ ships arm64 only. Pin to the last release that
+            # included an Intel-Mac asset.
+            ort_ver: '1.23.2'
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -79,10 +163,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install meson
 
-      - name: Download ONNX Runtime (Microsoft release, includes CoreML)
+      - name: Download ONNX Runtime (Microsoft release, macOS ${{ matrix.arch }} with CoreML)
         run: |
-          ORT_VER=1.26.0
-          curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-osx-arm64-${ORT_VER}.tgz"
+          ORT_VER=${{ matrix.ort_ver }}
+          curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-osx-${{ matrix.ort_arch }}-${ORT_VER}.tgz"
           mkdir -p ${HOME}/ort
           tar -xzf ort.tgz -C ${HOME}/ort --strip-components=1
           echo "ORT_ROOT=${HOME}/ort" >> $GITHUB_ENV
@@ -96,6 +180,13 @@ jobs:
         run: |
           . .venv/bin/activate
           meson compile -C build
+
+      - name: Test
+        env:
+          DYLD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib
+        run: |
+          . .venv/bin/activate
+          meson test -C build --print-errorlogs
 
       - name: Verify exported chd_* symbols
         run: |
