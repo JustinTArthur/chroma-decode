@@ -2,14 +2,24 @@
 
 | Workflow | Purpose | Status |
 |---|---|---|
-| `build.yml` → `linux` | Build + `meson test` + symbol-surface check, matrix on x86_64 / arm64 | Active |
-| `build.yml` → `linux-asan-ubsan` | ASan + UBSan sanitizer build + `meson test`, x86_64 only | Active |
+| `build.yml` → `linux` | Build + `meson test` (with encode-orc-driven integration) + symbol-surface check, matrix on x86_64 / arm64 | Active |
+| `build.yml` → `linux-asan-ubsan` | ASan + UBSan build + `meson test` (with encode-orc-driven integration), x86_64 only | Active |
 | `build.yml` → `macos` | Build + `meson test` + symbol-surface check, matrix on arm64 / x86_64 | Active |
 | Windows | MSVC build, ORT 1.26.0 from Microsoft release tarball | Not yet — follow-up |
 | ABI check | `abi-compliance-checker` against previous release `.so` | Not yet — added at first tagged release |
 | TSan | ThreadSanitizer pass on Linux | Not yet — follow-up |
-| Encode-orc fixture generator | Clone, build, and run encode-orc; produce test `.tbc` + `.tbc.db` fixtures for the integration test job | Not yet — follow-up |
+| encode-orc on macOS | Wire `setup-encode-orc` into the macOS matrix | Not yet — follow-up |
 | CUDA self-hosted | nnTransform3D CUDA FFT path validation | Not yet — self-hosted GPU runner |
+
+## Reusable actions
+
+- `.github/actions/setup-encode-orc/` — composite action that clones,
+  builds (with cache), and exports `CHD_ENCODE_ORC` so
+  `test_integration` runs against real NTSC + PAL colour-bars
+  TBC fixtures instead of self-skipping. Pinned to a specific
+  encode-orc commit via the `commit` input. encode-orc has no
+  GitHub Releases — only ephemeral workflow artifacts — so source-build
+  with commit-keyed cache is the durable pattern.
 
 ## ONNX Runtime artifacts
 

@@ -1,0 +1,50 @@
+name: 'Set up encode-orc fixture generator'
+description: >-
+  Clone, build (with cache), and export CHD_ENCODE_ORC so the
+  test_integration test runs against real synthesized NTSC + PAL
+  colour-bars TBC fixtures instead of self-skipping.
+inputs:
+  commit:
+    description: 'encode-orc commit SHA to pin (matches the locally-validated build).'
+    required: false
+    default: 'a7004c4'
+runs:
+  using: 'composite'
+  steps:
+    - name: Cache encode-orc clone + build
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/encode-orc
+        key: encode-orc-${{ runner.os }}-${{ runner.arch }}-${{ inputs.commit }}
+
+    # Runtime deps must be installed every time, not just on cache miss,
+    # because encode-orc dynamically links yaml-cpp / spdlog / libpng /
+    # sqlite3 — the cached binary needs them resolvable at exec time.
+    - name: encode-orc deps (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          cmake ninja-build \
+          libsqlite3-dev libyaml-cpp-dev libspdlog-dev libpng-dev
+
+    - name: encode-orc deps (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: brew install cmake ninja yaml-cpp spdlog libpng
+
+    - name: Clone + build encode-orc
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        git clone https://github.com/simoninns/encode-orc.git ~/encode-orc
+        cd ~/encode-orc
+        git checkout ${{ inputs.commit }}
+        cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release
+        cmake --build build
+
+    - name: Export CHD_ENCODE_ORC
+      shell: bash
+      run: echo "CHD_ENCODE_ORC=${HOME}/encode-orc/build/encode-orc" >> $GITHUB_ENV

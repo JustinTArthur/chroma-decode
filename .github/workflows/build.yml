@@ -54,6 +54,9 @@ jobs:
           . .venv/bin/activate
           meson compile -C build
 
+      - name: Set up encode-orc (drives integration fixtures)
+        uses: ./.github/actions/setup-encode-orc
+
       - name: Test
         env:
           LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib
@@ -121,6 +124,9 @@ jobs:
         run: |
           . .venv/bin/activate
           meson compile -C build
+
+      - name: Set up encode-orc (drives integration fixtures)
+        uses: ./.github/actions/setup-encode-orc
 
       - name: Test
         env:
