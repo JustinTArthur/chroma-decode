@@ -187,6 +187,9 @@ jobs:
           . .venv/bin/activate
           meson compile -C build
 
+      - name: Set up encode-orc (drives integration fixtures)
+        uses: ./.github/actions/setup-encode-orc
+
       - name: Test
         env:
           DYLD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib
