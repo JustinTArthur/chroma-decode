@@ -27,16 +27,33 @@
 // black-boundary fallback at frame 0 and frame 2. Multi-frame catches
 // per-frame state leakage that single-frame tests would mask.
 //
-// Env vars gate the integration paths:
-//   CHD_ENCODE_ORC          — absolute path to a built encode-orc binary
-//                             (integration-test prerequisite). Without it, every
-//                             test self-skips with PASS so plain `meson
-//                             test` stays green on machines that don't
-//                             have the encoder.
+// Env vars gate the integration paths. Two modes for sourcing the
+// encoder fixtures, checked in this order:
+//
+//   CHD_ENCODE_ORC_FIXTURE_DIR — absolute path to a directory holding
+//                             pre-built fixtures, one subdir per
+//                             encoder label. Expected layout:
+//                                 <dir>/ntsc-bars/fixture.tbc
+//                                 <dir>/ntsc-bars/fixture.tbc.db
+//                                 <dir>/pal-bars/fixture.tbc
+//                                 <dir>/pal-bars/fixture.tbc.db
+//                             Skips the encode-orc invocation entirely.
+//                             Intended for a CI fan-out where one
+//                             upstream job produces the fixtures and
+//                             downstream OS jobs reuse them.
+//
+//   CHD_ENCODE_ORC          — absolute path to a built encode-orc
+//                             binary. Used when CHD_ENCODE_ORC_FIXTURE_DIR
+//                             is not set; the test invokes encode-orc to
+//                             synthesise the fixtures into a temp dir.
+//                             This is the local-dev path.
+//
 //   CHD_ENCODE_ORC_ASSETS   — optional. Directory containing
-//                             encode-orc's NTSC/PAL raw assets. Defaults
+//                             encode-orc's NTSC/PAL raw assets. Only
+//                             used in the CHD_ENCODE_ORC mode. Defaults
 //                             to the sibling `assets/` of the encode-orc
 //                             binary's grandparent.
+//
 //   CHD_LD_CHROMA_DECODER   — absolute path to a built ld-chroma-decoder
 //                             binary, ideally at ld-decode commit
 //                             f39e59e18 (last good before the tools/
@@ -45,6 +62,9 @@
 //                             pixel-identical Y/Cb/Cr planes against the
 //                             legacy reference for every (encoder ×
 //                             variant × frame) combination.
+//
+// With none of these set, every test self-skips with PASS so plain
+// `meson test` stays green on machines that don't have the encoder.
 
 #include <chromadec/chromadec.h>
 
@@ -207,6 +227,25 @@ int resolveEncodeOrc(const Encoder &enc,
     }
     *binaryOut = encodeOrc;
     *assetsOut = assets;
+    return 0;
+}
+
+// Pre-built fixture path resolver. Returns 0 on success, 1 if the env var
+// is unset, -1 if it's set but the expected layout is missing.
+int resolvePrebuiltFixture(const Encoder &enc,
+                           std::string *tbcOut, std::string *sidecarOut) {
+    const char *dir = std::getenv("CHD_ENCODE_ORC_FIXTURE_DIR");
+    if (dir == nullptr || dir[0] == 0) return 1;
+    const fs::path sub = fs::path(dir) / enc.label;
+    const std::string tbc     = (sub / "fixture.tbc").string();
+    const std::string sidecar = (sub / "fixture.tbc.db").string();
+    if (!fs::exists(tbc) || !fs::exists(sidecar)) {
+        std::cerr << "FAIL: CHD_ENCODE_ORC_FIXTURE_DIR layout missing "
+                  << tbc << " or " << sidecar << "\n";
+        return -1;
+    }
+    *tbcOut = tbc;
+    *sidecarOut = sidecar;
     return 0;
 }
 
@@ -376,20 +415,13 @@ int runVariantChecks(const Encoder &enc, const Variant &variant,
     return 0;
 }
 
-// Build the encode-orc fixture for `enc`, then run every variant in
-// `variants` against it (content check + optional golden compare).
+// Confirm chd's view of `tbc`/`sidecar` matches the encoder metadata,
+// then run every variant in `variants` against it (content check +
+// optional golden compare).
 template <size_t N>
-int processEncoder(const std::string &encodeOrc, const std::string &assets,
-                   const char *ldChroma,
-                   const Encoder &enc, const Variant (&variants)[N]) {
-    // Confirm chd's view of the produced fixture matches the encoder
-    // metadata.
-    const fs::path dir = fs::temp_directory_path() /
-                         (std::string("chd_integration_") + enc.label);
-    fs::remove_all(dir);
-
-    std::string tbc, sidecar;
-    if (buildEncodeOrcFixture(encodeOrc, assets, enc, dir, &tbc, &sidecar) != 0) return 1;
+int runVariants(const Encoder &enc, const std::string &tbc,
+                const std::string &sidecar, const char *ldChroma,
+                const Variant (&variants)[N]) {
     {
         chd_video_t *v = nullptr;
         REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &v) == CHD_OK);
@@ -407,26 +439,58 @@ int processEncoder(const std::string &encodeOrc, const std::string &assets,
     for (size_t i = 0; i < N; i++) {
         if (runVariantChecks(enc, variants[i], tbc, sidecar, ldChroma) != 0) return 1;
     }
-
-    fs::remove_all(dir);
     return 0;
+}
+
+// Invoke encode-orc to produce the fixture in a temp dir, then run the
+// variants and clean up.
+template <size_t N>
+int runWithEncodeOrc(const std::string &encodeOrc, const std::string &assets,
+                     const char *ldChroma, const Encoder &enc,
+                     const Variant (&variants)[N]) {
+    const fs::path dir = fs::temp_directory_path() /
+                         (std::string("chd_integration_") + enc.label);
+    fs::remove_all(dir);
+
+    std::string tbc, sidecar;
+    if (buildEncodeOrcFixture(encodeOrc, assets, enc, dir, &tbc, &sidecar) != 0) return 1;
+    const int rc = runVariants(enc, tbc, sidecar, ldChroma, variants);
+    fs::remove_all(dir);
+    return rc;
+}
+
+// Use the fixture in CHD_ENCODE_ORC_FIXTURE_DIR/<enc.label>/ and run the
+// variants without touching the dir.
+template <size_t N>
+int runWithPrebuiltFixture(const char *ldChroma, const Encoder &enc,
+                           const Variant (&variants)[N]) {
+    std::string tbc, sidecar;
+    if (resolvePrebuiltFixture(enc, &tbc, &sidecar) != 0) return 1;
+    return runVariants(enc, tbc, sidecar, ldChroma, variants);
 }
 
 }  // namespace
 
 int main() {
+    // Fixture-dir mode wins over encode-orc-invocation mode when both
+    // are set: the explicit point of CHD_ENCODE_ORC_FIXTURE_DIR is "skip
+    // the build, use these files".
+    const char *fixtureDirEnv = std::getenv("CHD_ENCODE_ORC_FIXTURE_DIR");
+    const bool useFixtureDir  = fixtureDirEnv != nullptr && fixtureDirEnv[0] != 0;
+
     std::string encodeOrc, assets;
-    const int rc = resolveEncodeOrc(kNtscBars, &encodeOrc, &assets);
-    if (rc < 0) return 1;
-    if (rc > 0) {
-        std::cout << "test_integration: CHD_ENCODE_ORC unset — "
-                     "skipping encode-orc integration\n";
-        std::cout << "test_integration: PASS\n";
-        return 0;
-    }
-    // PAL spec needs the same encode-orc binary but a different sub-asset;
-    // confirm that one too before we start work.
-    {
+    if (!useFixtureDir) {
+        const int rc = resolveEncodeOrc(kNtscBars, &encodeOrc, &assets);
+        if (rc < 0) return 1;
+        if (rc > 0) {
+            std::cout << "test_integration: neither "
+                         "CHD_ENCODE_ORC_FIXTURE_DIR nor CHD_ENCODE_ORC set — "
+                         "skipping encode-orc integration\n";
+            std::cout << "test_integration: PASS\n";
+            return 0;
+        }
+        // PAL spec needs the same encode-orc binary but a different
+        // sub-asset; confirm that one too before we start work.
         std::string dummy1, dummy2;
         if (resolveEncodeOrc(kPalBars, &dummy1, &dummy2) < 0) return 1;
     }
@@ -443,8 +507,13 @@ int main() {
         ldChroma = nullptr;  // sentinel for runVariantChecks
     }
 
-    if (processEncoder(encodeOrc, assets, ldChroma, kNtscBars, kNtscVariants) != 0) return 1;
-    if (processEncoder(encodeOrc, assets, ldChroma, kPalBars,  kPalVariants)  != 0) return 1;
+    if (useFixtureDir) {
+        if (runWithPrebuiltFixture(ldChroma, kNtscBars, kNtscVariants) != 0) return 1;
+        if (runWithPrebuiltFixture(ldChroma, kPalBars,  kPalVariants)  != 0) return 1;
+    } else {
+        if (runWithEncodeOrc(encodeOrc, assets, ldChroma, kNtscBars, kNtscVariants) != 0) return 1;
+        if (runWithEncodeOrc(encodeOrc, assets, ldChroma, kPalBars,  kPalVariants)  != 0) return 1;
+    }
 
     std::cout << "test_integration: PASS\n";
     return 0;
