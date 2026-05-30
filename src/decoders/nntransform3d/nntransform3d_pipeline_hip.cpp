@@ -8,9 +8,7 @@
 // `__global__` + `<<<>>>` form.
 //
 // Algorithm authorship: asdfqazsnbb (originally Discord-distributed
-// nnTransform3D, v2 later open-sourced; the reference C++/CUDA harness
-// lives at
-// ~/Development/Analog Decoding Models/nnTransform3D/Repos/nnTransform3D).
+// nnTransform3D, v2 later open-sourced as a standalone C++/CUDA harness).
 // HIP port: by inspection from that harness; the original author did
 // not publish a HIP variant.
 //

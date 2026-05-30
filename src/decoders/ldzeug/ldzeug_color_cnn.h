@@ -7,9 +7,9 @@
 // configurable phase offset and gain.
 //
 // Ported from vapoursynth-analog's LdzeugColorCnnDecoder; original
-// algorithm + model: **jsaowji** (ldzeug2 reference at
-// ~/Development/Repos/ldzeug2). Bundled bundled weights live under
-// ~/Development/Analog Decoding Models/for ldzeug2/color_cnn_*.onnx.
+// algorithm + model: **jsaowji** (the ldzeug2 reference harness). Model
+// weights are supplied by the caller at runtime (see models/README.md); they
+// are not bundled with this library.
 
 #ifndef CHD_DECODERS_LDZEUG_LDZEUG_COLOR_CNN_H
 #define CHD_DECODERS_LDZEUG_LDZEUG_COLOR_CNN_H

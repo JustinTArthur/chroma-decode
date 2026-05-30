@@ -26,8 +26,7 @@ Particular contributors visible in that history (non-exhaustive):
 
 - **asdfqazsnbb**: original author of the nnTransform3D models and both v1
   and v2 harnesses. The models were originally distributed through Discord
-  chats before v2 was open-sourced on GitHub
-  (see `~/Development/Analog Decoding Models/nnTransform3D/Repos/nnTransform3D`).
+  chats before v2 was open-sourced on GitHub.
 - **harrypm**: first to bring the nnTransform3D code into a public repo
   (the `tbc-tools` fork of `ld-decode-tools`), where it lived as patches to
   `src/ld-chroma-decoder/comb.{h,cpp}` plus `nnTransform3D_kernel.cu`.
@@ -35,14 +34,13 @@ Particular contributors visible in that history (non-exhaustive):
 ## ldzeug2 models and harnesses
 
 - **jsaowji**: author of the ldzeug2 project (Python/VapourSynth) and the
-  underlying color_cnn / luma_sep / luma_sep_frame CNN models. See
-  `~/Development/Repos/ldzeug2`.
-- The integration in C++ at `~/Development/Repos/vapoursynth-analog/src/ldzeug_decoders.{h,cpp}`
-  was contributed by the vapoursynth-analog maintainers building on jsaowji's
-  reference implementation.
+  underlying color_cnn / luma_sep / luma_sep_frame CNN models.
+- The C++ integration in the `vapoursynth-analog` project
+  (`src/ldzeug_decoders.{h,cpp}`) was contributed by its maintainers building
+  on jsaowji's reference implementation.
 
 ## CVBS file format specification
 
-- **Simon Inns** and the CVBS spec contributors at
-  `~/Development/Repos/cvbs-file-format-specification`: define the file
-  format this library reads alongside the `.tbc` format.
+- **Simon Inns** and the contributors to the `cvbs-file-format-specification`
+  project: define the file format this library reads alongside the
+  `.tbc` format.

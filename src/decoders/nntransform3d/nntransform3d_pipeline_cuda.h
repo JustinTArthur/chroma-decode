@@ -7,10 +7,8 @@
 // CUDA is not present.
 //
 // Algorithm + model authorship: asdfqazsnbb (originally Discord-distributed,
-// v2 later open-sourced as nnTransform3D, lives at
-// ~/Development/Analog Decoding Models/nnTransform3D/Repos/nnTransform3D).
-// Public integration: harrypm (tbc-tools, first to land it in a public
-// repo).
+// v2 later open-sourced as the standalone nnTransform3D harness). Public
+// integration: harrypm (tbc-tools, first to land it in a public repo).
 //
 // Ported by inspection from asdfqazsnbb's standalone main.cu (607 LOC,
 // the canonical reference) with parameterisation for arbitrary video

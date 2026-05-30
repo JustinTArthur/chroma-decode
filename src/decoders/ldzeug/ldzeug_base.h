@@ -50,12 +50,8 @@ public:
     // decodeFrames is called; the decoder takes shared ownership.
     void setNnModel(std::shared_ptr<chd::nn::OrtSession> session);
 
-    // Set the field-vs-frame input mode. Defaults to Field; the caller
-    // chooses Frame when the bundled model is the weaved-frame variant
-    // (e.g. luma_sep_2d_frame_gray_gray_run2_latest.onnx) — see the
-    // model registry in
-    // ~/Development/Analog Decoding Models/for ldzeug2/ for which goes
-    // with which.
+    // Set the field-vs-frame input mode. Defaults to Field; choose Frame for
+    // the weaved-frame model variant rather than the per-field variant.
     void setMode(Mode mode) { mode_ = mode; }
     Mode mode() const { return mode_; }
 
