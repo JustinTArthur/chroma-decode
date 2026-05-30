@@ -5,14 +5,16 @@ into component Y'CbCr output.
 
 ## Contents
 
-- [Initial design thoughts](design-notes.md) — the planning document that
+- [Initial design thoughts](design-notes.md): the planning document that
   kicked the project off
-- [Architecture](architecture.md) — current design and module layout
-- [ABI stability](abi-stability.md) — versioning and compatibility rules
-- [Porting from ld-chroma-decoder](porting-from-ld-chroma.md) — for downstream
-  consumers replacing their submodule / vendored copy
-- [NN model conventions](nn-models.md) — model paths, magnitude scales,
+- [Architecture](architecture.md): current design and module layout
+- [Integration guide](integration-guide.md): open a source, decode, handle
+  output; includes migrating from ld-chroma-decoder
+- [C API reference](api-reference.md): every public `chd_*` function, type,
+  and option, with ownership and threading rules
+- [ABI stability](abi-stability.md): versioning and compatibility rules
+- [NN model conventions](nn-models.md): model paths, magnitude scales,
   execution provider notes
-- [File formats](file-formats.md) — TBC vs CVBS reader matrix
-- [Attribution](attribution.md) — original contributors whose work is
+- [File formats](file-formats.md): TBC vs CVBS reader matrix
+- [Attribution](attribution.md): original contributors whose work is
   preserved here

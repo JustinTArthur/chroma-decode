@@ -5,6 +5,9 @@
 /subprojects/packagecache/
 /subprojects/*/
 
+# Zensical documentation site output
+/site/
+
 # IDE / editor
 .idea/
 .vscode/
