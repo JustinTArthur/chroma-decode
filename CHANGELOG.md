@@ -7,6 +7,35 @@ All notable changes to this project will be documented in this file. Format:
 ## [Unreleased]
 
 ### Added
+- `chd_nn_model_load_from_memory(data, size, opts, out)` — load an ONNX
+  model from an in-memory buffer instead of a file, for consumers that
+  compile the model into their binary as a byte array (e.g. tbc-tools'
+  embedded `chroma_net_v2.onnx`) and want no filesystem dependency. ORT
+  copies the bytes during construction, so the buffer need not outlive the
+  call. Backed by a new `chd::nn::OrtSession(const void*, size_t, ...)`
+  constructor sharing the existing provider-attach prologue.
+- Committed synthetic ONNX test fixture (`tests/fixtures/tiny_identity.onnx`,
+  136 bytes, regenerable via `gen_tiny_onnx.py`) — a structurally valid but
+  meaningless graph that lets the NN tests exercise the model loaders and
+  provider attach unconditionally in CI, without shipping the large,
+  separately licensed real weights. `test_nn_framework` drives both public C
+  ABI loaders against it and asserts they resolve the same execution provider;
+  `test_nntransform3d` and `test_ldzeug` (color_cnn) bind sessions built both
+  from a path and from an in-memory buffer. A shared, path-free helper
+  (`tests/unit/nn_test_model.h`) resolves each model from a dedicated env var
+  (`$CHD_TEST_NN_MODEL`, `$CHD_TEST_LDZEUG_COLOR_CNN_MODEL`,
+  `$CHD_TEST_LDZEUG_LUMA_SEP_FIELD_MODEL`,
+  `$CHD_TEST_LDZEUG_LUMA_SEP_FRAME_MODEL`), falling back to the fixture — no
+  model paths are hardcoded, so real weights are validated by pointing the env
+  vars at them locally or in a dedicated CI lane.
+
+### Changed
+- Renamed `chd_nn_model_load` → `chd_nn_model_load_from_file` so the
+  file-based and new memory-based loaders form a symmetric
+  `_from_file` / `_from_memory` pair. ABI break (pre-release; no
+  deprecation alias).
+
+### Added
 - Integration coverage extended to NTSC 3D + Transform PAL.
   test_integration.cpp now drives six chd decoder kinds against
   two encode-orc fixtures (NTSC + PAL 75 % colour bars, 3 frames each):
@@ -219,7 +248,8 @@ All notable changes to this project will be documented in this file. Format:
   chains — Windows: TensorRT → CUDA → DirectML → CPU; Linux: CUDA →
   MIGraphX → CPU; macOS: CoreML → CPU — that walks the chain and
   reports which provider actually attached. The C ABI exposes
-  `chd_nn_model_load`, `chd_nn_model_free`,
+  `chd_nn_model_load_from_file`, `chd_nn_model_load_from_memory`,
+  `chd_nn_model_free`,
   `chd_nn_model_get_active_provider`, `chd_nn_provider_is_available`,
   `chd_nn_session_opts_default`. `chd_has_feature("nn"/"cuda"/
   "fftw"/"sqlite")` is wired through to the build-time `with_*`

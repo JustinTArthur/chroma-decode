@@ -1,24 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Smoke test: instantiate the ldzeug2 NN decoders, bind real
-// ONNX sessions, configure for NTSC, and verify the wiring. Like the
+// Smoke test: instantiate the ldzeug2 NN decoders, bind ONNX sessions (the
+// committed synthetic fixture by default, or real ldzeug2 weights when the
+// matching CHD_TEST_LDZEUG_* env var points at them), configure for NTSC, and
+// verify the wiring — including binding a session built from an in-memory
+// buffer. No inference is run, so the model's contents don't matter. Like the
 // nnTransform3D test, full per-frame decode validation against a golden
 // reference is deferred to a follow-up.
 //
-// Skips gracefully when:
-//   - the build was made without NN support
-//   - the bundled model files aren't present at the expected paths.
+// Skips gracefully only when the build was made without NN support, or, in the
+// unlikely case the committed fixture is missing, when no model can be located.
 
 #include <chromadec/version.h>
 #include <chromadec/video.h>   // chd_shutdown
 
-#include <cstdlib>
-#include <filesystem>
+#include "nn_test_model.h"
+
 #include <iostream>
 #include <memory>
 #include <string>
-
-namespace fs = std::filesystem;
+#include <vector>
 
 #if defined(__has_include)
 #  if !__has_include(<onnxruntime_cxx_api.h>)
@@ -45,24 +46,12 @@ namespace {
 
 #ifndef CHD_TEST_NO_ONNXRUNTIME
 
-// jsaowji's bundled weights, mirrored on the user's machine per
-// reference-repos memory:
-//   color_cnn:        color_cnn_v2_alot.onnx (or _1031640 / _denoise variant)
-//   luma_sep field:   luma_sep_2dgray_fields.onnx
-//   luma_sep frame:   luma_sep_2d_frame_gray_gray_run2_latest.onnx
-std::string ldzeugModelDir() {
-    const char *home = std::getenv("HOME");
-    if (home == nullptr) return {};
-    return std::string(home) + "/Development/Analog Decoding Models/for ldzeug2";
-}
-
-std::string findFirst(const std::vector<std::string> &candidates) {
-    for (const auto &c : candidates) {
-        if (fs::exists(c)) return c;
-    }
-    return {};
-}
-
+// Real ldzeug2 weights, when available, are supplied via environment variables
+// — never hardcoded. Each lookup falls back to the committed synthetic fixture
+// so these tests run unconditionally:
+//   color_cnn:        $CHD_TEST_LDZEUG_COLOR_CNN_MODEL
+//   luma_sep field:   $CHD_TEST_LDZEUG_LUMA_SEP_FIELD_MODEL
+//   luma_sep frame:   $CHD_TEST_LDZEUG_LUMA_SEP_FRAME_MODEL
 chd::metadata::LdDecodeMetaData::VideoParameters makeNtscVp() {
     chd::metadata::LdDecodeMetaData::VideoParameters vp;
     vp.system = chd::metadata::NTSC;
@@ -81,27 +70,10 @@ chd::metadata::LdDecodeMetaData::VideoParameters makeNtscVp() {
     return vp;
 }
 
-int testColorCnnConfigure() {
+// Bind a color_cnn decoder to `session`, configure for NTSC, and assert the
+// wiring (no temporal context). Shared by the file- and memory-load variants.
+int bindColorCnnAndConfigure(const std::shared_ptr<chd::nn::OrtSession> &session) {
     using namespace chd::decoders::ldzeug;
-    const std::string model = findFirst({
-        ldzeugModelDir() + "/color_cnn_v2_alot.onnx",
-        ldzeugModelDir() + "/color_cnn_1031640.onnx",
-        ldzeugModelDir() + "/color_cnn_denoise_613928_ft22k.onnx",
-    });
-    if (model.empty()) {
-        std::cout << "Skipping LdzeugColorCnn test (no color_cnn_*.onnx found).\n";
-        return 0;
-    }
-    chd::nn::SessionOptions opts;
-    std::shared_ptr<chd::nn::OrtSession> session;
-    try {
-        session = std::make_shared<chd::nn::OrtSession>(model, opts);
-    } catch (const std::exception &e) {
-        std::cerr << "FAIL: OrtSession(color_cnn) construction failed: " << e.what() << "\n";
-        return 1;
-    }
-    REQUIRE(session != nullptr);
-
     LdzeugColorCnnDecoder decoder;
     decoder.setNnModel(session);
     decoder.setMode(LdzeugDecoderBase::Mode::Field);
@@ -112,17 +84,60 @@ int testColorCnnConfigure() {
     // ldzeug decoders are per-field/frame and need no temporal context.
     REQUIRE(decoder.getLookBehind() == 0);
     REQUIRE(decoder.getLookAhead()  == 0);
+    return 0;
+}
 
-    std::cout << "LdzeugColorCnn bound from " << model << "\n";
+int testColorCnnConfigure() {
+    const std::string model = chd_test::modelFromEnvOrFixture("CHD_TEST_LDZEUG_COLOR_CNN_MODEL");
+    if (model.empty()) {
+        std::cout << "Skipping LdzeugColorCnn test (no model fixture available).\n";
+        return 0;
+    }
+
+    // From a file path.
+    chd::nn::SessionOptions opts;
+    std::shared_ptr<chd::nn::OrtSession> fileSession;
+    try {
+        fileSession = std::make_shared<chd::nn::OrtSession>(model, opts);
+    } catch (const std::exception &e) {
+        std::cerr << "FAIL: OrtSession(color_cnn) from file failed: " << e.what() << "\n";
+        return 1;
+    }
+    REQUIRE(fileSession != nullptr);
+    if (int rc = bindColorCnnAndConfigure(fileSession)) return rc;
+
+    // From an in-memory buffer — exercises the in-memory OrtSession
+    // constructor (the path chd_nn_model_load_from_memory forwards to) for an
+    // ldzeug decoder too.
+    std::vector<char> bytes = chd_test::readFileBytes(model);
+    REQUIRE(!bytes.empty());
+    std::shared_ptr<chd::nn::OrtSession> memSession;
+    try {
+        memSession = std::make_shared<chd::nn::OrtSession>(bytes.data(), bytes.size(), opts);
+    } catch (const std::exception &e) {
+        std::cerr << "FAIL: OrtSession(color_cnn) from memory failed: " << e.what() << "\n";
+        return 1;
+    }
+    REQUIRE(memSession != nullptr);
+    if (int rc = bindColorCnnAndConfigure(memSession)) return rc;
+
+    std::cout << "LdzeugColorCnn bound from file + memory (" << bytes.size()
+              << " bytes) via " << model << "\n";
     return 0;
 }
 
 int testLumaSepConfigure() {
     using namespace chd::decoders::ldzeug;
-    const std::string fieldModel = ldzeugModelDir() + "/luma_sep_2dgray_fields.onnx";
-    const std::string frameModel = ldzeugModelDir() + "/luma_sep_2d_frame_gray_gray_run2_latest.onnx";
+    const std::string fieldModel =
+        chd_test::modelFromEnvOrFixture("CHD_TEST_LDZEUG_LUMA_SEP_FIELD_MODEL");
+    const std::string frameModel =
+        chd_test::modelFromEnvOrFixture("CHD_TEST_LDZEUG_LUMA_SEP_FRAME_MODEL");
+    if (fieldModel.empty() || frameModel.empty()) {
+        std::cout << "Skipping LdzeugLumaSep test (no model fixture available).\n";
+        return 0;
+    }
 
-    if (fs::exists(fieldModel)) {
+    {
         chd::nn::SessionOptions opts;
         auto session = std::make_shared<chd::nn::OrtSession>(fieldModel, opts);
         LdzeugLumaSepDecoder decoder;
@@ -134,11 +149,9 @@ int testLumaSepConfigure() {
         decoder.setChromaBandpass(false);
         decoder.setChromaBandpass(true);
         std::cout << "LdzeugLumaSep (field) bound from " << fieldModel << "\n";
-    } else {
-        std::cout << "Skipping LdzeugLumaSep field test (no luma_sep_2dgray_fields.onnx).\n";
     }
 
-    if (fs::exists(frameModel)) {
+    {
         chd::nn::SessionOptions opts;
         auto session = std::make_shared<chd::nn::OrtSession>(frameModel, opts);
         LdzeugLumaSepDecoder decoder;
@@ -146,8 +159,6 @@ int testLumaSepConfigure() {
         decoder.setMode(LdzeugDecoderBase::Mode::Frame);
         REQUIRE(decoder.configure(makeNtscVp()));
         std::cout << "LdzeugLumaSep (frame) bound from " << frameModel << "\n";
-    } else {
-        std::cout << "Skipping LdzeugLumaSep frame test (no luma_sep_*_frame_*.onnx).\n";
     }
 
     return 0;

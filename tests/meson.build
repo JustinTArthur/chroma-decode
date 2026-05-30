@@ -89,21 +89,28 @@ test_decode_frame_abi = executable('test_decode_frame_abi',
   dependencies: [sqlite3_dep, threads_dep])
 test('decode_frame_abi', test_decode_frame_abi)
 
-# NN framework smoke tests (Ort::Env lifecycle, provider
-# availability, chd_nn_model_load error path). The body self-skips when
-# the library was built with with_nn=false. Links the shared lib so the
-# test goes through the public C ABI; ORT itself is not directly linked.
+# Absolute path to the committed test fixtures (tiny_identity.onnx). Passed
+# to the NN tests so their model locator can find the synthetic fixture
+# regardless of the working directory the test runs from.
+nn_fixture_arg = '-DCHD_TEST_FIXTURE_DIR="' + (meson.current_source_dir() / 'fixtures') + '"'
+
+# NN framework smoke tests (Ort::Env lifecycle, provider availability,
+# chd_nn_model_load_from_file / _from_memory error paths, and a real-model
+# happy path against the synthetic fixture). The body self-skips when the
+# library was built with with_nn=false. Links the shared lib so the test
+# goes through the public C ABI; ORT itself is not directly linked.
 test_nn_framework = executable('test_nn_framework',
   'unit/test_nn_framework.cpp',
   include_directories: [public_inc, version_inc],
+  cpp_args: [nn_fixture_arg],
   link_with: libchromadec)
 test('nn_framework', test_nn_framework)
 
 # nnTransform3D wiring smoke test. Links the static lib for
 # internal-header access (Comb::Configuration, NtscDecoder::setNnModel,
-# chd::nn::OrtSession). When with_nn=true and a chroma_net.onnx is
-# discoverable at one of the well-known paths, it also constructs a real
-# session and binds it.
+# chd::nn::OrtSession). Constructs a session from the located model (the
+# synthetic fixture by default, or real weights via $CHD_TEST_NN_MODEL) and
+# binds it — both from a file path and from an in-memory buffer.
 if has_nn
   test_nntransform3d = executable('test_nntransform3d',
     'unit/test_nntransform3d.cpp',
@@ -111,18 +118,19 @@ if has_nn
     # CHD_WITH_NN matches the library build flag so the internal headers'
     # nn-gated methods (Comb::setNnModel, NtscDecoder::setNnModel) are
     # visible to the test.
-    cpp_args: ['-DCHD_WITH_NN=1'],
+    cpp_args: ['-DCHD_WITH_NN=1', nn_fixture_arg],
     link_with: libchromadec.get_static_lib(),
     dependencies: [ort_dep, threads_dep, fftw3_dep, sqlite3_dep])
   test('nntransform3d', test_nntransform3d)
 
-  # ldzeug2 NN decoders. Same shape as the nnTransform3D test:
-  # links the static lib for internal-header access; loads real ONNX
-  # sessions when the bundled jsaowji weights are discoverable.
+  # ldzeug2 NN decoders. Same shape as the nnTransform3D test: links the
+  # static lib for internal-header access; binds sessions from the located
+  # model (synthetic fixture by default, or real weights via the
+  # CHD_TEST_LDZEUG_* env vars), from both a path and an in-memory buffer.
   test_ldzeug = executable('test_ldzeug',
     'unit/test_ldzeug.cpp',
     include_directories: [public_inc, version_inc],
-    cpp_args: ['-DCHD_WITH_NN=1'],
+    cpp_args: ['-DCHD_WITH_NN=1', nn_fixture_arg],
     link_with: libchromadec.get_static_lib(),
     dependencies: [ort_dep, threads_dep, fftw3_dep, sqlite3_dep])
   test('ldzeug', test_ldzeug)

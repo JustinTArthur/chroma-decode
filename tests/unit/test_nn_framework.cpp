@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Smoke tests for the NN framework — Ort::Env singleton,
-// provider availability, and error handling on the chd_nn_model_load
-// path. Does NOT exercise inference on a real model; that lands in a
+// provider availability, and error handling on the chd_nn_model_load_from_file
+// and chd_nn_model_load_from_memory paths. Does NOT exercise inference on a
+// real model; that lands in a
 // follow-up with the dummy ONNX model fixture once nnTransform3D / ldzeug2
 // have something to feed.
 //
@@ -14,10 +15,12 @@
 #include <chromadec/version.h>
 #include <chromadec/video.h>
 
-#include <cstdio>
+#include "nn_test_model.h"
+
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -85,16 +88,83 @@ int testLoadNonexistentModel() {
     // (or CHD_E_INVALID_ARG for the null cases), never crash, and never
     // leak the out pointer.
     chd_nn_model_t *m = nullptr;
-    REQUIRE(chd_nn_model_load(nullptr, nullptr, &m) == CHD_E_INVALID_ARG);
+    REQUIRE(chd_nn_model_load_from_file(nullptr, nullptr, &m) == CHD_E_INVALID_ARG);
     REQUIRE(m == nullptr);
 
-    REQUIRE(chd_nn_model_load("/nonexistent/path/to/model.onnx", nullptr, &m)
+    REQUIRE(chd_nn_model_load_from_file("/nonexistent/path/to/model.onnx", nullptr, &m)
             == CHD_E_NN_MODEL_LOAD);
     REQUIRE(m == nullptr);
     // The error detail must be informative.
     const char *err = chd_last_error();
     REQUIRE(err != nullptr);
-    REQUIRE(std::strstr(err, "chd_nn_model_load") != nullptr);
+    REQUIRE(std::strstr(err, "chd_nn_model_load_from_file") != nullptr);
+    return 0;
+}
+
+int testLoadFromMemoryInvalid() {
+    // The in-memory entry point must reject null/empty buffers and the null
+    // out pointer with CHD_E_INVALID_ARG, never crash, never leak. Garbage
+    // (non-ONNX) bytes must fail the load cleanly with CHD_E_NN_MODEL_LOAD.
+    chd_nn_model_t *m = nullptr;
+    const unsigned char dummy[4] = { 0, 1, 2, 3 };
+
+    REQUIRE(chd_nn_model_load_from_memory(nullptr, 4, nullptr, &m) == CHD_E_INVALID_ARG);
+    REQUIRE(m == nullptr);
+    REQUIRE(chd_nn_model_load_from_memory(dummy, 0, nullptr, &m) == CHD_E_INVALID_ARG);
+    REQUIRE(m == nullptr);
+    REQUIRE(chd_nn_model_load_from_memory(dummy, 4, nullptr, nullptr) == CHD_E_INVALID_ARG);
+
+    // Well-formed call, but the bytes aren't a valid ONNX model: ORT must
+    // reject them and we surface CHD_E_NN_MODEL_LOAD with an informative msg.
+    REQUIRE(chd_nn_model_load_from_memory(dummy, sizeof(dummy), nullptr, &m)
+            == CHD_E_NN_MODEL_LOAD);
+    REQUIRE(m == nullptr);
+    const char *err = chd_last_error();
+    REQUIRE(err != nullptr);
+    REQUIRE(std::strstr(err, "chd_nn_model_load_from_memory") != nullptr);
+    return 0;
+}
+
+int testLoadRealModel() {
+    // Drive the PUBLIC C ABI loaders against a real ONNX model — both the
+    // file and in-memory entry points must succeed, produce a usable handle,
+    // and resolve the same execution provider (same model + same default
+    // opts). This is the happy-path counterpart to the failure-only checks
+    // above, and the only place the public chd_nn_model_load_from_memory
+    // symbol is exercised against real weights. Skips when no model is
+    // discoverable on this machine.
+    const std::string modelPath = chd_test::modelFromEnvOrFixture("CHD_TEST_NN_MODEL");
+    if (modelPath.empty()) {
+        std::cout << "Skipping real-model load test (no model fixture available).\n";
+        return 0;
+    }
+
+    // File loader.
+    chd_nn_model_t *fileModel = nullptr;
+    REQUIRE(chd_nn_model_load_from_file(modelPath.c_str(), nullptr, &fileModel) == CHD_OK);
+    REQUIRE(fileModel != nullptr);
+    chd_nn_provider_t fileProvider = CHD_NN_EP_AUTO;
+    REQUIRE(chd_nn_model_get_active_provider(fileModel, &fileProvider) == CHD_OK);
+
+    // Memory loader: same bytes, via the in-memory entry point.
+    std::vector<char> bytes = chd_test::readFileBytes(modelPath);
+    REQUIRE(!bytes.empty());
+
+    chd_nn_model_t *memModel = nullptr;
+    REQUIRE(chd_nn_model_load_from_memory(bytes.data(), bytes.size(), nullptr, &memModel)
+            == CHD_OK);
+    REQUIRE(memModel != nullptr);
+    chd_nn_provider_t memProvider = CHD_NN_EP_AUTO;
+    REQUIRE(chd_nn_model_get_active_provider(memModel, &memProvider) == CHD_OK);
+
+    // Identical model + opts must resolve to the same provider regardless of
+    // how the bytes were sourced.
+    REQUIRE(memProvider == fileProvider);
+
+    chd_nn_model_free(memModel);
+    chd_nn_model_free(fileModel);
+    std::cout << "Loaded real model via file + memory (" << bytes.size()
+              << " bytes), provider " << static_cast<int>(memProvider) << ".\n";
     return 0;
 }
 
@@ -125,6 +195,8 @@ int main() {
     rc |= testProviderAvailability();
     rc |= testSessionOptsDefault();
     rc |= testLoadNonexistentModel();
+    rc |= testLoadFromMemoryInvalid();
+    rc |= testLoadRealModel();
     rc |= testFreeNullHandle();
     rc |= testGetActiveProviderNull();
     // Tear down the Ort::Env explicitly so its destructor runs before C++

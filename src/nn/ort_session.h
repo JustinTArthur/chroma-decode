@@ -48,6 +48,12 @@ public:
     // Throws std::runtime_error on failure with a detailed message.
     OrtSession(const std::string &modelPath, const SessionOptions &opts);
 
+    // Load an ONNX model from `modelSize` bytes at `modelData` — for callers
+    // that embed the model rather than shipping a file. ORT copies the bytes
+    // during construction, so the buffer need not outlive this call.
+    // Throws std::runtime_error on failure with a detailed message.
+    OrtSession(const void *modelData, size_t modelSize, const SessionOptions &opts);
+
     OrtSession(const OrtSession &) = delete;
     OrtSession &operator=(const OrtSession &) = delete;
 
@@ -66,6 +72,14 @@ public:
     const std::vector<std::string> &outputNames();
 
 private:
+    // Shared construction prologue: force-inits the process-wide Ort::Env,
+    // applies common options, and attaches the provider chain (setting
+    // activeProvider_). `cacheModelPath` is only used for engine-cache
+    // keying and may be empty for in-memory models. Returns the configured
+    // SessionOptions ready to hand to an Ort::Session constructor.
+    Ort::SessionOptions prepareSessionOptions(const SessionOptions &opts,
+                                              const std::string &cacheModelPath);
+
     std::unique_ptr<Ort::Session> session_;
     chd_nn_provider_t             activeProvider_ = CHD_NN_EP_CPU;
     std::vector<std::string>      inputNames_;

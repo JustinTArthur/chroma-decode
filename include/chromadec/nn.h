@@ -53,9 +53,20 @@ typedef struct chd_nn_session_opts {
 
 void chd_nn_session_opts_default(chd_nn_session_opts_t *out);
 
-chd_status_t chd_nn_model_load(const char *model_path,
-                                const chd_nn_session_opts_t *opts_or_null,
-                                chd_nn_model_t **out);
+/* Load an ONNX model from a file on disk. `model_path` is read by the
+ * ONNX Runtime; the file only needs to outlive this call. */
+chd_status_t chd_nn_model_load_from_file(const char *model_path,
+                                         const chd_nn_session_opts_t *opts_or_null,
+                                         chd_nn_model_t **out);
+
+/* Load an ONNX model from an in-memory buffer — for callers that embed the
+ * model as a compiled-in byte array and want no filesystem dependency.
+ * `model_data` points to `model_size` bytes of serialized ONNX. The bytes
+ * are consumed during this call and need not outlive it. */
+chd_status_t chd_nn_model_load_from_memory(const void *model_data,
+                                           size_t model_size,
+                                           const chd_nn_session_opts_t *opts_or_null,
+                                           chd_nn_model_t **out);
 
 void chd_nn_model_free(chd_nn_model_t *m);
 

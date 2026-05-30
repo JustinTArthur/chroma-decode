@@ -26,7 +26,10 @@ standard). You must select a neural kind explicitly, and only for NTSC content.
 
 ## Loading and attaching a model
 
-Load with [`chd_nn_model_load`](api-reference.md#chd_nn_model_load), then attach
+Load with
+[`chd_nn_model_load_from_file`](api-reference.md#chd_nn_model_load_from_file) (or
+[`chd_nn_model_load_from_memory`](api-reference.md#chd_nn_model_load_from_file) for an
+embedded model), then attach
 to a neural decoder with
 [`chd_decoder_set_nn_model`](api-reference.md#chd_decoder_set_nn_model) before
 `commit`. The model is borrowed, so keep it alive for the decoder's lifetime,

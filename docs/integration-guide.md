@@ -177,10 +177,12 @@ chd_nn_session_opts_default(&opts);     /* AUTO provider, sane defaults */
 opts.provider = CHD_NN_EP_AUTO;
 
 chd_nn_model_t *model = NULL;
-if (chd_nn_model_load("chroma_net_v2.onnx", &opts, &model) != CHD_OK) {
+if (chd_nn_model_load_from_file("chroma_net_v2.onnx", &opts, &model) != CHD_OK) {
     fprintf(stderr, "model: %s\n", chd_last_error());
     /* ... */
 }
+/* Or, to load a model embedded in the binary (no file needed):
+ *   chd_nn_model_load_from_memory(model_bytes, model_len, &opts, &model); */
 
 chd_decoder_t *dec = NULL;
 chd_decoder_create(video, CHD_DEC_NN_TRANSFORM3D, &dec);

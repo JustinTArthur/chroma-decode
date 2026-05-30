@@ -93,7 +93,7 @@ Tear down process-wide library state: currently the ONNX Runtime environment
 singleton created the first time an NN model is loaded.
 
 !!! warning "Required after NN use, and never automatic"
-    If your process loaded **any** NN model ([`chd_nn_model_load`](#chd_nn_model_load)),
+    If your process loaded **any** NN model ([`chd_nn_model_load_from_file`](#chd_nn_model_load_from_file)),
     call `chd_shutdown()` exactly once before exit. It is deliberately *not*
     registered with `atexit`: ORT execution-provider libraries run their own
     static destructors on unload, and the ordering against an `atexit` teardown
@@ -664,19 +664,28 @@ Fill `*out` with default session options (AUTO provider, the defaults noted
 above, zeroed reserved fields). Always initialise via this function rather than
 by hand, so new fields pick up correct defaults.
 
-### chd_nn_model_load / chd_nn_model_free { #chd_nn_model_load }
+### chd_nn_model_load_from_file / chd_nn_model_load_from_memory / chd_nn_model_free { #chd_nn_model_load_from_file }
 
 ```c
-chd_status_t chd_nn_model_load(const char *model_path,
-                               const chd_nn_session_opts_t *opts_or_null,
-                               chd_nn_model_t **out);
+chd_status_t chd_nn_model_load_from_file(const char *model_path,
+                                         const chd_nn_session_opts_t *opts_or_null,
+                                         chd_nn_model_t **out);
+chd_status_t chd_nn_model_load_from_memory(const void *model_data,
+                                           size_t model_size,
+                                           const chd_nn_session_opts_t *opts_or_null,
+                                           chd_nn_model_t **out);
 void chd_nn_model_free(chd_nn_model_t *m);
 ```
 
-Load an ONNX model. `opts_or_null` of `NULL` uses
+Load an ONNX model — either from a file on disk
+(`chd_nn_model_load_from_file`) or from an in-memory buffer
+(`chd_nn_model_load_from_memory`), for callers that embed the model as a
+compiled-in byte array and want no filesystem dependency. The buffer is
+consumed during the call and need not outlive it. Both produce an identical
+`chd_nn_model_t`. `opts_or_null` of `NULL` uses
 [defaults](#chd_nn_session_opts_default). On `CHD_E_NN_PROVIDER_UNAVAILABLE`
 the pinned provider isn't available in this build/host;
-`CHD_E_NN_MODEL_LOAD` indicates a bad or unreadable model file. Remember
+`CHD_E_NN_MODEL_LOAD` indicates a bad or unreadable model. Remember
 [`chd_shutdown`](#chd_shutdown) before exit once any model has been loaded.
 
 ### chd_nn_model_get_active_provider

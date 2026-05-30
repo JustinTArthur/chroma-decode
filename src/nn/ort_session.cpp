@@ -77,7 +77,8 @@ std::string resolveEngineCacheDir(const SessionOptions &opts)
 
 }  // namespace
 
-OrtSession::OrtSession(const std::string &modelPath, const SessionOptions &opts)
+Ort::SessionOptions OrtSession::prepareSessionOptions(const SessionOptions &opts,
+                                                      const std::string &cacheModelPath)
 {
     // Force-init the process-wide Ort::Env BEFORE any provider attach
     // touches ORT internals. From ORT 1.25 onward, UpdateCUDAProviderOptions
@@ -93,7 +94,7 @@ OrtSession::OrtSession(const std::string &modelPath, const SessionOptions &opts)
 
     EngineCacheConfig cache;
     cache.dir       = resolveEngineCacheDir(opts);
-    cache.modelPath = modelPath;
+    cache.modelPath = cacheModelPath;
 
     const auto chain = buildAutoChain(opts.requestedProvider);
     std::string attachError;
@@ -102,6 +103,12 @@ OrtSession::OrtSession(const std::string &modelPath, const SessionOptions &opts)
         throw std::runtime_error("provider attach failed: " + attachError);
     }
     activeProvider_ = attached;
+    return sessionOptions;
+}
+
+OrtSession::OrtSession(const std::string &modelPath, const SessionOptions &opts)
+{
+    Ort::SessionOptions sessionOptions = prepareSessionOptions(opts, modelPath);
 
     try {
 #if defined(_WIN32)
@@ -115,6 +122,19 @@ OrtSession::OrtSession(const std::string &modelPath, const SessionOptions &opts)
 #endif
     } catch (const std::exception &e) {
         throw std::runtime_error(std::string("Ort::Session create: ") + e.what());
+    }
+}
+
+OrtSession::OrtSession(const void *modelData, size_t modelSize, const SessionOptions &opts)
+{
+    // In-memory models have no path to key the engine cache on; pass empty.
+    Ort::SessionOptions sessionOptions = prepareSessionOptions(opts, std::string());
+
+    try {
+        session_ = std::make_unique<Ort::Session>(OrtEnvSingleton::get(), modelData,
+                                                  modelSize, sessionOptions);
+    } catch (const std::exception &e) {
+        throw std::runtime_error(std::string("Ort::Session create from memory: ") + e.what());
     }
 }
 

@@ -1,25 +1,27 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Smoke test: instantiate NtscDecoder with nnTransform3D=true,
-// bind a real chroma_net ONNX session, configure for NTSC, and verify the
-// wiring (look-ahead bump, configure success, no crash). Full frame-decode
-// validation against a golden reference is deferred to a follow-up once an
-// encode-orc fixture pipeline exists.
+// Smoke test: instantiate NtscDecoder with nnTransform3D=true, bind an ONNX
+// session (the synthetic test fixture by default, or real chroma_net weights
+// when $CHD_TEST_NN_MODEL points at them), configure for NTSC, and verify the
+// wiring (look-ahead bump, configure success, no crash) — both when the
+// session is built from a file path and from an in-memory buffer. No inference
+// is run, so the model's contents don't matter. Full frame-decode validation
+// against a golden reference is deferred to a follow-up once an encode-orc
+// fixture pipeline exists.
 //
-// Skips gracefully when:
-//   - the build was made without NN support (chd_has_feature("nn") == 0)
-//   - the chroma_net model file isn't present at the expected paths
+// Skips gracefully when the build was made without NN support
+// (chd_has_feature("nn") == 0), or, in the unlikely case the committed
+// fixture is missing, when no model can be located at all.
 
 #include <chromadec/version.h>
 #include <chromadec/video.h>   // chd_shutdown
 
-#include <cstdlib>
-#include <filesystem>
+#include "nn_test_model.h"
+
 #include <iostream>
 #include <memory>
 #include <string>
-
-namespace fs = std::filesystem;
+#include <vector>
 
 #if defined(__has_include)
 #  if !__has_include(<onnxruntime_cxx_api.h>)
@@ -46,25 +48,6 @@ namespace {
 } while (0)
 
 #ifndef CHD_TEST_NO_ONNXRUNTIME
-
-// Candidate paths for the chroma_net v1/v2 model. The first existing one
-// wins. The user's machine has the asdfqazsnbb harness at this location
-// per the project's reference-repos memory; the tbc-tools build also
-// copies the v1 model into its source tree.
-std::string findChromaNetModel() {
-    const std::string candidates[] = {
-        std::string(std::getenv("HOME") ? std::getenv("HOME") : "") +
-            "/Development/Analog Decoding Models/nnTransform3D/nnTransform3D/chroma_net.onnx",
-        std::string(std::getenv("HOME") ? std::getenv("HOME") : "") +
-            "/Development/Analog Decoding Models/nnTransform3D/Repos/nnTransform3D/chroma_net.onnx",
-        std::string(std::getenv("HOME") ? std::getenv("HOME") : "") +
-            "/Development/Repos/tbc-tools/src/ld-chroma-decoder/chroma_net.onnx",
-    };
-    for (const auto &candidate : candidates) {
-        if (fs::exists(candidate)) return candidate;
-    }
-    return {};
-}
 
 int testLookAheadBump() {
     using namespace chd::decoders::comb;
@@ -114,23 +97,11 @@ int testConfigureWithoutSession() {
     return 0;
 }
 
-int testConfigureWithSession() {
-    const std::string modelPath = findChromaNetModel();
-    if (modelPath.empty()) {
-        std::cout << "Skipping nnTransform3D session test (no chroma_net.onnx found).\n";
-        return 0;
-    }
-
-    chd::nn::SessionOptions opts;
-    std::shared_ptr<chd::nn::OrtSession> session;
-    try {
-        session = std::make_shared<chd::nn::OrtSession>(modelPath, opts);
-    } catch (const std::exception &e) {
-        std::cerr << "FAIL: OrtSession construction failed: " << e.what() << "\n";
-        return 1;
-    }
-    REQUIRE(session != nullptr);
-
+// Build an nnTransform3D NtscDecoder, bind `session`, configure it for NTSC,
+// and assert the wiring held (look-ahead bump + configure success). Shared by
+// the file- and memory-load session tests so they verify identical behaviour
+// regardless of how the session's model bytes were sourced.
+int bindSessionAndConfigure(const std::shared_ptr<chd::nn::OrtSession> &session) {
     using namespace chd::decoders::comb;
     Comb::Configuration cfg;
     cfg.dimensions = 3;
@@ -156,8 +127,60 @@ int testConfigureWithSession() {
     vp.isValid = true;
     REQUIRE(decoder.configure(vp));
     REQUIRE(decoder.getLookAhead() == 2);
+    return 0;
+}
 
-    std::cout << "nnTransform3D session bound from " << modelPath << "\n";
+int testConfigureWithSession() {
+    const std::string modelPath = chd_test::modelFromEnvOrFixture("CHD_TEST_NN_MODEL");
+    if (modelPath.empty()) {
+        std::cout << "Skipping nnTransform3D session test (no model fixture available).\n";
+        return 0;
+    }
+
+    chd::nn::SessionOptions opts;
+    std::shared_ptr<chd::nn::OrtSession> session;
+    try {
+        session = std::make_shared<chd::nn::OrtSession>(modelPath, opts);
+    } catch (const std::exception &e) {
+        std::cerr << "FAIL: OrtSession construction from file failed: " << e.what() << "\n";
+        return 1;
+    }
+    REQUIRE(session != nullptr);
+
+    if (int rc = bindSessionAndConfigure(session)) return rc;
+
+    std::cout << "nnTransform3D session bound from file " << modelPath << "\n";
+    return 0;
+}
+
+int testConfigureWithMemorySession() {
+    const std::string modelPath = chd_test::modelFromEnvOrFixture("CHD_TEST_NN_MODEL");
+    if (modelPath.empty()) {
+        std::cout << "Skipping nnTransform3D in-memory session test (no model fixture available).\n";
+        return 0;
+    }
+
+    // Read the same model file into a buffer and construct the session from
+    // memory, exercising the in-memory OrtSession constructor (the one the C
+    // ABI's chd_nn_model_load_from_memory forwards to) end-to-end against a
+    // real model — not just the failure paths covered in test_nn_framework.
+    std::vector<char> bytes = chd_test::readFileBytes(modelPath);
+    REQUIRE(!bytes.empty());
+
+    chd::nn::SessionOptions opts;
+    std::shared_ptr<chd::nn::OrtSession> session;
+    try {
+        session = std::make_shared<chd::nn::OrtSession>(bytes.data(), bytes.size(), opts);
+    } catch (const std::exception &e) {
+        std::cerr << "FAIL: OrtSession construction from memory failed: " << e.what() << "\n";
+        return 1;
+    }
+    REQUIRE(session != nullptr);
+
+    if (int rc = bindSessionAndConfigure(session)) return rc;
+
+    std::cout << "nnTransform3D session bound from memory (" << bytes.size()
+              << " bytes) via " << modelPath << "\n";
     return 0;
 }
 
@@ -178,6 +201,7 @@ int main() {
     rc |= testLookAheadBump();
     rc |= testConfigureWithoutSession();
     rc |= testConfigureWithSession();
+    rc |= testConfigureWithMemorySession();
     // Tear down the Ort::Env explicitly so its destructor runs before
     // C++ static destruction (the same destruction-order hazard as
     // test_nn_framework).

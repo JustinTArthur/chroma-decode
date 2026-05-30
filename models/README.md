@@ -6,7 +6,10 @@ ship NN model weights — they have separate licensing and are large.
 ## Where models live in practice
 
 Consumers (e.g. vapoursynth-analog) bundle their own model files and pass
-absolute paths to `chd_nn_model_load(model_path, ...)` at runtime.
+absolute paths to `chd_nn_model_load_from_file(model_path, ...)` at runtime.
+Consumers that compile the model into their binary instead can hand the bytes
+straight to `chd_nn_model_load_from_memory(data, size, ...)` with no file on
+disk.
 
 ## Recommended layout for consumers
 
