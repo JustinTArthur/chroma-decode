@@ -12,4 +12,9 @@ if(NOT TARGET chromadec::chromadec)
     add_library(chromadec::chromadec ALIAS PkgConfig::_chromadec)
 endif()
 
-check_required_components(chromadec)
+# Meson's package-init expansion defines set_and_check but not
+# check_required_components (unlike CMake's native generator). Guard the call so
+# the config works under both; chromadec exports no components to check anyway.
+if(COMMAND check_required_components)
+    check_required_components(chromadec)
+endif()

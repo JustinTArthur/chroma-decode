@@ -85,6 +85,29 @@ jobs:
           DESTDIR=/tmp/inst meson install -C build --quiet
           find /tmp/inst -type f | head -30
 
+      - name: CMake consumer smoke test (find_package + pkg-config)
+        env:
+          LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib
+        run: |
+          . .venv/bin/activate
+          # Install to a real prefix (not a DESTDIR sandbox): the generated
+          # chromadec.pc / chromadecConfig.cmake bake in the configured prefix,
+          # so a relocatable consumer test needs the prefix to be the real one.
+          meson configure build -Dprefix=/tmp/inst-cmake
+          meson install -C build --quiet
+          cfg=$(find /tmp/inst-cmake -name chromadecConfig.cmake | head -1)
+          pc=$(find /tmp/inst-cmake -name chromadec.pc | head -1)
+          lib=$(find /tmp/inst-cmake -name 'libchromadec.so.0.*' | head -1)
+          test -n "$cfg" || { echo "chromadecConfig.cmake not installed" >&2; exit 1; }
+          test -n "$pc"  || { echo "chromadec.pc not installed" >&2; exit 1; }
+          # The CMake config has no exported targets file; it falls back to
+          # pkg-config, so PKG_CONFIG_PATH must point at the installed .pc.
+          export PKG_CONFIG_PATH="$(dirname "$pc")"
+          export LD_LIBRARY_PATH="$(dirname "$lib"):${LD_LIBRARY_PATH}"
+          cmake -S tests/cmake-consumer -B /tmp/cc-build -Dchromadec_DIR="$(dirname "$cfg")"
+          cmake --build /tmp/cc-build
+          /tmp/cc-build/consumer
+
   # x86_64 only — one sanitizer run is enough to gate the suite.
   linux-asan-ubsan:
     runs-on: ubuntu-24.04
