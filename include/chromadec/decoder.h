@@ -22,7 +22,13 @@ typedef enum chd_decoder_kind {
     CHD_DEC_NN_TRANSFORM3D    = 9,
     CHD_DEC_LDZEUG_COLOR_CNN  = 10,
     CHD_DEC_LDZEUG_LUMA_SEP   = 11,
-    CHD_DEC_LDZEUG_LUMA_SEP_FRAME = 12
+    CHD_DEC_LDZEUG_LUMA_SEP_FRAME = 12,
+    /* Geometry/metadata only: commit resolves the output framing but builds no
+     * chroma decode engines, and requires no NN model. chd_decode_frame is
+     * rejected with CHD_E_UNSUPPORTED; chd_decoder_get_output_info and the
+     * dropout span/mask queries work. For consumers that want dropout regions
+     * without paying for chroma decoding. */
+    CHD_DEC_NONE                  = 13
 } chd_decoder_kind_t;
 
 chd_status_t chd_decoder_create(chd_video_t *v, chd_decoder_kind_t kind, chd_decoder_t **out);
@@ -40,6 +46,12 @@ chd_status_t chd_decoder_set_nn_model(chd_decoder_t *d, chd_nn_model_t *m);
 
 /* Apply pending options. Required before chd_decode_frame. Cheap to call repeatedly. */
 chd_status_t chd_decoder_commit(chd_decoder_t *d);
+
+/* Output framing after commit: the active region post-crop/padding, the pixel
+ * format, and the frame count, for sizing buffers or clips before decoding.
+ * Also serves the decode-free dropout-span path, where no frame is produced to
+ * query for dimensions. Requires a committed decoder. */
+chd_status_t chd_decoder_get_output_info(const chd_decoder_t *d, chd_output_info_t *out);
 
 /* Stable option-name registry. */
 #define CHD_OPT_CHROMA_GAIN                 "chroma_gain"               /* f64 */

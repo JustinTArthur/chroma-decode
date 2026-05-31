@@ -114,6 +114,18 @@ typedef struct chd_frame_info {
     int64_t  frame_index;
 } chd_frame_info_t;
 
+/* Committed output framing, reported by chd_decoder_get_output_info. width and
+ * height are the active picture region after crop and padding — the same
+ * dimensions chd_decode_frame produces and the coordinate space dropout spans
+ * are expressed in. */
+typedef struct chd_output_info {
+    chd_pixel_format_t format;
+    int32_t  width;
+    int32_t  height;
+    int32_t  num_planes;
+    int64_t  num_frames;
+} chd_output_info_t;
+
 #ifdef __cplusplus
 }
 #endif
