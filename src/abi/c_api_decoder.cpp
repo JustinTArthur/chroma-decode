@@ -96,15 +96,19 @@ chd_status_t setOpt(chd_decoder_t *d, const char *name,
     return CHD_OK;
 }
 
-// Convert ComponentFrame's Y/U/V double samples directly into three
-// contiguous float planes covering the active region. Used for
-// CHD_PIXEL_YUV444_FLOAT, which bypasses OutputWriter::convert.
+// Convert ComponentFrame's Y/U/V double samples into three contiguous float
+// planes. Used for CHD_PIXEL_YUV444_FLOAT, which produces float output instead
+// of going through OutputWriter::convert (that path emits uint16). The active
+// region is written starting at row topPadLines; any top/bottom padding lines
+// requested via CHD_OPT_PADDING_MULTIPLE are left black, matching the integer
+// output paths so float and integer frames share identical geometry.
 //
 // The mapping matches chd_frame_copy_plane_float's docstring: Y maps to
 // [0.0..1.0] black-to-white; U/V are centred at 0.0 with ±0.5 range.
 void componentFrameToFloatPlanes(const chd::output::ComponentFrame &cf,
                                   const chd::metadata::LdDecodeMetaData::VideoParameters &vp,
-                                  int32_t activeWidth, int32_t outputHeight,
+                                  int32_t activeWidth, int32_t topPadLines,
+                                  int32_t activeHeight, int32_t outputHeight,
                                   std::vector<float> *outPlanes) {
     const int32_t firstLine = vp.firstActiveFrameLine;
     const int32_t startX    = vp.activeVideoStart;
@@ -115,15 +119,16 @@ void componentFrameToFloatPlanes(const chd::output::ComponentFrame &cf,
         outPlanes[p].assign(static_cast<size_t>(activeWidth) * outputHeight, 0.0f);
     }
 
-    for (int32_t y = 0; y < outputHeight; y++) {
+    for (int32_t y = 0; y < activeHeight; y++) {
         const int32_t srcLine = firstLine + y;
         if (srcLine < 0 || srcLine >= cf.getHeight()) continue;
+        const int32_t dstRow = topPadLines + y;
         const double *inY = cf.y(srcLine) + startX;
         const double *inU = cf.u(srcLine) + startX;
         const double *inV = cf.v(srcLine) + startX;
-        float *outY = outPlanes[0].data() + static_cast<size_t>(y) * activeWidth;
-        float *outU = outPlanes[1].data() + static_cast<size_t>(y) * activeWidth;
-        float *outV = outPlanes[2].data() + static_cast<size_t>(y) * activeWidth;
+        float *outY = outPlanes[0].data() + static_cast<size_t>(dstRow) * activeWidth;
+        float *outU = outPlanes[1].data() + static_cast<size_t>(dstRow) * activeWidth;
+        float *outV = outPlanes[2].data() + static_cast<size_t>(dstRow) * activeWidth;
         for (int32_t x = 0; x < activeWidth; x++) {
             outY[x] = static_cast<float>((inY[x] - yOff) / yRange);
             outU[x] = static_cast<float>(inU[x] / yRange);
@@ -226,10 +231,15 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
         d->videoParameters.activeVideoEnd - d->videoParameters.activeVideoStart;
 
     if (frame->format == CHD_PIXEL_YUV444_FLOAT) {
-        const int32_t outputHeight =
-            d->videoParameters.lastActiveFrameLine - d->videoParameters.firstActiveFrameLine;
+        // Honor any requested padding: the float path mirrors the integer path's
+        // committed geometry (top/bottom blank lines), it does not crop tight.
+        const int32_t topPadLines  = d->outputWriter.getTopPadLines();
+        const int32_t activeHeight =
+            (d->videoParameters.lastActiveFrameLine - d->videoParameters.firstActiveFrameLine) + 1;
+        const int32_t outputHeight = d->outputWriter.getOutputHeight();
         componentFrameToFloatPlanes(componentFrames[0], d->videoParameters,
-                                    activeWidth, outputHeight, frame->floatPlane);
+                                    activeWidth, topPadLines, activeHeight,
+                                    outputHeight, frame->floatPlane);
         frame->activeWidth = activeWidth;
         frame->outputHeight = outputHeight;
         frame->info.format = CHD_PIXEL_YUV444_FLOAT;
@@ -350,7 +360,9 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
     const chd_decoder_kind_t resolved = chd::decoders::registry::resolveAuto(d->kind, system);
 
     chd::output::OutputWriter::Configuration outCfg;
-    outCfg.paddingAmount = 8;
+    // Default to no padding (1 = output the active region as-is). Consumers that
+    // need codec-friendly dimensions can opt in via CHD_OPT_PADDING_MULTIPLE.
+    outCfg.paddingAmount = 1;
     {
         auto it = d->optionMaps.i32.find(CHD_OPT_PADDING_MULTIPLE);
         if (it != d->optionMaps.i32.end()) outCfg.paddingAmount = it->second;

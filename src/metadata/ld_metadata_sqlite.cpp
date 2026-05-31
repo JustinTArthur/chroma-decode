@@ -257,10 +257,26 @@ bool SqliteReader::readCaptureMetadata(int &captureId, std::string &system, std:
 
     // Active-line range overrides — tbc-tools v4+. -1 signals "absent" so
     // the caller leaves the standard default in place.
+    //
+    // tbc-tools writes the *last* active field/frame line as an EXCLUSIVE bound
+    // (one past the last active line). We carry both inclusively, so translate
+    // those two columns to our scheme on ingest: a real value becomes value-1;
+    // the -1 "absent" sentinel passes through. The *first* active field/frame
+    // line is inclusive in both schemes and is not adjusted.
     firstActiveFieldLine = hasFirstActiveFieldLine ? SqliteValue::toIntOrDefault(query, "first_active_field_line", -1) : -1;
-    lastActiveFieldLine  = hasLastActiveFieldLine  ? SqliteValue::toIntOrDefault(query, "last_active_field_line",  -1) : -1;
+    if (hasLastActiveFieldLine) {
+        const int exclusiveLast = SqliteValue::toIntOrDefault(query, "last_active_field_line", -1);
+        lastActiveFieldLine = (exclusiveLast > 0) ? (exclusiveLast - 1) : -1;
+    } else {
+        lastActiveFieldLine = -1;
+    }
     firstActiveFrameLine = hasFirstActiveFrameLine ? SqliteValue::toIntOrDefault(query, "first_active_frame_line", -1) : -1;
-    lastActiveFrameLine  = hasLastActiveFrameLine  ? SqliteValue::toIntOrDefault(query, "last_active_frame_line",  -1) : -1;
+    if (hasLastActiveFrameLine) {
+        const int exclusiveLast = SqliteValue::toIntOrDefault(query, "last_active_frame_line", -1);
+        lastActiveFrameLine = (exclusiveLast > 0) ? (exclusiveLast - 1) : -1;
+    } else {
+        lastActiveFrameLine = -1;
+    }
 
     captureNotes = query.value("capture_notes").toString();
 

@@ -304,11 +304,11 @@ or as part of **your decode loop**.
 | `--transform-threshold` | `CHD_OPT_TRANSFORM_THRESHOLD` (f64) |
 | `--transform-thresholds <file>` | `CHD_OPT_TRANSFORM_THRESHOLDS_FILE` (str) |
 | `-o, --oftest` | `CHD_OPT_COMB_SHOW_MAP` (bool) |
-| `--pad, --output-padding` | `CHD_OPT_PADDING_MULTIPLE` (i32) |
+| `--pad, --output-padding` | `CHD_OPT_PADDING_MULTIPLE` (i32; **defaults to `1` / no padding here**) |
 | `-p, --output-format` | `CHD_OPT_OUTPUT_FORMAT` (str) + `CHD_OPT_OUTPUT_Y4M_HEADERS` (bool) |
 | `-t, --threads` | `CHD_OPT_THREAD_COUNT` (i32, `0` = auto) |
-| `--ffll / --lfll` (field lines) | `CHD_OPT_FIRST_ACTIVE_FIELD_LINE` / `CHD_OPT_LAST_ACTIVE_FIELD_LINE` (i32) |
-| `--ffrl / --lfrl` (frame lines) | `CHD_OPT_FIRST_ACTIVE_FRAME_LINE` / `CHD_OPT_LAST_ACTIVE_FRAME_LINE` (i32) |
+| `--ffll / --lfll` (field lines) | `CHD_OPT_FIRST_ACTIVE_FIELD_LINE` / `CHD_OPT_LAST_ACTIVE_FIELD_LINE` (i32; **inclusive** — last line is included) |
+| `--ffrl / --lfrl` (frame lines) | `CHD_OPT_FIRST_ACTIVE_FRAME_LINE` / `CHD_OPT_LAST_ACTIVE_FRAME_LINE` (i32; **inclusive** — last line is included) |
 | `--input-metadata <file>` | the `sidecar_path` argument to [`chd_video_open_composite`](api-reference.md#chd_video_open_composite) |
 | `-s, --start` / `-l, --length` | the frame **indices** you pass to [`chd_decode_frame`](api-reference.md#chd_decode_frame). There is no global start/length; you drive the range |
 | `--show-ffts` and other debug flags | not part of the stable ABI |
@@ -324,3 +324,20 @@ or as part of **your decode loop**.
   with `CHD_OPT_OUTPUT_Y4M_HEADERS` only if you specifically need it.
 - **Neural decoders are first-class** here (`CHD_DEC_NN_TRANSFORM3D`,
   `CHD_DEC_LDZEUG_*`) rather than out-of-tree patches.
+- **Active frame and field lines are inclusive.**
+  `CHD_OPT_FIRST_ACTIVE_FRAME_LINE` / `CHD_OPT_LAST_ACTIVE_FRAME_LINE` and
+  `CHD_OPT_FIRST_ACTIVE_FIELD_LINE` / `CHD_OPT_LAST_ACTIVE_FIELD_LINE` name the
+  first and last lines that are *part of* the active region; the last line is
+  included, not one-past-the-end. If you previously passed ld-chroma-decoder's
+  exclusive `--lfrl` / `--lfll` values through, subtract one. **TBC sidecar
+  metadata is handled for you:** tbc-tools writes `last_active_frame_line` /
+  `last_active_field_line` as exclusive bounds, and the SQLite reader translates
+  them to the inclusive scheme on ingest, so a v4 sidecar decodes to exactly the
+  picture its author intended. With the default active region you get a full
+  **486-line picture for 525-line (NTSC)** systems and **576 lines for 625-line
+  (PAL)** systems.
+- **No output padding by default.** `CHD_OPT_PADDING_MULTIPLE` defaults to `1`
+  (emit the active region as-is). decode-orc / tbc-tools pad the frame to a
+  multiple of 8 unless told otherwise — set `CHD_OPT_PADDING_MULTIPLE`
+  explicitly if you need codec-friendly dimensions. Padding now applies
+  uniformly to every output format, including `yuv444_float`.

@@ -418,15 +418,16 @@ void DropoutCorrector::findPotentialReplacementLine(const std::vector<std::vecto
     // Calculate the start source line, applying sourceOffset to find a line with the right chroma phase
     int32_t sourceLine = targetDropouts[0][targetIndex].fieldLine + sourceOffset;
 
-    // Is the line within the active range?
+    // Is the line within the active range? (firstActiveFieldLine /
+    // lastActiveFieldLine are inclusive.)
     if ((sourceLine - 1) < allVideoParams[sourceNo].firstActiveFieldLine
-        || (sourceLine - 1) >= allVideoParams[sourceNo].lastActiveFieldLine) {
+        || (sourceLine - 1) > allVideoParams[sourceNo].lastActiveFieldLine) {
         return;
     }
 
     // Hunt for a replacement, stopping at the last full line before the half-line between fields
     while ((sourceLine - 1) >= allVideoParams[sourceNo].firstActiveFieldLine
-           && sourceLine < allVideoParams[sourceNo].lastActiveFieldLine) {
+           && sourceLine <= allVideoParams[sourceNo].lastActiveFieldLine) {
         // Is there a dropout that overlaps the one we're trying to replace?
         bool hasOverlap = false;
         for (int32_t sourceIndex = 0; sourceIndex < static_cast<int32_t>(sourceDropouts[sourceNo].size()); sourceIndex++) {

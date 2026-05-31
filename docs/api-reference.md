@@ -435,7 +435,7 @@ and any decoder-kind restriction.
 | `CHD_OPT_CHROMA_PHASE_DEG` | f64 | Chroma phase, degrees. |
 | `CHD_OPT_CHROMA_NR_LEVEL` | f64 | Chroma noise reduction. |
 | `CHD_OPT_LUMA_NR_LEVEL` | f64 | Luma noise reduction. |
-| `CHD_OPT_PADDING_MULTIPLE` | i32 | Output padding multiple (default 8). |
+| `CHD_OPT_PADDING_MULTIPLE` | i32 | Output padding multiple (default `1` = no padding). |
 | `CHD_OPT_REVERSE_FIELD_ORDER` | bool | Swap field order (matches `ld-chroma-decoder -r`). |
 | `CHD_OPT_PHASE_COMPENSATION` | bool | NTSC phase compensation. |
 | `CHD_OPT_COMB_DIMENSIONS` | i32 | Comb dimensionality, in `{1,2,3}`. |
@@ -445,10 +445,10 @@ and any decoder-kind restriction.
 | `CHD_OPT_COMB_SHOW_MAP` | bool | Visualise the comb decision map. |
 | `CHD_OPT_TRANSFORM_THRESHOLD` | f64 | Transform-decoder threshold. |
 | `CHD_OPT_TRANSFORM_THRESHOLDS_FILE` | str | Per-bin thresholds file. |
-| `CHD_OPT_FIRST_ACTIVE_FIELD_LINE` | i32 | Active-field line range start. |
-| `CHD_OPT_LAST_ACTIVE_FIELD_LINE` | i32 | Active-field line range end. |
-| `CHD_OPT_FIRST_ACTIVE_FRAME_LINE` | i32 | Active-frame line range start. |
-| `CHD_OPT_LAST_ACTIVE_FRAME_LINE` | i32 | Active-frame line range end. |
+| `CHD_OPT_FIRST_ACTIVE_FIELD_LINE` | i32 | First active field line (inclusive). |
+| `CHD_OPT_LAST_ACTIVE_FIELD_LINE` | i32 | Last active field line (inclusive). |
+| `CHD_OPT_FIRST_ACTIVE_FRAME_LINE` | i32 | First active frame line (inclusive). |
+| `CHD_OPT_LAST_ACTIVE_FRAME_LINE` | i32 | Last active frame line (inclusive — the line is included in the output). |
 | `CHD_OPT_NN_INPUT_MAGNITUDE_SCALE` | f64 | nnTransform3D input magnitude scale. |
 | `CHD_OPT_NN_CHROMA_BANDPASS` | bool | ldzeug2 luma-sep chroma bandpass. |
 | `CHD_OPT_OUTPUT_FORMAT` | str | `"yuv444p16"`, `"yuv444_float"`, `"rgb48"`, or `"gray16"`. |

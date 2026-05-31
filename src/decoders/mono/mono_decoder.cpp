@@ -67,7 +67,7 @@ void MonoDecoder::decodeFrames(const std::vector<chd::decoders::SourceField>& in
 
 	for (int32_t fieldIndex = startIndex, frameIndex = 0; fieldIndex < endIndex; fieldIndex += 2, frameIndex++) {
 		componentFrames[frameIndex].init(videoParameters, ignoreUV);
-		for (int32_t y = videoParameters.firstActiveFrameLine; y < videoParameters.lastActiveFrameLine; y++) {
+		for (int32_t y = videoParameters.firstActiveFrameLine; y <= videoParameters.lastActiveFrameLine; y++) {
 			const chd::reader::Data &inputFieldData = (y % 2) == 0 ? inputFields[fieldIndex].data :inputFields[fieldIndex+1].data;
 			const uint16_t *inputLine = inputFieldData.data() + ((y / 2) * videoParameters.fieldWidth);
 
@@ -101,7 +101,7 @@ void MonoDecoder::doYNR(chd::output::ComponentFrame &componentFrame) {
 
     // 3. Process each active scanline in the frame
     for (int line = monoConfig.videoParameters.firstActiveFrameLine;
-             line < monoConfig.videoParameters.lastActiveFrameLine;
+             line <= monoConfig.videoParameters.lastActiveFrameLine;
            ++line)
     {
         double* Y = componentFrame.y(line);

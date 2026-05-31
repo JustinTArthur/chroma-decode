@@ -55,12 +55,15 @@ struct SourceField {
     }
 
     // Return the first/last active line numbers within this field's data,
-    // given the video parameters.
+    // given the video parameters. firstActiveFrameLine/lastActiveFrameLine are
+    // inclusive frame rows; the returned field-line range is half-open
+    // ([first, last)), so getLastActiveLine() is one past the field line that
+    // carries lastActiveFrameLine.
     int32_t getFirstActiveLine(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters) const {
         return (videoParameters.firstActiveFrameLine + 1 - getOffset()) / 2;
     }
     int32_t getLastActiveLine(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters) const {
-        return (videoParameters.lastActiveFrameLine + 1 - getOffset()) / 2;
+        return ((videoParameters.lastActiveFrameLine - getOffset()) / 2) + 1;
     }
 };
 

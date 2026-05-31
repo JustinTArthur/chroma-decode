@@ -30,6 +30,22 @@ All notable changes to this project will be documented in this file. Format:
   vars at them locally or in a dedicated CI lane.
 
 ### Changed
+- Active line ranges are now interpreted as **inclusive** — for both the frame
+  lines (`CHD_OPT_FIRST/LAST_ACTIVE_FRAME_LINE`) and the field lines
+  (`CHD_OPT_FIRST/LAST_ACTIVE_FIELD_LINE`), the last value is the last line that
+  is part of the active region, not one past it. Output height is
+  `last - first + 1`. Default active regions now produce a full **486-line
+  picture for 525-line (NTSC)** and **576 lines for 625-line (PAL)** systems
+  (NTSC frame default shifted up to `39..524`, PAL to `44..619`; field-line
+  defaults decremented to match). tbc-tools v4 SQLite sidecars write
+  `last_active_frame_line` / `last_active_field_line` as exclusive bounds; the
+  SQLite reader now translates both columns to the inclusive scheme on ingest,
+  so sidecar-described captures decode to their intended geometry (no behaviour
+  change for them).
+- Output padding now defaults to off: `CHD_OPT_PADDING_MULTIPLE` defaults to `1`
+  (was `8`). Padding is also now honored uniformly by the `yuv444_float` output
+  path, which previously emitted a tight active-region crop regardless of the
+  requested padding multiple.
 - Renamed `chd_nn_model_load` → `chd_nn_model_load_from_file` so the
   file-based and new memory-based loaders form a symmetric
   `_from_file` / `_from_memory` pair. ABI break (pre-release; no

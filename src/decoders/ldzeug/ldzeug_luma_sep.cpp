@@ -181,7 +181,7 @@ void LdzeugLumaSepDecoder::decodeFrames(
         auto demodLine = [&](int32_t frameLine,
                              const uint16_t *cvbsRow,
                              const float    *yNormRow) {
-            const bool inActive = frameLine >= firstActiveLine && frameLine < lastActiveLine;
+            const bool inActive = frameLine >= firstActiveLine && frameLine <= lastActiveLine;
             const int32_t hStart = inActive ? activeStart : 0;
             const int32_t hEnd   = inActive ? activeEnd   : 0;
             demodChromaRow(cvbsRow, yNormRow, fieldWidth, hStart, hEnd,

@@ -147,7 +147,7 @@ void TransformPal3D::filterFields(const std::vector<chd::decoders::SourceField> 
     // (See TransformPal3D member variable documentation for how the tiling works;
     // if you change the Z tiling here, also review getLookBehind/getLookAhead above.)
     for (int32_t tileZ = startIndex - HALFZTILE; tileZ < endIndex; tileZ += HALFZTILE) {
-        for (int32_t tileY = videoParameters.firstActiveFrameLine - HALFYTILE; tileY < videoParameters.lastActiveFrameLine; tileY += HALFYTILE) {
+        for (int32_t tileY = videoParameters.firstActiveFrameLine - HALFYTILE; tileY <= videoParameters.lastActiveFrameLine; tileY += HALFYTILE) {
             for (int32_t tileX = videoParameters.activeVideoStart - HALFXTILE; tileX < videoParameters.activeVideoEnd; tileX += HALFXTILE) {
                 // Compute the forward FFT
                 forwardFFTTile(tileX, tileY, tileZ, inputFields);
@@ -167,7 +167,7 @@ void TransformPal3D::forwardFFTTile(int32_t tileX, int32_t tileY, int32_t tileZ,
 {
     // Work out which lines of this tile are within the active region
     const int32_t startY = qMax(videoParameters.firstActiveFrameLine - tileY, 0);
-    const int32_t endY = qMin(videoParameters.lastActiveFrameLine - tileY, YTILE);
+    const int32_t endY = qMin((videoParameters.lastActiveFrameLine - tileY) + 1, YTILE);
 
     // Copy the input signal into fftReal, applying the window function
     for (int32_t z = 0; z < ZTILE; z++) {
@@ -205,7 +205,7 @@ void TransformPal3D::inverseFFTTile(int32_t tileX, int32_t tileY, int32_t tileZ,
     const int32_t startX = qMax(videoParameters.activeVideoStart - tileX, 0);
     const int32_t endX = qMin(videoParameters.activeVideoEnd - tileX, XTILE);
     const int32_t startY = qMax(videoParameters.firstActiveFrameLine - tileY, 0);
-    const int32_t endY = qMin(videoParameters.lastActiveFrameLine - tileY, YTILE);
+    const int32_t endY = qMin((videoParameters.lastActiveFrameLine - tileY) + 1, YTILE);
     const int32_t startZ = qMax(startIndex - tileZ, 0);
     const int32_t endZ = qMin(endIndex - tileZ, ZTILE);
 

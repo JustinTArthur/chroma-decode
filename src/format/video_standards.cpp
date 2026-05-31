@@ -103,7 +103,7 @@ makeVideoParameters(const VideoStandardPreset &preset,
     vp.fSC        = preset.fSC;
 
     // Sample-domain values are 10-bit values shifted left 6 (i.e. multiplied
-    // by 64), matching the TBC convention so existing decoders can
+    // by 64), matching the canonical TBC convention so existing decoders can
     // consume the data unchanged.
     vp.blanking16bIre = preset.levels.blanking * 64;
     vp.black16bIre    = preset.levels.black    * 64;
@@ -121,22 +121,23 @@ makeVideoParameters(const VideoStandardPreset &preset,
     vp.fieldWidth  = samplesPerLine;
     vp.fieldHeight = linesPerField;
 
-    // Active region defaults match the legacy metadata's per-system defaults
-    // (see VIDEO_SYSTEM_DEFAULTS in src/metadata/core.cpp). The decoder
-    // pipeline calls processLineParameters() later to populate
-    // firstActiveFrameLine / lastActiveFrameLine; CVBS-opened captures don't
-    // yet have a metadata sidecar that overrides these, so populate the
+    // Active region defaults mirror VIDEO_SYSTEM_DEFAULTS in src/metadata/core.cpp
+    // (keep the two in sync). first/last active frame lines are inclusive; these
+    // values intentionally differ from decode-orc and tbc-tools' exclusive
+    // defaults. The decoder pipeline calls processLineParameters() later to
+    // populate firstActiveFrameLine / lastActiveFrameLine; CVBS-opened captures
+    // don't yet have a metadata sidecar that overrides these, so populate the
     // defaults explicitly so chd_video_get_info reports sensible values.
     if (preset.standard == VideoStandard::PAL) {
         vp.firstActiveFieldLine = 22;
-        vp.lastActiveFieldLine  = 308;
+        vp.lastActiveFieldLine  = 307;
         vp.firstActiveFrameLine = 44;
-        vp.lastActiveFrameLine  = 620;
+        vp.lastActiveFrameLine  = 619;
     } else {
         vp.firstActiveFieldLine = 20;
-        vp.lastActiveFieldLine  = 263;
-        vp.firstActiveFrameLine = 40;
-        vp.lastActiveFrameLine  = 525;
+        vp.lastActiveFieldLine  = 262;
+        vp.firstActiveFrameLine = 39;
+        vp.lastActiveFrameLine  = 524;
     }
 
     // Colour-burst start/end and active-video start/end are not normatively

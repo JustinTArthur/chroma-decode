@@ -81,8 +81,8 @@ int testConfigureWithoutSession() {
     vp.sampleRate = vp.fSC * 4.0;
     vp.activeVideoStart = 134;
     vp.activeVideoEnd = 894;
-    vp.firstActiveFrameLine = 40;
-    vp.lastActiveFrameLine = 525;
+    vp.firstActiveFrameLine = 39;
+    vp.lastActiveFrameLine = 524;
     vp.black16bIre = 16128;
     vp.white16bIre = 51200;
     vp.blanking16bIre = 15360;
@@ -119,8 +119,8 @@ int bindSessionAndConfigure(const std::shared_ptr<chd::nn::OrtSession> &session)
     vp.sampleRate = vp.fSC * 4.0;
     vp.activeVideoStart = 134;
     vp.activeVideoEnd = 894;
-    vp.firstActiveFrameLine = 40;
-    vp.lastActiveFrameLine = 525;
+    vp.firstActiveFrameLine = 39;
+    vp.lastActiveFrameLine = 524;
     vp.black16bIre = 16128;
     vp.white16bIre = 51200;
     vp.blanking16bIre = 15360;

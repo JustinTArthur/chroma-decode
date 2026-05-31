@@ -46,7 +46,7 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d);
 #define CHD_OPT_CHROMA_PHASE_DEG            "chroma_phase_deg"          /* f64 */
 #define CHD_OPT_CHROMA_NR_LEVEL             "chroma_nr_level"           /* f64 */
 #define CHD_OPT_LUMA_NR_LEVEL               "luma_nr_level"             /* f64 */
-#define CHD_OPT_PADDING_MULTIPLE            "padding_multiple"          /* i32, default 8 */
+#define CHD_OPT_PADDING_MULTIPLE            "padding_multiple"          /* i32, default 1 (no padding) */
 #define CHD_OPT_REVERSE_FIELD_ORDER         "reverse_field_order"       /* bool */
 #define CHD_OPT_PHASE_COMPENSATION          "phase_compensation"        /* bool, NTSC */
 #define CHD_OPT_COMB_DIMENSIONS             "comb_dimensions"           /* i32 in {1,2,3} */
@@ -56,10 +56,10 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d);
 #define CHD_OPT_COMB_SHOW_MAP               "comb_show_map"             /* bool */
 #define CHD_OPT_TRANSFORM_THRESHOLD         "transform_threshold"       /* f64 */
 #define CHD_OPT_TRANSFORM_THRESHOLDS_FILE   "transform_thresholds_file" /* str */
-#define CHD_OPT_FIRST_ACTIVE_FIELD_LINE     "first_active_field_line"   /* i32 */
-#define CHD_OPT_LAST_ACTIVE_FIELD_LINE      "last_active_field_line"    /* i32 */
-#define CHD_OPT_FIRST_ACTIVE_FRAME_LINE     "first_active_frame_line"   /* i32 */
-#define CHD_OPT_LAST_ACTIVE_FRAME_LINE      "last_active_frame_line"    /* i32 */
+#define CHD_OPT_FIRST_ACTIVE_FIELD_LINE     "first_active_field_line"   /* i32, inclusive */
+#define CHD_OPT_LAST_ACTIVE_FIELD_LINE      "last_active_field_line"    /* i32, inclusive */
+#define CHD_OPT_FIRST_ACTIVE_FRAME_LINE     "first_active_frame_line"   /* i32, inclusive */
+#define CHD_OPT_LAST_ACTIVE_FRAME_LINE      "last_active_frame_line"    /* i32, inclusive */
 #define CHD_OPT_NN_INPUT_MAGNITUDE_SCALE    "nn_input_magnitude_scale"  /* f64 (nnTransform3D only) */
 #define CHD_OPT_NN_CHROMA_BANDPASS          "nn_chroma_bandpass"        /* bool (ldzeug2_luma_sep only) */
 #define CHD_OPT_OUTPUT_FORMAT               "output_format"             /* str: "yuv444p16"|"yuv444_float"|"rgb48"|"gray16" */

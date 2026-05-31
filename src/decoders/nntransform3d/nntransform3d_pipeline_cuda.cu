@@ -102,7 +102,7 @@ __global__ void calcDCKernel(const uint16_t *dCvbsF0, const uint16_t *dCvbsF1,
 
         for (int dy = 0; dy < 16; ++dy) {
             const int absY = y + dy;
-            if (absY < firstActiveY || absY >= lastActiveY) continue;
+            if (absY < firstActiveY || absY > lastActiveY) continue;
             if ((absY % 2 != 0) != isOddField) continue;
             for (int dx = 0; dx < 16; ++dx) {
                 const int absX = x + dx;
@@ -143,7 +143,7 @@ __global__ void packAndWindowKernel(const uint16_t *dCvbsF0, const uint16_t *dCv
     const bool isPad = (t < 2) ? padF0 : padF1;
 
     if (isPad
-        || absY < firstActiveY || absY >= lastActiveY
+        || absY < firstActiveY || absY > lastActiveY
         || absX < activeStartX || absX >= activeEndX
         || ((absY % 2 != 0) != isOddField)) {
         dInBatch[idx].x = 0.0;
@@ -229,7 +229,7 @@ __global__ void olaKernel(const cufftDoubleComplex *dInBatch,
 
     const int absY = dLedgerY[b] + dy;
     const int absX = dLedgerX[b] + dx;
-    if (absY < firstActiveY || absY >= lastActiveY) return;
+    if (absY < firstActiveY || absY > lastActiveY) return;
     if ((absY % 2 != 0) != (t % 2 != 0)) return;
     if (absX < activeStartX || absX >= activeEndX) return;
 
@@ -400,7 +400,7 @@ bool runCudaPipeline(
     std::vector<int> hLedgerX;
     hLedgerY.reserve(64);
     hLedgerX.reserve(64);
-    for (int32_t y = startY; y < lastActiveY; y += kStepY) {
+    for (int32_t y = startY; y <= lastActiveY; y += kStepY) {
         for (int32_t x = startX; x < activeEndX; x += kStepX) {
             hLedgerY.push_back(y);
             hLedgerX.push_back(x);

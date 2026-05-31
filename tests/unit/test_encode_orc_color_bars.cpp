@@ -182,8 +182,8 @@ int runPipelineMonoSanity(const fs::path &dir) {
     // YUV444P16 = 3 planes * width * height * 2 bytes per sample. With
     // padding=1 the active region is unchanged (active_video_end -
     // active_video_start = 905 - 147 = 758 samples wide, and
-    // lastActiveFrameLine - firstActiveFrameLine = 484 - 40 = 444 lines tall
-    // for default NTSC defaults).
+    // lastActiveFrameLine - firstActiveFrameLine + 1 = 484 - 40 + 1 = 445 lines
+    // tall (frame lines are inclusive)).
     // We just check the file is non-empty and a multiple of 6 (3 planes * 2 bytes).
     REQUIRE(outSize > 0);
     REQUIRE(outSize % 6 == 0);

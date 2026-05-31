@@ -74,7 +74,9 @@ void OutputWriter::updateConfiguration(chd::metadata::LdDecodeMetaData::VideoPar
     bottomPadLines = 0;
 
     activeWidth = videoParameters.activeVideoEnd - videoParameters.activeVideoStart;
-    activeHeight = videoParameters.lastActiveFrameLine - videoParameters.firstActiveFrameLine;
+    // firstActiveFrameLine/lastActiveFrameLine are inclusive, so the active
+    // region spans (last - first + 1) lines.
+    activeHeight = (videoParameters.lastActiveFrameLine - videoParameters.firstActiveFrameLine) + 1;
     outputHeight = activeHeight;
 
     if (config.paddingAmount > 1) {

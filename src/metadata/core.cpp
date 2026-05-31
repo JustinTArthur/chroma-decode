@@ -44,10 +44,12 @@ static constexpr VideoSystemDefaults palDefaults {
     "PAL",
     (283.75 * 15625) + 25,
     2,
-    22, 308,
+    // Active field and frame line ranges below are inclusive (the last value is
+    // the last line that is part of the active picture, not one past it).
+    22, 307,
     // Interlaced line 44 is PAL line 23 (the first active half-line)
     // Interlaced line 619 is PAL line 623 (the last active half-line)
-    44, 620,
+    44, 619,
 };
 
 static constexpr VideoSystemDefaults ntscDefaults {
@@ -55,10 +57,13 @@ static constexpr VideoSystemDefaults ntscDefaults {
     "NTSC",
     315.0e6 / 88.0,
     1,
-    20, 263,
-    // Interlaced line 40 is NTSC line 21 (the closed-caption line before the first active half-line)
+    // Active field and frame line ranges below are inclusive (the last value is
+    // the last line that is part of the active picture, not one past it).
+    20, 262,
+    // Interlaced line 39 is the first active half-line
+    // Interlaced line 40 is NTSC line 21 (the closed-caption line)
     // Interlaced line 524 is NTSC line 263 (the last active half-line)
-    40, 525,
+    39, 524,
 };
 
 static constexpr VideoSystemDefaults palMDefaults {

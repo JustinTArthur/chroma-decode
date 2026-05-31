@@ -735,23 +735,26 @@ int testActiveLineSidecarOverride(const fs::path &dir) {
     };
 
     // Baseline: standard ld-decode sidecar (no v4 columns). NTSC default
-    // active frame lines are 40..525 → height = 485 with padding=1.
+    // active frame lines are 39..524 inclusive → height = 486 with padding=1.
     if (int rc = runProbe((dir / "baseline.tbc").string(),
                           (dir / "baseline.tbc.db").string(),
-                          /*useV4=*/false, /*expectedHeight=*/485, {});
+                          /*useV4=*/false, /*expectedHeight=*/486, {});
         rc != 0) return rc;
 
-    // tbc-tools v4 sidecar with custom frame lines 80..480 → height = 400.
-    // Verifies the SQLite reader picked up the columns and processed them
-    // through LineParameters::applyTo.
+    // tbc-tools v4 sidecar with custom frame lines ffrl=80, lfrl=480. tbc-tools
+    // writes lfrl as an exclusive bound, so the SQLite reader translates it to
+    // our inclusive scheme (480 → 479): active rows 80..479 → height = 400.
+    // Verifies the reader picked up the columns and processed them through
+    // LineParameters::applyTo with the convention translation applied.
     if (int rc = runProbe((dir / "v4.tbc").string(),
                           (dir / "v4.tbc.db").string(),
                           /*useV4=*/true, /*expectedHeight=*/400, {});
         rc != 0) return rc;
 
-    // Same v4 sidecar (80..480 → 400) but the caller explicitly sets
-    // CHD_OPT_FIRST_ACTIVE_FRAME_LINE=40 → height = 440 (480-40). Verifies
-    // caller-set options override sidecar values.
+    // Same v4 sidecar (lfrl=480 → inclusive 479) but the caller explicitly sets
+    // CHD_OPT_FIRST_ACTIVE_FRAME_LINE=40 (the C API option is already inclusive,
+    // no translation) → active rows 40..479 → height = 440. Verifies caller-set
+    // options override sidecar values.
     if (int rc = runProbe((dir / "v4_override.tbc").string(),
                           (dir / "v4_override.tbc.db").string(),
                           /*useV4=*/true, /*expectedHeight=*/440,

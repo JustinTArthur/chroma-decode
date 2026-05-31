@@ -78,6 +78,15 @@ public:
         return config.pixelFormat;
     }
 
+    // Committed output geometry (valid after updateConfiguration). These reflect
+    // any padding requested via Configuration::paddingAmount: activeWidth is the
+    // horizontally-expanded crop, outputHeight includes top/bottom pad lines.
+    int32_t getActiveWidth() const { return activeWidth; }
+    int32_t getActiveHeight() const { return activeHeight; }
+    int32_t getOutputHeight() const { return outputHeight; }
+    int32_t getTopPadLines() const { return topPadLines; }
+    int32_t getBottomPadLines() const { return bottomPadLines; }
+
 private:
     // Configuration parameters
     Configuration config;
