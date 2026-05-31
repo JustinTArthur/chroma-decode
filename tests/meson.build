@@ -100,6 +100,19 @@ test_decode_frame_abi = executable('test_decode_frame_abi',
   dependencies: [sqlite3_dep, threads_dep])
 test('decode_frame_abi', test_decode_frame_abi)
 
+# Decode-free dropout detection C ABI: CHD_DEC_NONE geometry-only commit,
+# chd_decoder_get_output_info, chd_decoder_get_dropout_spans (field-relative
+# dropouts mapped into active-output coordinates), and chd_decode_dropout_mask
+# (GRAY16 mask). Injects known dropouts into a synthetic NTSC sidecar and
+# checks the mapped span coordinates, the painted mask, and that a NONE
+# decoder refuses to decode. Links the shared lib (public C ABI only).
+test_dropout_spans_abi = executable('test_dropout_spans_abi',
+  'unit/test_dropout_spans_abi.cpp',
+  include_directories: [public_inc, version_inc],
+  link_with: libchromadec,
+  dependencies: [sqlite3_dep, threads_dep])
+test('dropout_spans_abi', test_dropout_spans_abi)
+
 # Absolute path to the committed test fixtures (tiny_identity.onnx). Passed
 # to the NN tests so their model locator can find the synthetic fixture
 # regardless of the working directory the test runs from.
