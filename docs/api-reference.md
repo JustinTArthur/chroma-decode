@@ -273,6 +273,24 @@ typedef struct chd_frame_info {
 } chd_frame_info_t;
 ```
 
+### chd_output_info_t
+
+```c
+typedef struct chd_output_info {
+    chd_pixel_format_t format;
+    int32_t  width;
+    int32_t  height;
+    int32_t  num_planes;
+    int64_t  num_frames;
+} chd_output_info_t;
+```
+
+The committed output framing, filled by
+[`chd_decoder_get_output_info`](#chd_decoder_get_output_info): the active-picture
+`width` and `height` after crop and padding (the dimensions a decoded frame or a
+dropout mask fills), the pixel `format` and its `num_planes`, and the source
+`num_frames`.
+
 ---
 
 ## Video sources
@@ -385,6 +403,17 @@ default appropriate to the video standard.
 | `CHD_DEC_NN_TRANSFORM3D`                           | Neural 3D transform (requires an NN model). |
 | `CHD_DEC_LDZEUG_COLOR_CNN`                         | Neural colour CNN.                          |
 | `CHD_DEC_LDZEUG_LUMA_SEP` / `_FRAME`               | Neural luma separation (field / frame).     |
+| `CHD_DEC_NONE`                                     | Geometry/metadata only — no chroma decode.  |
+
+`CHD_DEC_NONE` builds no chroma-decoding engine. Commit still resolves the
+output framing, so [`chd_decoder_get_output_info`](#chd_decoder_get_output_info)
+and the decode-free dropout queries
+([`chd_decoder_get_dropout_spans`](#chd_decoder_get_dropout_spans),
+[`chd_decode_dropout_mask`](#chd_decode_dropout_mask)) work — but
+[`chd_decode_frame`](#chd_decode_frame) and
+[`chd_decode_frames_async`](#chd_decode_frames_async) return
+`CHD_E_DECODER_INCOMPATIBLE`. Use it to read dropout regions or output geometry
+without paying for chroma decoding.
 
 ### Setting options
 
@@ -424,6 +453,20 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d);
 Apply pending options and prepare the decoder for use. **Required before the
 first [`chd_decode_frame`](#chd_decode_frame).** Cheap to call repeatedly.
 Call it again after changing options.
+
+### chd_decoder_get_output_info
+
+```c
+chd_status_t chd_decoder_get_output_info(const chd_decoder_t *d,
+                                         chd_output_info_t *out);
+```
+
+Fill `*out` with the committed [output framing](#chd_output_info_t) — the
+post-crop/padding dimensions, pixel format, plane count, and frame count.
+Requires a prior [`chd_decoder_commit`](#chd_decoder_commit); returns
+`CHD_E_INVALID_ARG` otherwise. This is the only way to learn the output
+dimensions without decoding a frame, which the decode-free
+[dropout-detection](#dropout-detection) paths rely on.
 
 ### Option registry
 
@@ -631,6 +674,63 @@ chd_status_t chd_decoder_get_last_dropout_stats(const chd_decoder_t *d,
 
 Return the correction counters from the **most recent**
 [`chd_decode_frame`](#chd_decode_frame) on this decoder.
+
+## Dropout detection
+
+The functions above *conceal* dropouts during a decode; these *expose* the
+flagged regions without running the chroma decoder, so a consumer can build its
+own visualisation (for example a mask clip marking damaged areas). Dropouts are
+detected upstream and stored in the source metadata, so these work regardless of
+whether concealment is enabled — and pair naturally with a
+[`CHD_DEC_NONE`](#chd_decoder_create) decoder to skip chroma decoding entirely.
+
+```c
+typedef struct chd_dropout_span {
+    int32_t y;        /* active-output row */
+    int32_t x_start;  /* half-open [x_start, x_end) within the active width */
+    int32_t x_end;
+} chd_dropout_span_t;
+```
+
+### chd_decoder_get_dropout_spans
+
+```c
+chd_status_t chd_decoder_get_dropout_spans(chd_decoder_t *d, int64_t frame_index,
+                                           chd_dropout_span_t **out_spans,
+                                           size_t *out_count);
+void         chd_dropout_spans_free(chd_dropout_span_t *spans);
+```
+
+Return the raw detected dropout regions for one frame, mapped into the committed
+[output framing](#chd_output_info_t): each span's `y`, `x_start`, and `x_end`
+index the same coordinate space as [`chd_frame_get_plane`](#chd_frame_get_plane)
+for a frame from the same committed decoder (interlace weave, crop, padding, and
+field order applied; spans clipped to the active picture, sorted by `y` then
+`x_start`). On `CHD_OK`, `*out_spans` is a newly-allocated array of `*out_count`
+spans the caller releases with `chd_dropout_spans_free`; a frame with no
+dropouts yields `*out_count == 0` and `*out_spans == NULL`. An out-of-range
+index returns `CHD_E_OUT_OF_RANGE`. Requires a prior
+[`chd_decoder_commit`](#chd_decoder_commit).
+
+### chd_decode_dropout_mask
+
+```c
+chd_status_t chd_decode_dropout_mask(chd_decoder_t *d, int64_t frame_index,
+                                     chd_frame_t **out);
+```
+
+Rasterise the same detected regions into a single-plane [frame](#frames)
+matching the output framing: `0` for clean samples, set for dropped ones. The
+mask format follows the committed output format's precision domain: a float
+output format (`yuv444ps`, `rgbs`, `grays`) yields a
+[`CHD_PIXEL_GRAYS`](#enumerations) mask (`1.0` dropped), any integer format
+yields a [`CHD_PIXEL_GRAY16`](#enumerations) mask (`0xFFFF` dropped). The mask
+clip pairs with the decode clip's sample type. Read it with
+[`chd_frame_get_info`](#chd_frame_get_info) /
+[`chd_frame_get_plane`](#chd_frame_get_plane) (or
+[`chd_frame_get_plane_float`](#chd_frame_get_plane_float) for a `GRAYS` mask) and
+free it with [`chd_frame_free`](#chd_frame_free). Does not run the chroma
+decoder.
 
 ---
 

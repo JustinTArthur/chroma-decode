@@ -225,6 +225,64 @@ chd_dropout_stats_t stats;
 chd_decoder_get_last_dropout_stats(dec, &stats);
 ```
 
+## Dropout detection
+
+Concealment *hides* dropouts; sometimes you want to *see* where they are — for
+example to produce a mask clip highlighting damaged regions alongside the
+decoded video. The detected regions are source metadata, available without
+running the chroma decoder, so extract them cheaply with a `CHD_DEC_NONE`
+decoder. Configure it with the same geometry options (padding, output format,
+line overrides, field order) as your video decoder so the two line up
+pixel-for-pixel:
+
+```c
+chd_decoder_t *mask_dec = NULL;
+chd_decoder_create(video, CHD_DEC_NONE, &mask_dec);
+chd_decoder_set_option_i32(mask_dec, CHD_OPT_PADDING_MULTIPLE, 1);
+chd_decoder_commit(mask_dec);
+
+chd_output_info_t oi;
+chd_decoder_get_output_info(mask_dec, &oi);   /* canvas size, no decode needed */
+```
+
+The simplest path is `chd_decode_dropout_mask`, which returns a single-plane
+frame (`0` clean, set when dropped) sized to the output framing — ready to use as
+a mask plane. Its format follows the committed output format's precision domain,
+so the mask matches the sample type of the decode clip it accompanies: an integer
+output format gives a `GRAY16` mask (`0xFFFF` dropped, read with
+`chd_frame_get_plane`); a float output format (`grays`, `yuv444ps`, `rgbs`) gives
+a `GRAYS` mask (`1.0` dropped, read with `chd_frame_get_plane_float`). The
+example above commits the default `yuv444p16`, so the mask is `GRAY16`:
+
+```c
+chd_frame_t *mask = NULL;
+if (chd_decode_dropout_mask(mask_dec, frame_index, &mask) == CHD_OK) {
+    const void *data; ptrdiff_t stride;
+    chd_frame_get_plane(mask, CHD_PLANE_Y, &data, &stride);
+    /* ... composite the mask against the decoded luma plane ... */
+    chd_frame_free(mask);
+}
+```
+
+For finer control — feathered or coloured overlays, say — ask for the raw spans
+and rasterise them yourself:
+
+```c
+chd_dropout_span_t *spans = NULL;
+size_t count = 0;
+chd_decoder_get_dropout_spans(mask_dec, frame_index, &spans, &count);
+for (size_t i = 0; i < count; i++) {
+    /* mark columns [spans[i].x_start, spans[i].x_end) on row spans[i].y */
+}
+chd_dropout_spans_free(spans);
+```
+
+Both report the raw detected dropouts in the active-output coordinate space, so
+they overlay frames from a video decoder committed with the same geometry. A
+`CHD_DEC_NONE` decoder rejects [`chd_decode_frame`](api-reference.md#chd_decode_frame)
+with `CHD_E_DECODER_INCOMPATIBLE` — it exists only to serve geometry and dropout
+queries.
+
 ## Decoding many frames in parallel
 
 [`chd_decode_frames_async`](api-reference.md#chd_decode_frames_async) fans a
