@@ -434,6 +434,22 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
     // every per-worker decoder configures against the same post-padding vp.
     d->outputWriter.updateConfiguration(vp, outCfg);
 
+    if (d->kind == CHD_DEC_NONE) {
+        // Geometry/metadata-only decoder: snapshot the committed framing but
+        // build no chroma decode engines and require no NN model. The dropout
+        // span/mask queries and chd_decoder_get_output_info read this state;
+        // chd_decode_frame is rejected.
+        d->resolvedKind      = CHD_DEC_NONE;
+        d->videoParameters   = vp;
+        d->outputConfig      = outCfg;
+        d->outputPixelFormat = abiFormat;
+        d->lookBehind        = 0;
+        d->lookAhead         = 0;
+        d->threadCount       = 0;
+        d->committed         = true;
+        return CHD_OK;
+    }
+
     // Resolve worker count before building decoders.
     int32_t threadCount = 0;
     {
@@ -516,6 +532,11 @@ chd_status_t chd_decode_frame(chd_decoder_t *d, int64_t frame_index, chd_frame_t
         chd::detail::set_last_error("chd_decode_frame: chd_decoder_commit not called");
         return CHD_E_INVALID_ARG;
     }
+    if (d->resolvedKind == CHD_DEC_NONE) {
+        chd::detail::set_last_error(
+            "chd_decode_frame: decoder kind is CHD_DEC_NONE (geometry/dropout only)");
+        return CHD_E_DECODER_INCOMPATIBLE;
+    }
     // Sync decode uses worker 0's decoder + its own mutex. Concurrent
     // chd_decode_frames_async calls can run on workers 1..N-1 against
     // different decoder instances; they don't contend with sync.
@@ -534,6 +555,11 @@ chd_status_t chd_decode_frames_async(chd_decoder_t *d,
     if (!d->committed) {
         chd::detail::set_last_error("chd_decode_frames_async: chd_decoder_commit not called");
         return CHD_E_INVALID_ARG;
+    }
+    if (d->resolvedKind == CHD_DEC_NONE) {
+        chd::detail::set_last_error(
+            "chd_decode_frames_async: decoder kind is CHD_DEC_NONE (geometry/dropout only)");
+        return CHD_E_DECODER_INCOMPATIBLE;
     }
     if (n == 0) return CHD_OK;
 

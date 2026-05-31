@@ -25,7 +25,7 @@ typedef enum chd_decoder_kind {
     CHD_DEC_LDZEUG_LUMA_SEP_FRAME = 12,
     /* Geometry/metadata only: commit resolves the output framing but builds no
      * chroma decode engines, and requires no NN model. chd_decode_frame is
-     * rejected with CHD_E_UNSUPPORTED; chd_decoder_get_output_info and the
+     * rejected with CHD_E_DECODER_INCOMPATIBLE; chd_decoder_get_output_info and the
      * dropout span/mask queries work. For consumers that want dropout regions
      * without paying for chroma decoding. */
     CHD_DEC_NONE                  = 13
