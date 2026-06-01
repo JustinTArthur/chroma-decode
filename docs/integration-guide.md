@@ -151,17 +151,20 @@ Setting an option that does not apply to the decoder kind returns
 ## Pixel formats and plane access
 
 The output format is chosen with `CHD_OPT_OUTPUT_FORMAT`
-(`"yuv444p16"`, `"yuv444_float"`, `"rgb48"`, `"gray16"`). For each decoded
-frame:
+(`"yuv444p16"`, `"yuv444ps"`, `"rgb48"`, `"rgbs"`, `"gray16"`, `"grays"`). For
+each decoded frame:
 
 - [`chd_frame_get_plane`](api-reference.md#chd_frame_get_plane) borrows a
-  read-only pointer plus a **byte** stride. The pointer belongs to the frame.
-  Never free it, and never use it after the frame is freed.
+  read-only pointer plus a **byte** stride into 16-bit plane data for the
+  integer formats. The pointer belongs to the frame. Never free it, and never
+  use it after the frame is freed.
 - [`chd_frame_get_plane_float`](api-reference.md#chd_frame_get_plane_float)
-  is a zero-copy borrow for `"yuv444_float"` frames.
-- [`chd_frame_copy_plane_float`](api-reference.md#chd_frame_copy_plane_float)
-  converts **any** format into a caller-supplied float buffer (luma black→`0.0`
-  white→`1.0`; chroma centred at `0.0`, range `±0.5`).
+  is the equivalent zero-copy borrow for the float formats. `"yuv444ps"` and
+  `"grays"` expose the normalized `E′Y E′Cb E′Cr` signals of ITU-R
+  BT.601 / ITU-T H.273 that the integer formats quantize. `"rgbs"` exposes
+  normalized `E′R E′G E′B` planes computed direct from the decoder's
+  component signals via the BT.601/H.273 Y′CbCr → R′G′B′ matrix, with no
+  intermediate integer quantization.
 
 Which planes are valid depends on the format: Y/Cb/Cr, R/G/B, or a single Y
 plane for `"gray16"`.
@@ -340,4 +343,4 @@ or as part of **your decode loop**.
   (emit the active region as-is). decode-orc / tbc-tools pad the frame to a
   multiple of 8 unless told otherwise — set `CHD_OPT_PADDING_MULTIPLE`
   explicitly if you need codec-friendly dimensions. Padding now applies
-  uniformly to every output format, including `yuv444_float`.
+  uniformly to every output format, including `yuv444ps` and `rgbs`.

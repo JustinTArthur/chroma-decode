@@ -11,20 +11,26 @@ extern "C" {
 
 chd_status_t chd_frame_get_info(const chd_frame_t *f, chd_frame_info_t *out);
 
-/* Read-only plane access. Caller does NOT free the pointer. Stride in bytes. */
+/* Zero-copy borrow of a 16-bit plane (integer pixel formats). Caller does NOT
+ * free the pointer; it is owned by the frame and invalid after chd_frame_free.
+ * Stride in bytes. */
 chd_status_t chd_frame_get_plane(const chd_frame_t *f, chd_plane_t p,
                                   const void **out_data,
                                   ptrdiff_t *out_stride_bytes);
 
-/* Zero-copy float planes from CHD_PIXEL_YUV444_FLOAT frames. */
+/* Zero-copy borrow of a float plane, same ownership/lifetime rules as
+ * chd_frame_get_plane. Valid for the float pixel formats:
+ *   CHD_PIXEL_YUV444PS: planes Y / Cb / Cr expose E'Y (black=0.0, white=1.0)
+ *     and E'Cb/E'Cr (centred at 0.0, ±0.5).
+ *   CHD_PIXEL_GRAYS: plane Y exposes E'Y only.
+ *   CHD_PIXEL_RGBS: planes R / G / B expose E'R, E'G, E'B (black=0.0,
+ *     white=1.0). Computed directly from the decoder's component signals; no
+ *     intermediate integer quantization.
+ * These are the normalized BT.601/H.273 signals that the integer formats
+ * quantize. */
 chd_status_t chd_frame_get_plane_float(const chd_frame_t *f, chd_plane_t p,
                                         const float **out_data,
                                         ptrdiff_t *out_stride_bytes);
-
-/* Convert any pixel format to float planes mapping black=0.0 white=1.0 for Y,
- * chroma centred at 0.0 with ±0.5 range. Caller-supplied dst buffer. */
-chd_status_t chd_frame_copy_plane_float(const chd_frame_t *f, chd_plane_t p,
-                                         float *dst, ptrdiff_t dst_stride_bytes);
 
 void         chd_frame_free(chd_frame_t *f);
 

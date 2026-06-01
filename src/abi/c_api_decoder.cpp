@@ -39,15 +39,19 @@ chd_status_t set_arg_error(const char *what, const char *detail = nullptr) {
 }
 
 // Translate the string form of the output_format option to an
-// OutputWriter::PixelFormat. Returns -1 on unknown name. The "yuv444_float"
-// alias maps to YUV444P16 here because the float-output path bypasses
-// OutputWriter::convert entirely (we render direct from the ComponentFrame);
-// OutputWriter still needs a valid format to size headers / padding.
+// OutputWriter::PixelFormat. Returns -1 on unknown name. The float-output
+// formats ("yuv444ps", "grays", "rgbs") bypass OutputWriter::convert entirely
+// (we render direct from the ComponentFrame via OutputWriter::convertToFloat
+// / convertToFloatRGB); OutputWriter still needs a valid integer format to
+// size headers / padding, so each maps to the integer format with the
+// matching plane layout.
 int parseOutputFormat(const std::string &name) {
     if (name == "yuv444p16" || name == "YUV444P16") return chd::output::OutputWriter::YUV444P16;
     if (name == "rgb48"     || name == "RGB48")     return chd::output::OutputWriter::RGB48;
     if (name == "gray16"    || name == "GRAY16")    return chd::output::OutputWriter::GRAY16;
-    if (name == "yuv444_float" || name == "YUV444_FLOAT") return chd::output::OutputWriter::YUV444P16;
+    if (name == "yuv444ps"  || name == "YUV444PS")  return chd::output::OutputWriter::YUV444P16;
+    if (name == "rgbs"      || name == "RGBS")      return chd::output::OutputWriter::RGB48;
+    if (name == "grays"     || name == "GRAYS")     return chd::output::OutputWriter::GRAY16;
     return -1;
 }
 
@@ -55,8 +59,24 @@ chd_pixel_format_t parseChdPixelFormat(const std::string &name) {
     if (name == "yuv444p16" || name == "YUV444P16") return CHD_PIXEL_YUV444P16;
     if (name == "rgb48"     || name == "RGB48")     return CHD_PIXEL_RGB48;
     if (name == "gray16"    || name == "GRAY16")    return CHD_PIXEL_GRAY16;
-    if (name == "yuv444_float" || name == "YUV444_FLOAT") return CHD_PIXEL_YUV444_FLOAT;
+    if (name == "yuv444ps"  || name == "YUV444PS")  return CHD_PIXEL_YUV444PS;
+    if (name == "rgbs"      || name == "RGBS")      return CHD_PIXEL_RGBS;
+    if (name == "grays"     || name == "GRAYS")     return CHD_PIXEL_GRAYS;
     return CHD_PIXEL_YUV444P16;
+}
+
+// Translate the string form of the output_clamp option to an
+// OutputWriter::ClampMode. Returns -1 on unknown name.
+int parseClampMode(const std::string &name) {
+    if (name == "none" || name == "NONE")
+        return chd::output::OutputWriter::CLAMP_NONE;
+    if (name == "legal_rgb_sdr" || name == "LEGAL_RGB_SDR")
+        return chd::output::OutputWriter::CLAMP_LEGAL_RGB_SDR;
+    if (name == "legal_rgb_hdr" || name == "LEGAL_RGB_HDR")
+        return chd::output::OutputWriter::CLAMP_LEGAL_RGB_HDR;
+    if (name == "legal_ycbcr_bt601" || name == "LEGAL_YCBCR_BT601")
+        return chd::output::OutputWriter::CLAMP_LEGAL_YCBCR_BT601;
+    return -1;
 }
 
 // Apply caller-supplied first/last_active_*_line overrides to the
@@ -94,47 +114,6 @@ chd_status_t setOpt(chd_decoder_t *d, const char *name,
     }
     dst[name] = std::move(value);
     return CHD_OK;
-}
-
-// Convert ComponentFrame's Y/U/V double samples into three contiguous float
-// planes. Used for CHD_PIXEL_YUV444_FLOAT, which produces float output instead
-// of going through OutputWriter::convert (that path emits uint16). The active
-// region is written starting at row topPadLines; any top/bottom padding lines
-// requested via CHD_OPT_PADDING_MULTIPLE are left black, matching the integer
-// output paths so float and integer frames share identical geometry.
-//
-// The mapping matches chd_frame_copy_plane_float's docstring: Y maps to
-// [0.0..1.0] black-to-white; U/V are centred at 0.0 with ±0.5 range.
-void componentFrameToFloatPlanes(const chd::output::ComponentFrame &cf,
-                                  const chd::metadata::LdDecodeMetaData::VideoParameters &vp,
-                                  int32_t activeWidth, int32_t topPadLines,
-                                  int32_t activeHeight, int32_t outputHeight,
-                                  std::vector<float> *outPlanes) {
-    const int32_t firstLine = vp.firstActiveFrameLine;
-    const int32_t startX    = vp.activeVideoStart;
-    const double  yOff      = vp.black16bIre;
-    const double  yRange    = vp.white16bIre - vp.black16bIre;
-
-    for (int32_t p = 0; p < 3; p++) {
-        outPlanes[p].assign(static_cast<size_t>(activeWidth) * outputHeight, 0.0f);
-    }
-
-    for (int32_t y = 0; y < activeHeight; y++) {
-        const int32_t srcLine = firstLine + y;
-        if (srcLine < 0 || srcLine >= cf.getHeight()) continue;
-        const int32_t dstRow = topPadLines + y;
-        const double *inY = cf.y(srcLine) + startX;
-        const double *inU = cf.u(srcLine) + startX;
-        const double *inV = cf.v(srcLine) + startX;
-        float *outY = outPlanes[0].data() + static_cast<size_t>(dstRow) * activeWidth;
-        float *outU = outPlanes[1].data() + static_cast<size_t>(dstRow) * activeWidth;
-        float *outV = outPlanes[2].data() + static_cast<size_t>(dstRow) * activeWidth;
-        for (int32_t x = 0; x < activeWidth; x++) {
-            outY[x] = static_cast<float>((inY[x] - yOff) / yRange);
-            outU[x] = static_cast<float>(inU[x] / yRange);
-            outV[x] = static_cast<float>(inV[x] / yRange);
-        }
-    }
 }
 
 // Decode one frame using the worker-`workerIdx` decoder. Caller MUST hold
@@ -230,19 +209,27 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
     const int32_t activeWidth =
         d->videoParameters.activeVideoEnd - d->videoParameters.activeVideoStart;
 
-    if (frame->format == CHD_PIXEL_YUV444_FLOAT) {
+    if (frame->format == CHD_PIXEL_YUV444PS || frame->format == CHD_PIXEL_GRAYS) {
         // Honor any requested padding: the float path mirrors the integer path's
         // committed geometry (top/bottom blank lines), it does not crop tight.
-        const int32_t topPadLines  = d->outputWriter.getTopPadLines();
-        const int32_t activeHeight =
-            (d->videoParameters.lastActiveFrameLine - d->videoParameters.firstActiveFrameLine) + 1;
+        // GRAYS emits only the E'Y plane; YUV444PS also emits E'Cb/E'Cr.
+        const bool includeChroma = (frame->format == CHD_PIXEL_YUV444PS);
         const int32_t outputHeight = d->outputWriter.getOutputHeight();
-        componentFrameToFloatPlanes(componentFrames[0], d->videoParameters,
-                                    activeWidth, topPadLines, activeHeight,
-                                    outputHeight, frame->floatPlane);
+        d->outputWriter.convertToFloat(componentFrames[0], frame->floatPlane, includeChroma);
         frame->activeWidth = activeWidth;
         frame->outputHeight = outputHeight;
-        frame->info.format = CHD_PIXEL_YUV444_FLOAT;
+        frame->info.format = frame->format;
+        frame->info.width  = activeWidth;
+        frame->info.height = outputHeight;
+        frame->info.num_planes = includeChroma ? 3 : 1;
+    } else if (frame->format == CHD_PIXEL_RGBS) {
+        // Direct ComponentFrame → R'G'B' float planes; no Y'CbCr integer
+        // intermediate. Same geometry as the integer convert() path.
+        const int32_t outputHeight = d->outputWriter.getOutputHeight();
+        d->outputWriter.convertToFloatRGB(componentFrames[0], frame->floatPlane);
+        frame->activeWidth = activeWidth;
+        frame->outputHeight = outputHeight;
+        frame->info.format = frame->format;
         frame->info.width  = activeWidth;
         frame->info.height = outputHeight;
         frame->info.num_planes = 3;
@@ -388,6 +375,18 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
         } else {
             outCfg.pixelFormat = chd::output::OutputWriter::YUV444P16;
             abiFormat = CHD_PIXEL_YUV444P16;
+        }
+    }
+    {
+        auto it = d->optionMaps.str.find(CHD_OPT_OUTPUT_CLAMP);
+        if (it != d->optionMaps.str.end()) {
+            const int cm = parseClampMode(it->second);
+            if (cm < 0) {
+                chd::detail::set_last_error(
+                    "chd_decoder_commit: unknown output_clamp \"" + it->second + "\"");
+                return CHD_E_INVALID_ARG;
+            }
+            outCfg.clampMode = static_cast<chd::output::OutputWriter::ClampMode>(cm);
         }
     }
 

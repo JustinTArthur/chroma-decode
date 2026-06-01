@@ -131,8 +131,9 @@ struct chd_decoder {
 // chd_frame owns the rendered pixel data for one decoded frame. The format
 // field follows the configured output pixel format from chd_decoder_commit;
 // for u16 formats `u16Plane` holds the OutputWriter convert() output, and
-// for CHD_PIXEL_YUV444_FLOAT the three `floatPlane`s hold contiguous
-// float planes converted directly from the decoder's ComponentFrame.
+// for the float formats (CHD_PIXEL_YUV444PS / CHD_PIXEL_RGBS / CHD_PIXEL_GRAYS)
+// the three `floatPlane`s hold contiguous float planes converted directly
+// from the decoder's ComponentFrame.
 struct chd_frame {
     chd_frame_info_t info{};
     chd_pixel_format_t format = CHD_PIXEL_YUV444P16;
@@ -142,7 +143,8 @@ struct chd_frame {
     // info.width / info.height (post-padding).
     chd::output::OutputFrame u16Plane;
 
-    // YUV444_FLOAT: three contiguous planes, each width*height floats.
+    // YUV444PS / RGBS: three contiguous planes, each width*height floats.
+    // GRAYS: only floatPlane[0] populated.
     std::vector<float> floatPlane[3];
 
     int32_t activeWidth  = 0;

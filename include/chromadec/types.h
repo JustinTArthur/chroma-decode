@@ -51,11 +51,20 @@ typedef enum chd_plane {
 } chd_plane_t;
 
 typedef enum chd_pixel_format {
-    CHD_PIXEL_YUV444P16    = 0,
-    CHD_PIXEL_YUV444_FLOAT = 1,
-    CHD_PIXEL_RGB48        = 2,
-    CHD_PIXEL_GRAY16       = 3
+    CHD_PIXEL_YUV444P16 = 0,
+    CHD_PIXEL_YUV444PS  = 1,
+    CHD_PIXEL_RGB48     = 2,
+    CHD_PIXEL_RGBS      = 3,
+    CHD_PIXEL_GRAY16    = 4,
+    CHD_PIXEL_GRAYS     = 5
 } chd_pixel_format_t;
+
+typedef enum chd_clamp {
+    CHD_CLAMP_NONE               = 0,
+    CHD_CLAMP_LEGAL_RGB_SDR      = 1,
+    CHD_CLAMP_LEGAL_RGB_HDR      = 2,
+    CHD_CLAMP_LEGAL_YCBCR_BT601  = 3
+} chd_clamp_t;
 
 typedef struct chd_video_params {
     chd_video_standard_t  standard;

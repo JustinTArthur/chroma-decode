@@ -51,10 +51,19 @@ public:
         GRAY16
     };
 
+    // Output sample clamping mode.
+    enum ClampMode {
+        CLAMP_NONE = 0,
+        CLAMP_LEGAL_RGB_SDR,
+        CLAMP_LEGAL_RGB_HDR,
+        CLAMP_LEGAL_YCBCR_BT601
+    };
+
     // Output settings
     struct Configuration {
         int32_t paddingAmount = 8;
         PixelFormat pixelFormat = RGB48;
+        ClampMode clampMode = CLAMP_NONE;
         bool outputY4m = false;
     };
 
@@ -73,6 +82,23 @@ public:
 
     // For worker threads: convert a component frame to the configured output format
     void convert(const ComponentFrame &componentFrame, OutputFrame &outputFrame) const;
+
+    // For worker threads: convert a component frame to normalized float planes
+    // E′Y (plane 0) and, when includeChroma is set, E′Cb (plane 1) / E′Cr
+    // (plane 2). outPlanes must point to an array of three vectors; they are
+    // resized to the committed output geometry. Used by the CHD_PIXEL_YUV444PS
+    // and CHD_PIXEL_GRAYS output formats. The integer convert() path quantizes
+    // these same signals.
+    void convertToFloat(const ComponentFrame &componentFrame,
+                        std::vector<float> *outPlanes, bool includeChroma) const;
+
+    // For worker threads: convert a component frame to normalized float
+    // R′G′B′ planes (E′R plane 0, E′G plane 1, E′B plane 2). Computed direct
+    // from the ComponentFrame via the BT.601/H.273 MatrixCoefficients=5/6
+    // matrix; no intermediate Y′CbCr integer quantization. Used by
+    // CHD_PIXEL_RGBS.
+    void convertToFloatRGB(const ComponentFrame &componentFrame,
+                           std::vector<float> *outPlanes) const;
 
     PixelFormat getPixelFormat() const {
         return config.pixelFormat;

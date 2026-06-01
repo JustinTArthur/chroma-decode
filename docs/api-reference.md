@@ -131,25 +131,25 @@ Declared in `<chromadec/errors.h>`.
 
 `chd_status_t` is the return type of every fallible call.
 
-| Code | Meaning |
-|---|---|
-| `CHD_OK` | Success (value `0`). |
-| `CHD_E_INVALID_ARG` | A null/out-of-domain argument, or a call made out of order (e.g. decoding before commit). |
-| `CHD_E_FILE_NOT_FOUND` | An input or sidecar path does not exist. |
-| `CHD_E_IO` | Read/write failure on an otherwise-present file. |
-| `CHD_E_FORMAT_UNSUPPORTED` | The container/sample encoding is not handled. |
-| `CHD_E_METADATA_MISSING` | Required metadata (sidecar) could not be located. |
-| `CHD_E_METADATA_CORRUPT` | Metadata was found but failed to parse. |
-| `CHD_E_PRESET_UNKNOWN` | An unknown preset name was requested. |
-| `CHD_E_DECODER_UNKNOWN` | Unknown decoder kind. |
-| `CHD_E_DECODER_INCOMPATIBLE` | Decoder kind is invalid for this video standard/encoding. |
-| `CHD_E_NN_MODEL_LOAD` | The NN model file failed to load. |
-| `CHD_E_NN_PROVIDER_UNAVAILABLE` | The requested execution provider is not available in this build/host. |
-| `CHD_E_NN_INFERENCE` | Inference failed at runtime. |
-| `CHD_E_OUT_OF_RANGE` | A frame index (or similar) is outside the valid range. |
-| `CHD_E_CANCELLED` | The operation was cancelled via a [`chd_cancel_t`](#cancellation). |
-| `CHD_E_INTERNAL` | An unexpected internal error. |
-| `CHD_E_OOM` | Allocation failure. |
+| Code                            | Meaning                                                                                   |
+|---------------------------------|-------------------------------------------------------------------------------------------|
+| `CHD_OK`                        | Success (value `0`).                                                                      |
+| `CHD_E_INVALID_ARG`             | A null/out-of-domain argument, or a call made out of order (e.g. decoding before commit). |
+| `CHD_E_FILE_NOT_FOUND`          | An input or sidecar path does not exist.                                                  |
+| `CHD_E_IO`                      | Read/write failure on an otherwise-present file.                                          |
+| `CHD_E_FORMAT_UNSUPPORTED`      | The container/sample encoding is not handled.                                             |
+| `CHD_E_METADATA_MISSING`        | Required metadata (sidecar) could not be located.                                         |
+| `CHD_E_METADATA_CORRUPT`        | Metadata was found but failed to parse.                                                   |
+| `CHD_E_PRESET_UNKNOWN`          | An unknown preset name was requested.                                                     |
+| `CHD_E_DECODER_UNKNOWN`         | Unknown decoder kind.                                                                     |
+| `CHD_E_DECODER_INCOMPATIBLE`    | Decoder kind is invalid for this video standard/encoding.                                 |
+| `CHD_E_NN_MODEL_LOAD`           | The NN model file failed to load.                                                         |
+| `CHD_E_NN_PROVIDER_UNAVAILABLE` | The requested execution provider is not available in this build/host.                     |
+| `CHD_E_NN_INFERENCE`            | Inference failed at runtime.                                                              |
+| `CHD_E_OUT_OF_RANGE`            | A frame index (or similar) is outside the valid range.                                    |
+| `CHD_E_CANCELLED`               | The operation was cancelled via a [`chd_cancel_t`](#cancellation).                        |
+| `CHD_E_INTERNAL`                | An unexpected internal error.                                                             |
+| `CHD_E_OOM`                     | Allocation failure.                                                                       |
 
 ### chd_status_str
 
@@ -202,7 +202,8 @@ typedef struct chd_cancel   chd_cancel_t;
 | `chd_sample_encoding_t` | `CHD_ENC_UNKNOWN`, `CHD_ENC_CVBS_U10_4FSC`, `CHD_ENC_CVBS_U16_4FSC`, `CHD_ENC_RAW_S16_28M`, `CHD_ENC_RAW_S16_40M`, `CHD_ENC_CVBS_TPG21_4FSC` |
 | `chd_signal_state_t` | `CHD_SIG_UNKNOWN`, `CHD_SIG_STANDARD_TBC_LOCKED`, `CHD_SIG_STANDARD_TBC_UNLOCKED`, `CHD_SIG_STANDARD_RAW`, `CHD_SIG_NONSTANDARD_TBC_LOCKED`, `CHD_SIG_NONSTANDARD_TBC_UNLOCKED`, `CHD_SIG_NONSTANDARD_RAW` |
 | `chd_plane_t` | `CHD_PLANE_Y`, `CHD_PLANE_CB`, `CHD_PLANE_CR`, `CHD_PLANE_R`, `CHD_PLANE_G`, `CHD_PLANE_B` |
-| `chd_pixel_format_t` | `CHD_PIXEL_YUV444P16`, `CHD_PIXEL_YUV444_FLOAT`, `CHD_PIXEL_RGB48`, `CHD_PIXEL_GRAY16` |
+| `chd_pixel_format_t` | `CHD_PIXEL_YUV444P16`, `CHD_PIXEL_YUV444PS`, `CHD_PIXEL_RGB48`, `CHD_PIXEL_RGBS`, `CHD_PIXEL_GRAY16`, `CHD_PIXEL_GRAYS` |
+| `chd_clamp_t` | `CHD_CLAMP_NONE`, `CHD_CLAMP_LEGAL_RGB_SDR`, `CHD_CLAMP_LEGAL_RGB_HDR`, `CHD_CLAMP_LEGAL_YCBCR_BT601` |
 
 ### chd_video_params_t
 
@@ -374,16 +375,16 @@ void         chd_decoder_free(chd_decoder_t *d);
 Create a decoder of `kind` bound to an opened video. `CHD_DEC_AUTO` selects a
 default appropriate to the video standard.
 
-| `chd_decoder_kind_t` | |
-|---|---|
-| `CHD_DEC_AUTO` | Pick a sensible default for the standard. |
-| `CHD_DEC_MONO` | Luma only. |
-| `CHD_DEC_NTSC_1D` / `_2D` / `_3D` / `_3D_NO_ADAPT` | NTSC comb decoders. |
-| `CHD_DEC_PAL_2D` | PAL 2D comb. |
-| `CHD_DEC_TRANSFORM_2D` / `_3D` | Transform-domain decoders. |
-| `CHD_DEC_NN_TRANSFORM3D` | Neural 3D transform (requires an NN model). |
-| `CHD_DEC_LDZEUG_COLOR_CNN` | Neural colour CNN. |
-| `CHD_DEC_LDZEUG_LUMA_SEP` / `_FRAME` | Neural luma separation (field / frame). |
+| `chd_decoder_kind_t`                               |                                             |
+|----------------------------------------------------|---------------------------------------------|
+| `CHD_DEC_AUTO`                                     | Pick a sensible default for the standard.   |
+| `CHD_DEC_MONO`                                     | Luma only.                                  |
+| `CHD_DEC_NTSC_1D` / `_2D` / `_3D` / `_3D_NO_ADAPT` | NTSC comb decoders.                         |
+| `CHD_DEC_PAL_2D`                                   | PAL 2D comb.                                |
+| `CHD_DEC_TRANSFORM_2D` / `_3D`                     | Transform-domain decoders.                  |
+| `CHD_DEC_NN_TRANSFORM3D`                           | Neural 3D transform (requires an NN model). |
+| `CHD_DEC_LDZEUG_COLOR_CNN`                         | Neural colour CNN.                          |
+| `CHD_DEC_LDZEUG_LUMA_SEP` / `_FRAME`               | Neural luma separation (field / frame).     |
 
 ### Setting options
 
@@ -429,31 +430,32 @@ Call it again after changing options.
 Stable option names (string macros). The comment column gives the value type
 and any decoder-kind restriction.
 
-| Macro / name | Type | Notes |
-|---|---|---|
-| `CHD_OPT_CHROMA_GAIN` | f64 | Chroma gain. |
-| `CHD_OPT_CHROMA_PHASE_DEG` | f64 | Chroma phase, degrees. |
-| `CHD_OPT_CHROMA_NR_LEVEL` | f64 | Chroma noise reduction. |
-| `CHD_OPT_LUMA_NR_LEVEL` | f64 | Luma noise reduction. |
-| `CHD_OPT_PADDING_MULTIPLE` | i32 | Output padding multiple (default `1` = no padding). |
-| `CHD_OPT_REVERSE_FIELD_ORDER` | bool | Swap field order (matches `ld-chroma-decoder -r`). |
-| `CHD_OPT_PHASE_COMPENSATION` | bool | NTSC phase compensation. |
-| `CHD_OPT_COMB_DIMENSIONS` | i32 | Comb dimensionality, in `{1,2,3}`. |
-| `CHD_OPT_COMB_ADAPTIVE` | bool | Adaptive comb. |
-| `CHD_OPT_COMB_ADAPT_THRESHOLD` | f64 | Adaptive threshold. |
-| `CHD_OPT_COMB_CHROMA_WEIGHT` | f64 | Chroma weighting. |
-| `CHD_OPT_COMB_SHOW_MAP` | bool | Visualise the comb decision map. |
-| `CHD_OPT_TRANSFORM_THRESHOLD` | f64 | Transform-decoder threshold. |
-| `CHD_OPT_TRANSFORM_THRESHOLDS_FILE` | str | Per-bin thresholds file. |
-| `CHD_OPT_FIRST_ACTIVE_FIELD_LINE` | i32 | First active field line (inclusive). |
-| `CHD_OPT_LAST_ACTIVE_FIELD_LINE` | i32 | Last active field line (inclusive). |
-| `CHD_OPT_FIRST_ACTIVE_FRAME_LINE` | i32 | First active frame line (inclusive). |
-| `CHD_OPT_LAST_ACTIVE_FRAME_LINE` | i32 | Last active frame line (inclusive — the line is included in the output). |
-| `CHD_OPT_NN_INPUT_MAGNITUDE_SCALE` | f64 | nnTransform3D input magnitude scale. |
-| `CHD_OPT_NN_CHROMA_BANDPASS` | bool | ldzeug2 luma-sep chroma bandpass. |
-| `CHD_OPT_OUTPUT_FORMAT` | str | `"yuv444p16"`, `"yuv444_float"`, `"rgb48"`, or `"gray16"`. |
-| `CHD_OPT_OUTPUT_Y4M_HEADERS` | bool | Emit Y4M stream headers. |
-| `CHD_OPT_THREAD_COUNT` | i32 | Worker threads (`0` = auto). |
+| Macro / name                        | Type | Notes                                                                                                                        |
+|-------------------------------------|------|------------------------------------------------------------------------------------------------------------------------------|
+| `CHD_OPT_CHROMA_GAIN`               | f64  | Chroma gain.                                                                                                                 |
+| `CHD_OPT_CHROMA_PHASE_DEG`          | f64  | Chroma phase, degrees.                                                                                                       |
+| `CHD_OPT_CHROMA_NR_LEVEL`           | f64  | Chroma noise reduction.                                                                                                      |
+| `CHD_OPT_LUMA_NR_LEVEL`             | f64  | Luma noise reduction.                                                                                                        |
+| `CHD_OPT_PADDING_MULTIPLE`          | i32  | Output padding multiple (default `1` = no padding).                                                                          |
+| `CHD_OPT_REVERSE_FIELD_ORDER`       | bool | Swap field order (matches `ld-chroma-decoder -r`).                                                                           |
+| `CHD_OPT_PHASE_COMPENSATION`        | bool | NTSC phase compensation.                                                                                                     |
+| `CHD_OPT_COMB_DIMENSIONS`           | i32  | Comb dimensionality, in `{1,2,3}`.                                                                                           |
+| `CHD_OPT_COMB_ADAPTIVE`             | bool | Adaptive comb.                                                                                                               |
+| `CHD_OPT_COMB_ADAPT_THRESHOLD`      | f64  | Adaptive threshold.                                                                                                          |
+| `CHD_OPT_COMB_CHROMA_WEIGHT`        | f64  | Chroma weighting.                                                                                                            |
+| `CHD_OPT_COMB_SHOW_MAP`             | bool | Visualise the comb decision map.                                                                                             |
+| `CHD_OPT_TRANSFORM_THRESHOLD`       | f64  | Transform-decoder threshold.                                                                                                 |
+| `CHD_OPT_TRANSFORM_THRESHOLDS_FILE` | str  | Per-bin thresholds file.                                                                                                     |
+| `CHD_OPT_FIRST_ACTIVE_FIELD_LINE`   | i32  | First active field line (inclusive).                                                                                         |
+| `CHD_OPT_LAST_ACTIVE_FIELD_LINE`    | i32  | Last active field line (inclusive).                                                                                          |
+| `CHD_OPT_FIRST_ACTIVE_FRAME_LINE`   | i32  | First active frame line (inclusive).                                                                                         |
+| `CHD_OPT_LAST_ACTIVE_FRAME_LINE`    | i32  | Last active frame line (inclusive — the line is included in the output).                                                     |
+| `CHD_OPT_NN_INPUT_MAGNITUDE_SCALE`  | f64  | nnTransform3D input magnitude scale.                                                                                         |
+| `CHD_OPT_NN_CHROMA_BANDPASS`        | bool | ldzeug2 luma-sep chroma bandpass.                                                                                            |
+| `CHD_OPT_OUTPUT_FORMAT`             | str  | `"yuv444p16"`, `"yuv444ps"`, `"rgb48"`, `"rgbs"`, `"gray16"`, or `"grays"`.                                                  |
+| `CHD_OPT_OUTPUT_CLAMP`              | str  | `"none"` (default), `"legal_rgb_sdr"`, `"legal_rgb_hdr"`, or `"legal_ycbcr_bt601"`. See [Output clamping](#output-clamping). |
+| `CHD_OPT_OUTPUT_Y4M_HEADERS`        | bool | Emit Y4M stream headers.                                                                                                     |
+| `CHD_OPT_THREAD_COUNT`              | i32  | Worker threads (`0` = auto).                                                                                                 |
 
 ### chd_decode_frame
 
@@ -516,11 +518,13 @@ chd_status_t chd_frame_get_plane(const chd_frame_t *f, chd_plane_t p,
                                  ptrdiff_t *out_stride_bytes);
 ```
 
-Borrow a read-only pointer to plane `p` and its row stride in **bytes**. The
-pointer is owned by the frame. Do not free it, and do not use it after
-[`chd_frame_free`](#chd_frame_free). Which planes are valid depends on the
-frame's [pixel format](#chd_frame_info_t) (Y/Cb/Cr, R/G/B, or a single Y plane
-for `CHD_PIXEL_GRAY16`).
+Zero-copy borrow of a read-only pointer to a 16-bit plane `p` and its row stride
+in **bytes**. The pointer is owned by the frame. Do not free it, and do not use
+it after [`chd_frame_free`](#chd_frame_free). Valid for the integer pixel formats;
+which planes are valid depends on the frame's [pixel format](#chd_frame_info_t)
+(Y/Cb/Cr for `CHD_PIXEL_YUV444P16`, R/G/B for `CHD_PIXEL_RGB48`, or a single Y
+plane for `CHD_PIXEL_GRAY16`). For float frames use
+[`chd_frame_get_plane_float`](#chd_frame_get_plane_float).
 
 ### chd_frame_get_plane_float
 
@@ -530,20 +534,53 @@ chd_status_t chd_frame_get_plane_float(const chd_frame_t *f, chd_plane_t p,
                                        ptrdiff_t *out_stride_bytes);
 ```
 
-Zero-copy borrow of a `float` plane, valid only for frames whose format is
-`CHD_PIXEL_YUV444_FLOAT`. Same borrowing rules as
-[`chd_frame_get_plane`](#chd_frame_get_plane).
+Zero-copy borrow of a `float` plane — same borrowing mechanism and
+ownership/lifetime rules as [`chd_frame_get_plane`](#chd_frame_get_plane), over
+the frame's float storage. Valid for the float pixel formats:
 
-### chd_frame_copy_plane_float
+- `CHD_PIXEL_YUV444PS` exposes `E′Y` (plane Y, `0.0` = black, `1.0` = white)
+  and `E′Cb`/`E′Cr` (planes Cb/Cr, centred at `0.0` with a `±0.5` range).
+- `CHD_PIXEL_GRAYS` exposes `E′Y` only (plane Y).
+- `CHD_PIXEL_RGBS` exposes `E′R`/`E′G`/`E′B` (planes R/G/B, `0.0` = black, `1.0`
+  = white). Computed directly from the decoder's component signals via the
+  BT.601/H.273 MatrixCoefficients=5/6 Y′CbCr → R′G′B′ matrix; no intermediate
+  Y′CbCr integer quantization.
 
-```c
-chd_status_t chd_frame_copy_plane_float(const chd_frame_t *f, chd_plane_t p,
-                                        float *dst, ptrdiff_t dst_stride_bytes);
-```
+For `CHD_PIXEL_YUV444PS` and `CHD_PIXEL_GRAYS` these are the normalized
+colour-difference signals `E′Y E′Cb E′Cr` of ITU-R BT.601 / ITU-T H.273; the
+integer formats are narrow-range quantizations of the same signals, so float
+output preserves full precision before quantization.
 
-Convert **any** pixel format into a caller-supplied `float` plane. Luma maps
-black → `0.0`, white → `1.0`; chroma is centred at `0.0` with a `±0.5` range.
-`dst` must hold at least `height` rows of `dst_stride_bytes` each.
+## Output clamping
+
+`CHD_OPT_OUTPUT_CLAMP` controls how out-of-range or sync-reserved sample codes
+are handled.
+
+| Token               | Meaning                                                                                                                                                                                                                                                                                                                                                                                       |
+|---------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `none` (default)    | No signal-domain clamp. Integer formats still saturate at the bit-depth limits per ITU-T H.273 `Clip1` (`[0, 65535]` in 16-bit). Float formats emit raw values which may fall below `0` or above `1`. Most faithful to the decoded signal.                                                                                                                                                    |
+| `legal_rgb_sdr`     | Limit output to values that map between R′G′B′ black and white. Y′CbCr formats: `Y′` stays between black (`16·256`) and white (`235·256`); `Cb`/`Cr` stays within the standard `±112·256` excursion around neutral gray (`128·256`). RGB formats: components are clamped to `[black, white]` = `[0, 1]`. Suppresses super-white, sub-black, and over-saturated chroma.                        |
+| `legal_rgb_hdr`     | Map to positive-only R′G′B′ with unconstrained headroom past SDR white: components are floored at black (`0`) with no ceiling, preserving HDR highlights and removing negative excursion. Affects RGB formats (`rgbs`; `rgb48` already saturates at `0`); a **no-op** for Y′CbCr / GRAY formats, which have no clean per-component box for the positive-R′G′B′ region.                        |
+| `legal_ycbcr_bt601` | Clamp to values that map to ITU-R BT.601-7 §2.5.3 video-allowed codes `[1.00d, 254.75d]` scaled to output bit-depth. Useful before quantizing for downstream SD-SDI or DV transport. In RGBS, it clamps components to bounds achievable from BT.601-legal Y′CbCr (`R′∈[-0.863, +1.884]`, `G′∈[-0.667, +1.690]`, `B′∈[-1.073, +2.093]`). Doesn't affect integer RGB which is already stricter. |
+
+For the GRAY formats (`gray16`, `grays`) the RGB-domain modes act on the luma
+axis only, because a luma sample alone cannot carry R′G′B′ legality — `grays`
+may be the `E′Y` of a split decode (for example luma from one decoder and
+`E′Cb`/`E′Cr` from another), in which case the eventual R′G′B′ depends on
+chroma that is not present in this frame. Accordingly, `legal_rgb_sdr` clamps
+`Y′`/`E′Y` to the nominal narrow-range luma extent (`[16·256, 235·256]` /
+`[0, 1]`), which doubles as a sensible luma clamp, while `legal_rgb_hdr` is a
+no-op (flooring luma at black would be an R′G′B′ assumption with no luma-domain
+justification). Use `legal_ycbcr_bt601` for the BT.601 §2.5.3 sync-safe luma
+range, or `none` to preserve all headroom for later recombination.
+
+The scaling relationship between "limited-range" matrix coefficient values like
+Y′CbCr and their corresponding R′G′B′ values is unaffected by clamp options.
+For example, `CHD_OPT_OUTPUT_CLAMP=none` with "yuv444p16" will *not* result in
+"full-range" JFIF Y′CbCr.
+
+The `legal_ycbcr_bt601` clamp matches the default behavior of tools like
+decode-orc and `ld-chroma-decoder`.
 
 ### chd_frame_free
 

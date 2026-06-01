@@ -40,7 +40,8 @@ bool isLineLayoutOption(const std::string &name, OptionType type) {
 bool isOutputOption(const std::string &name, OptionType type) {
     if (type == OptionType::I32 && (name == CHD_OPT_PADDING_MULTIPLE
                                     || name == CHD_OPT_THREAD_COUNT)) return true;
-    if (type == OptionType::Str  && name == CHD_OPT_OUTPUT_FORMAT)       return true;
+    if (type == OptionType::Str  && (name == CHD_OPT_OUTPUT_FORMAT
+                                    || name == CHD_OPT_OUTPUT_CLAMP))    return true;
     if (type == OptionType::Bool && (name == CHD_OPT_OUTPUT_Y4M_HEADERS
                                     || name == CHD_OPT_REVERSE_FIELD_ORDER)) return true;
     return false;

@@ -821,6 +821,213 @@ int testReverseFieldOrder(const fs::path &dir) {
     return 0;
 }
 
+// ─── Test: float output formats expose normalized E'Y E'Cb E'Cr. ───────────
+//
+// Black NTSC input → E'Y = 0.0 (black) and neutral chroma E'Cb = E'Cr = 0.0,
+// the float counterparts of the integer path's Y_ZERO (4096) / C_ZERO (32768).
+// Covers both float formats plus the get_plane / get_plane_float guard rails:
+//   - yuv444ps: 3 float planes, integer get_plane refused
+//   - grays:    1 float plane, Cb/Cr refused
+int testFloatOutputFormats(const fs::path &dir) {
+    const std::string tbc     = (dir / "flt.tbc").string();
+    const std::string sidecar = (dir / "flt.tbc.db").string();
+    constexpr int32_t fieldWidth  = 910;
+    constexpr int32_t fieldHeight = 263;
+    constexpr int32_t numFields   = 4;
+
+    REQUIRE(writeBlackTbc(tbc, fieldWidth, fieldHeight, numFields));
+    REQUIRE(writeTbcSidecar(sidecar, numFields));
+
+    // ── yuv444ps: three normalized E' planes ──
+    {
+        chd_video_t *video = nullptr;
+        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+        chd_decoder_t *dec = nullptr;
+        REQUIRE(chd_decoder_create(video, CHD_DEC_NTSC_2D, &dec) == CHD_OK);
+        REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_PADDING_MULTIPLE, 1) == CHD_OK);
+        REQUIRE(chd_decoder_set_option_str(dec, CHD_OPT_OUTPUT_FORMAT, "yuv444ps") == CHD_OK);
+        REQUIRE(chd_decoder_commit(dec) == CHD_OK);
+
+        chd_frame_t *frame = nullptr;
+        REQUIRE(chd_decode_frame(dec, 0, &frame) == CHD_OK);
+        REQUIRE(frame != nullptr);
+
+        chd_frame_info_t finfo{};
+        REQUIRE(chd_frame_get_info(frame, &finfo) == CHD_OK);
+        REQUIRE(finfo.format == CHD_PIXEL_YUV444PS);
+        REQUIRE(finfo.num_planes == 3);
+
+        // Integer get_plane must refuse a float frame.
+        const void *bogus = nullptr;
+        ptrdiff_t bogusStride = 0;
+        REQUIRE(chd_frame_get_plane(frame, CHD_PLANE_Y, &bogus, &bogusStride)
+                == CHD_E_INVALID_ARG);
+
+        const float *yData = nullptr;
+        ptrdiff_t yStride = 0;
+        REQUIRE(chd_frame_get_plane_float(frame, CHD_PLANE_Y, &yData, &yStride) == CHD_OK);
+        REQUIRE(yStride == static_cast<ptrdiff_t>(finfo.width) * static_cast<ptrdiff_t>(sizeof(float)));
+        REQUIRE(yData[0] == 0.0f);              // black ⇒ E'Y = 0.0
+        REQUIRE(yData[finfo.width / 2] == 0.0f);
+
+        const float *cbData = nullptr;
+        const float *crData = nullptr;
+        ptrdiff_t cStride = 0;
+        REQUIRE(chd_frame_get_plane_float(frame, CHD_PLANE_CB, &cbData, &cStride) == CHD_OK);
+        REQUIRE(chd_frame_get_plane_float(frame, CHD_PLANE_CR, &crData, &cStride) == CHD_OK);
+        REQUIRE(cbData[0] == 0.0f);             // neutral chroma ⇒ E'Cb = 0.0
+        REQUIRE(crData[0] == 0.0f);
+
+        chd_frame_free(frame);
+        chd_decoder_free(dec);
+        chd_video_free(video);
+    }
+
+    // ── grays: single normalized E'Y plane ──
+    {
+        chd_video_t *video = nullptr;
+        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+        chd_decoder_t *dec = nullptr;
+        REQUIRE(chd_decoder_create(video, CHD_DEC_MONO, &dec) == CHD_OK);
+        REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_PADDING_MULTIPLE, 1) == CHD_OK);
+        REQUIRE(chd_decoder_set_option_str(dec, CHD_OPT_OUTPUT_FORMAT, "grays") == CHD_OK);
+        REQUIRE(chd_decoder_commit(dec) == CHD_OK);
+
+        chd_frame_t *frame = nullptr;
+        REQUIRE(chd_decode_frame(dec, 0, &frame) == CHD_OK);
+        REQUIRE(frame != nullptr);
+
+        chd_frame_info_t finfo{};
+        REQUIRE(chd_frame_get_info(frame, &finfo) == CHD_OK);
+        REQUIRE(finfo.format == CHD_PIXEL_GRAYS);
+        REQUIRE(finfo.num_planes == 1);
+
+        const float *yData = nullptr;
+        ptrdiff_t yStride = 0;
+        REQUIRE(chd_frame_get_plane_float(frame, CHD_PLANE_Y, &yData, &yStride) == CHD_OK);
+        REQUIRE(yData[0] == 0.0f);
+
+        // grays has no chroma planes.
+        const float *cbData = nullptr;
+        ptrdiff_t cbStride = 0;
+        REQUIRE(chd_frame_get_plane_float(frame, CHD_PLANE_CB, &cbData, &cbStride)
+                == CHD_E_INVALID_ARG);
+
+        chd_frame_free(frame);
+        chd_decoder_free(dec);
+        chd_video_free(video);
+    }
+
+    fs::remove(tbc);
+    fs::remove(sidecar);
+    return 0;
+}
+
+// ─── Test: rgbs output produces normalized R'G'B' planes. ─────────────────
+//
+// Black NTSC input → E'Y = 0, neutral chroma → E'R = E'G = E'B = 0. Verifies
+// the dedicated convertToFloatRGB path: 3 contiguous float planes addressable
+// by CHD_PLANE_R/G/B (not Y/Cb/Cr), Y plane access refused.
+int testRgbsOutputFormat(const fs::path &dir) {
+    const std::string tbc     = (dir / "rgbs.tbc").string();
+    const std::string sidecar = (dir / "rgbs.tbc.db").string();
+    constexpr int32_t fieldWidth  = 910;
+    constexpr int32_t fieldHeight = 263;
+    constexpr int32_t numFields   = 4;
+
+    REQUIRE(writeBlackTbc(tbc, fieldWidth, fieldHeight, numFields));
+    REQUIRE(writeTbcSidecar(sidecar, numFields));
+
+    chd_video_t *video = nullptr;
+    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+    chd_decoder_t *dec = nullptr;
+    REQUIRE(chd_decoder_create(video, CHD_DEC_NTSC_2D, &dec) == CHD_OK);
+    REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_PADDING_MULTIPLE, 1) == CHD_OK);
+    REQUIRE(chd_decoder_set_option_str(dec, CHD_OPT_OUTPUT_FORMAT, "rgbs") == CHD_OK);
+    REQUIRE(chd_decoder_commit(dec) == CHD_OK);
+
+    chd_frame_t *frame = nullptr;
+    REQUIRE(chd_decode_frame(dec, 0, &frame) == CHD_OK);
+    REQUIRE(frame != nullptr);
+
+    chd_frame_info_t finfo{};
+    REQUIRE(chd_frame_get_info(frame, &finfo) == CHD_OK);
+    REQUIRE(finfo.format == CHD_PIXEL_RGBS);
+    REQUIRE(finfo.num_planes == 3);
+
+    // Y/Cb/Cr plane accessors should refuse an RGBS frame.
+    const float *bogus = nullptr;
+    ptrdiff_t bogusStride = 0;
+    REQUIRE(chd_frame_get_plane_float(frame, CHD_PLANE_Y, &bogus, &bogusStride)
+            == CHD_E_INVALID_ARG);
+
+    const float *rData = nullptr;
+    const float *gData = nullptr;
+    const float *bData = nullptr;
+    ptrdiff_t stride = 0;
+    REQUIRE(chd_frame_get_plane_float(frame, CHD_PLANE_R, &rData, &stride) == CHD_OK);
+    REQUIRE(stride == static_cast<ptrdiff_t>(finfo.width) * static_cast<ptrdiff_t>(sizeof(float)));
+    REQUIRE(chd_frame_get_plane_float(frame, CHD_PLANE_G, &gData, &stride) == CHD_OK);
+    REQUIRE(chd_frame_get_plane_float(frame, CHD_PLANE_B, &bData, &stride) == CHD_OK);
+    REQUIRE(rData[0] == 0.0f);  // black + neutral chroma ⇒ E'R = 0
+    REQUIRE(gData[0] == 0.0f);
+    REQUIRE(bData[0] == 0.0f);
+
+    // Integer get_plane must also refuse.
+    const void *bogusInt = nullptr;
+    REQUIRE(chd_frame_get_plane(frame, CHD_PLANE_R, &bogusInt, &bogusStride)
+            == CHD_E_INVALID_ARG);
+
+    chd_frame_free(frame);
+    chd_decoder_free(dec);
+    chd_video_free(video);
+
+    fs::remove(tbc);
+    fs::remove(sidecar);
+    return 0;
+}
+
+// ─── Test: output_clamp option accepts known tokens, rejects garbage. ─────
+int testOutputClampOption(const fs::path &dir) {
+    const std::string tbc     = (dir / "clamp.tbc").string();
+    const std::string sidecar = (dir / "clamp.tbc.db").string();
+    constexpr int32_t fieldWidth  = 910;
+    constexpr int32_t fieldHeight = 263;
+    constexpr int32_t numFields   = 4;
+
+    REQUIRE(writeBlackTbc(tbc, fieldWidth, fieldHeight, numFields));
+    REQUIRE(writeTbcSidecar(sidecar, numFields));
+
+    const char *const validTokens[] = {"none", "legal_rgb_sdr", "legal_rgb_hdr",
+                                        "legal_ycbcr_bt601"};
+    for (const char *token : validTokens) {
+        chd_video_t *video = nullptr;
+        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+        chd_decoder_t *dec = nullptr;
+        REQUIRE(chd_decoder_create(video, CHD_DEC_NTSC_2D, &dec) == CHD_OK);
+        REQUIRE(chd_decoder_set_option_str(dec, CHD_OPT_OUTPUT_CLAMP, token) == CHD_OK);
+        REQUIRE(chd_decoder_commit(dec) == CHD_OK);
+        chd_decoder_free(dec);
+        chd_video_free(video);
+    }
+
+    // Unknown clamp token must be rejected at commit time.
+    {
+        chd_video_t *video = nullptr;
+        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+        chd_decoder_t *dec = nullptr;
+        REQUIRE(chd_decoder_create(video, CHD_DEC_NTSC_2D, &dec) == CHD_OK);
+        REQUIRE(chd_decoder_set_option_str(dec, CHD_OPT_OUTPUT_CLAMP, "garbage") == CHD_OK);
+        REQUIRE(chd_decoder_commit(dec) == CHD_E_INVALID_ARG);
+        chd_decoder_free(dec);
+        chd_video_free(video);
+    }
+
+    fs::remove(tbc);
+    fs::remove(sidecar);
+    return 0;
+}
+
 int main() {
     const fs::path dir = fs::temp_directory_path() / "chd_phase_g_test";
     fs::create_directories(dir);
@@ -831,6 +1038,9 @@ int main() {
     if (int rc = testParallelAsyncDispatch(dir);  rc != 0) return rc;
     if (int rc = testReverseFieldOrder(dir);          rc != 0) return rc;
     if (int rc = testActiveLineSidecarOverride(dir);  rc != 0) return rc;
+    if (int rc = testFloatOutputFormats(dir);         rc != 0) return rc;
+    if (int rc = testRgbsOutputFormat(dir);           rc != 0) return rc;
+    if (int rc = testOutputClampOption(dir);          rc != 0) return rc;
 
     fs::remove(dir);
     std::cout << "test_decode_frame_abi: PASS\n";

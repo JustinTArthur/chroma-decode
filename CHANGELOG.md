@@ -7,6 +7,28 @@ All notable changes to this project will be documented in this file. Format:
 ## [Unreleased]
 
 ### Added
+- `CHD_PIXEL_RGBS` output format — full-range single-precision float
+  `E′R E′G E′B` planes, computed direct from the decoder's component signals
+  via the BT.601/H.273 MatrixCoefficients=5/6 Y′CbCr → R′G′B′ matrix with no
+  intermediate Y′CbCr integer quantization. String token `"rgbs"` for
+  `CHD_OPT_OUTPUT_FORMAT`. Plane access via `chd_frame_get_plane_float` with
+  `CHD_PLANE_R`/`G`/`B`.
+- `CHD_OPT_OUTPUT_CLAMP` option (string), with values `"none"` (default),
+  `"legal_rgb_sdr"`, `"legal_rgb_hdr"`, and `"legal_ycbcr_bt601"`, controlling
+  whether sample values are clamped. `legal_rgb_sdr` keeps the output between
+  RGB black and RGB white (Y′CbCr → the canonical narrow-range box; R′G′B′ →
+  `[0, 1]`). `legal_rgb_hdr` maps to positive-only R′G′B′ with unconstrained
+  headroom past SDR white (`R′G′B′ ∈ [0, +∞)`); it is a no-op for the Y′CbCr /
+  GRAY formats, which have no clean per-component box for that region.
+  `legal_ycbcr_bt601` clamps Y′CbCr to BT.601 §2.5.3 video-allowed codes
+  `[256, 65216]` (reserving the sync codeword regions). `none` applies no
+  signal-domain clamp (H.273 `Clip1` / bit-depth saturation only). Backed by a
+  new `chd_clamp_t` enum
+  (`CHD_CLAMP_NONE`/`LEGAL_RGB_SDR`/`LEGAL_RGB_HDR`/`LEGAL_YCBCR_BT601`).
+  Applied to integer Y′CbCr, integer RGB, and all float output formats; for
+  `rgbs` under `legal_ycbcr_bt601` the per-component bounds reflect the
+  forward projection of the BT.601-legal Y′CbCr volume
+  (R′∈[-0.863, +1.884], G′∈[-0.667, +1.690], B′∈[-1.073, +2.093]).
 - `chd_nn_model_load_from_memory(data, size, opts, out)` — load an ONNX
   model from an in-memory buffer instead of a file, for consumers that
   compile the model into their binary as a byte array (e.g. tbc-tools'
@@ -30,6 +52,18 @@ All notable changes to this project will be documented in this file. Format:
   vars at them locally or in a dedicated CI lane.
 
 ### Changed
+- Default output clamp is now `CHD_CLAMP_NONE`, dropping a behaviour
+  inherited from the upstream ld-chroma-decoder: the integer Y′CbCr / RGB
+  output codes were previously clamped to the BT.601 §2.5.3 video-allowed
+  range `[256, 65216]`, reserving the SDI sync codeword regions. Callers
+  who need that protection must now opt in via `CHD_OPT_OUTPUT_CLAMP =
+  "legal_ycbcr_bt601"`. Most consumers re-encoding through a modern codec
+  (or running RGB conversion downstream) want `none`.
+- Renumbered `chd_pixel_format_t`: the value of `CHD_PIXEL_GRAY16` /
+  `CHD_PIXEL_GRAYS` shift to `4` and `5` (was `3` and `4`) to make room for
+  `CHD_PIXEL_RGBS = 3` next to `CHD_PIXEL_RGB48 = 2`, keeping format families
+  grouped in both list position and integer value. ABI break (pre-release;
+  no deprecation alias).
 - Active line ranges are now interpreted as **inclusive** — for both the frame
   lines (`CHD_OPT_FIRST/LAST_ACTIVE_FRAME_LINE`) and the field lines
   (`CHD_OPT_FIRST/LAST_ACTIVE_FIELD_LINE`), the last value is the last line that
@@ -43,7 +77,7 @@ All notable changes to this project will be documented in this file. Format:
   so sidecar-described captures decode to their intended geometry (no behaviour
   change for them).
 - Output padding now defaults to off: `CHD_OPT_PADDING_MULTIPLE` defaults to `1`
-  (was `8`). Padding is also now honored uniformly by the `yuv444_float` output
+  (was `8`). Padding is also now honored uniformly by the `yuv444ps` output
   path, which previously emitted a tight active-region crop regardless of the
   requested padding multiple.
 - Renamed `chd_nn_model_load` → `chd_nn_model_load_from_file` so the
@@ -161,10 +195,12 @@ All notable changes to this project will be documented in this file. Format:
   frame index) / `chd_decode_frames_async` / `chd_cancel_*` and the
   full `chd_frame_*` accessor set (`chd_frame_get_info`,
   `chd_frame_get_plane`, `chd_frame_get_plane_float`,
-  `chd_frame_copy_plane_float`, `chd_frame_free`). Supports all four
-  pixel formats: `YUV444P16`, `YUV444_FLOAT` (zero-copy float planes
-  rendered direct from `ComponentFrame`), `RGB48` (interleaved with
-  per-plane byte-offset accessors), and `GRAY16`. Dropout correction
+  `chd_frame_free`). Supports all five pixel formats: `YUV444P16`,
+  `YUV444PS` (zero-copy normalized E′Y E′Cb E′Cr float planes rendered
+  direct from `ComponentFrame`), `RGB48` (interleaved with per-plane
+  byte-offset accessors), `GRAY16`, and `GRAYS` (E′Y float plane). The
+  integer formats are narrow-range BT.601/H.273 quantizations of the float
+  signals. Dropout correction
   is wired into the decode worker between `SourceField::loadFields`
   and `Decoder::decodeFrames`; per-frame stats land in
   `chd_decoder_get_last_dropout_stats`. CVBS primaries (which the corrector
