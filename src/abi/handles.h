@@ -24,6 +24,7 @@
 
 #include "../decoders/decoder_base.h"
 #include "../decoders/registry.h"
+#include "../dropout/multi_source_alignment.h"
 #include "../metadata/core.h"
 #include "../output/output_writer.h"
 #include "../reader/source.h"
@@ -122,6 +123,12 @@ struct chd_decoder {
 
     int32_t lookBehind = 0;
     int32_t lookAhead  = 0;
+
+    // Multi-source dropout alignment, built lazily on the first decode that
+    // has extra sources attached (its constructor scans every source's field
+    // VBI, so it must run once). Read-only afterwards, shared across workers.
+    std::unique_ptr<chd::dropout::MultiSourceAlignment> multiSourceAlignment;
+    std::once_flag multiSourceAlignmentOnce;
 
     // Protects lastDropoutStats updates + reads. Small fast path —
     // worker takes it after the decode body to publish the stats.

@@ -153,18 +153,38 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
     if (d->dropoutOptsSet && d->dropoutOpts.enabled != 0) {
         chd::dropout::DropoutCorrector corrector(d->videoParameters);
 
+        // Build the multi-source VBI alignment once. Its constructor scans
+        // every source's field VBI, so it is cached on the decoder and shared
+        // (read-only) across workers.
+        if (!d->video->extraSources.empty()) {
+            std::call_once(d->multiSourceAlignmentOnce, [&] {
+                std::vector<chd::metadata::LdDecodeMetaData *> sources;
+                sources.reserve(d->video->extraSources.size() + 1);
+                sources.push_back(meta);  // primary capture is source 0
+                for (auto &ex : d->video->extraSources) sources.push_back(ex.metadata.get());
+                d->multiSourceAlignment =
+                    std::make_unique<chd::dropout::MultiSourceAlignment>(std::move(sources));
+            });
+        }
+
         std::vector<chd::dropout::ExtraSourceFrame> extras;
         extras.reserve(d->video->extraSources.size());
-        for (auto &ex : d->video->extraSources) {
+        for (size_t i = 0; i < d->video->extraSources.size(); ++i) {
+            auto &ex = d->video->extraSources[i];
             if (ex.metadata == nullptr || ex.source == nullptr) continue;
             const int32_t exFrames = ex.metadata->getNumberOfFrames();
-            if (firstFrameNumber > exFrames) {
-                // Extra source ends before the primary's frame_index — skip it
-                // for this frame rather than padding with black.
+
+            // Map the primary frame to the matching disc frame in this source
+            // (by VBI CAV/CLV number where available, positionally otherwise).
+            const int32_t exFrame = d->multiSourceAlignment->sourceFrameForPrimaryFrame(
+                firstFrameNumber, static_cast<int32_t>(i) + 1);
+            if (exFrame < 1 || exFrame > exFrames) {
+                // This source does not cover the primary's frame — skip it for
+                // this frame rather than padding with black.
                 continue;
             }
-            const int32_t exFirst  = ex.metadata->getFirstFieldNumber(firstFrameNumber);
-            const int32_t exSecond = ex.metadata->getSecondFieldNumber(firstFrameNumber);
+            const int32_t exFirst  = ex.metadata->getFirstFieldNumber(exFrame);
+            const int32_t exSecond = ex.metadata->getSecondFieldNumber(exFrame);
 
             chd::dropout::ExtraSourceFrame esf;
             esf.firstFieldData  = ex.source->getVideoField(exFirst);
