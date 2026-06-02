@@ -20,6 +20,7 @@ chromadec_sources = files(
   'metadata/ld_metadata_json.cpp',
   'metadata/ld_metadata_sqlite.cpp',
   'metadata/sqlite_query.cpp',
+  'metadata/vbi_decoder.cpp',
   'reader/cvbs_composite_source.cpp',
   'reader/cvbs_yc_source.cpp',
   'reader/tbc_source.cpp',

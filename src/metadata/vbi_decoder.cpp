@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     vbidecoder.cpp
@@ -22,8 +23,22 @@
 
 ************************************************************************/
 
-#include "vbidecoder.h"
-#include "tbc/logging.h"
+#include "vbi_decoder.h"
+
+#include <sstream>
+
+#include "../common/log.h"
+
+namespace {
+// Format a value as uppercase hexadecimal with no leading zeros, similar to
+// QString::number(value, 16).toUpper().
+std::string toUpperHex(uint32_t value)
+{
+    std::ostringstream ss;
+    ss << std::uppercase << std::hex << value;
+    return ss.str();
+}
+}
 
 VbiDecoder::VbiDecoder()
 {
@@ -31,8 +46,8 @@ VbiDecoder::VbiDecoder()
 }
 
 // Method to decode 2 fields (a frame) of VBI and combine them into a single VBI response
-VbiDecoder::Vbi VbiDecoder::decodeFrame(qint32 vbi16_1, qint32 vbi17_1, qint32 vbi18_1,
-                                        qint32 vbi16_2, qint32 vbi17_2, qint32 vbi18_2)
+VbiDecoder::Vbi VbiDecoder::decodeFrame(int32_t vbi16_1, int32_t vbi17_1, int32_t vbi18_1,
+                                        int32_t vbi16_2, int32_t vbi17_2, int32_t vbi18_2)
 {
     Vbi vbi;
     Vbi firstFieldVbi = decode(vbi16_1, vbi17_1, vbi18_1);
@@ -113,7 +128,7 @@ VbiDecoder::Vbi VbiDecoder::decodeFrame(qint32 vbi16_1, qint32 vbi17_1, qint32 v
 }
 
 // Method to decode VBI for a field
-VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
+VbiDecoder::Vbi VbiDecoder::decode(int32_t vbi16, int32_t vbi17, int32_t vbi18)
 {
     Vbi vbi;
 
@@ -124,7 +139,7 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
     // Check for lead-in on lines 17 and 18
     if ((vbi17 == 0x88FFFF) ||
             (vbi18 == 0x88FFFF)) {
-        if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Lead-in";
+        if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Lead-in";
         vbi.leadIn = true;
     }
 
@@ -133,7 +148,7 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
     // Check for lead-out on lines 17 and 18
     if ((vbi17 == 0x80EEEE) ||
             (vbi18 == 0x80EEEE)) {
-        if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Lead-out";
+        if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Lead-out";
         vbi.leadOut = true;
     }
 
@@ -148,7 +163,7 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
         if (decodeBCD(vbi17 & 0x07FFFF, vbi.picNo)) {
             vbi.type = VbiDecoder::VbiDiscTypes::cav;
 
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Picture number is" << vbi.picNo;
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Picture number is" << vbi.picNo;
         }
     }
 
@@ -156,7 +171,7 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
         if (decodeBCD(vbi18 & 0x07FFFF, vbi.picNo)) {
             vbi.type = VbiDecoder::VbiDiscTypes::cav;
 
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Picture number is" << vbi.picNo;
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Picture number is" << vbi.picNo;
         }
     }
 
@@ -169,7 +184,7 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
         vbi.type = VbiDecoder::VbiDiscTypes::cav;
 
         vbi.picStop = true;
-        if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Picture stop code flagged";
+        if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Picture stop code flagged";
     }
 
     // IEC 60857-1986 - 10.1.5 Chapter numbers ------------------------------------------------------------------------
@@ -181,13 +196,13 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
 
     if ((vbi17 & 0xF00FFF) == 0x800DDD) {
         if (decodeBCD((vbi17 & 0x07F000) >> 12, vbi.chNo)) {
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Chapter number is" << vbi.chNo;
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Chapter number is" << vbi.chNo;
         }
     }
 
     if ((vbi18 & 0xF00FFF) == 0x800DDD) {
         if (decodeBCD((vbi18 & 0x07F000) >> 12, vbi.chNo)) {
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Chapter number is" << vbi.chNo;
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Chapter number is" << vbi.chNo;
         }
     }
 
@@ -197,7 +212,7 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
     // Both hour and minute must be valid for us to trust the code.
 
     if ((vbi17 & 0xF0FF00) == 0xF0DD00) {
-        qint32 hour;
+        int32_t hour;
         if (decodeBCD((vbi17 & 0x0F0000) >> 16, hour) &&
             decodeBCD(vbi17 & 0x0000FF, vbi.clvMin)) {
             vbi.clvHr = hour;
@@ -205,7 +220,7 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
     }
 
     if ((vbi18 & 0xF0FF00) == 0xF0DD00) {
-        qint32 hour;
+        int32_t hour;
         if (decodeBCD((vbi18 & 0x0F0000) >> 16, hour) &&
             decodeBCD(vbi18 & 0x0000FF, vbi.clvMin)) {
             vbi.clvHr = hour;
@@ -216,7 +231,7 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
         // Set the type to CLV for the field as well
         vbi.type = VbiDecoder::VbiDiscTypes::clv;
 
-        if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI CLV programme time code is" <<
+        if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI CLV programme time code is" <<
                     vbi.clvHr << "hours," <<
                     vbi.clvMin << "minutes";
     }
@@ -231,7 +246,7 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
     // IEC 60857-1986 - 10.1.8 Programme status code ------------------------------------------------------------------
 
     // Check for programme status code on line 16
-    qint32 statusCode = 0;
+    int32_t statusCode = 0;
     if (((vbi16 & 0xFFF000) == 0x8DC000) || ((vbi16 & 0xFFF000) == 0x8BA000)) {
         statusCode = vbi16;
     }
@@ -240,70 +255,70 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
         // Programme status code is available, decode it...
         // CX sound on or off?
         if ((statusCode & 0x0FF000) == 0x0DC000) {
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI CX sound is on";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI CX sound is on";
             vbi.cx = true;
         } else {
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI CX sound is off";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI CX sound is off";
             vbi.cx = false;
         }
 
         // Get the x3, x4 and x5 parameters
-        quint32 x3 = (statusCode & 0x000F00) >> 8;
-        quint32 x4 = (statusCode & 0x0000F0) >> 4;
-        quint32 x5 = (statusCode & 0x00000F);
+        uint32_t x3 = (statusCode & 0x000F00) >> 8;
+        uint32_t x4 = (statusCode & 0x0000F0) >> 4;
+        uint32_t x5 = (statusCode & 0x00000F);
 
         if (parity(x4, x5)) {
             vbi.parity = true;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Programme status parity check passed";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Programme status parity check passed";
         } else {
             vbi.parity = false;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Programme status parity check failed - Probably an ammendment2 VBI";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Programme status parity check failed - Probably an ammendment2 VBI";
         }
 
         // Get the disc size (12 inch or 8 inch) from x31
         if ((x3 & 0x08) == 0x08) {
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Laserdisc is 8 inch";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Laserdisc is 8 inch";
             vbi.size = false;
         } else {
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Laserdisc is 12 inch";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Laserdisc is 12 inch";
             vbi.size = true;
         }
 
         // Get the disc side (first or second) from x32
         if ((x3 & 0x04) == 0x04) {
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Laserdisc side 2";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Laserdisc side 2";
             vbi.side = false;
         } else {
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Laserdisc side 1";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Laserdisc side 1";
             vbi.side = true;
         }
 
         // Get the teletext presence (present or not present) from x33
         if ((x3 & 0x02) == 0x02) {
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Disc contains teletext";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Disc contains teletext";
             vbi.teletext = true;
         } else {
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Disc does not contain teletext";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Disc does not contain teletext";
             vbi.teletext = false;
         }
 
         // Get the analogue/digital video flag from x42
         if ((x4 & 0x04) == 0x04) {
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Video data is digital";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Video data is digital";
             vbi.digital = true;
         } else {
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Video data is analogue";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Video data is analogue";
             vbi.digital = false;
         }
 
         // The audio channel status is given by x41, x34, x43 and x44 combined
         // (giving 16 possible audio status results)
-        quint32 audioStatus = 0;
+        uint32_t audioStatus = 0;
         if ((x4 & 0x08) == 0x08) audioStatus += 8; // X41 X34 X43 X44
         if ((x3 & 0x01) == 0x01) audioStatus += 4;
         if ((x4 & 0x02) == 0x02) audioStatus += 2;
         if ((x4 & 0x01) == 0x01) audioStatus += 1;
-        if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI Programme status code - audio status is" << audioStatus;
+        if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI Programme status code - audio status is" << audioStatus;
 
         // Configure according to the audio status code
         switch(audioStatus) {
@@ -311,100 +326,100 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
             vbi.dump = false;
             vbi.fm = false;
             vbi.soundMode = VbiDecoder::VbiSoundModes::stereo;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI audio status 0 - isProgrammeDump = false - isFmFmMultiplex = false - soundMode = stereo";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI audio status 0 - isProgrammeDump = false - isFmFmMultiplex = false - soundMode = stereo";
             break;
         case 1:
             vbi.dump = false;
             vbi.fm = false;
             vbi.soundMode = VbiDecoder::VbiSoundModes::mono;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI audio status 1 - isProgrammeDump = false - isFmFmMultiplex = false - soundMode = mono";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI audio status 1 - isProgrammeDump = false - isFmFmMultiplex = false - soundMode = mono";
             break;
         case 2:
             vbi.dump = false;
             vbi.fm = false;
             vbi.soundMode = VbiDecoder::VbiSoundModes::futureUse;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI audio status 2 - isProgrammeDump = false - isFmFmMultiplex = false - soundMode = futureUse";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI audio status 2 - isProgrammeDump = false - isFmFmMultiplex = false - soundMode = futureUse";
             break;
         case 3:
             vbi.dump = false;
             vbi.fm = false;
             vbi.soundMode = VbiDecoder::VbiSoundModes::bilingual;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI audio status 3 - isProgrammeDump = false - isFmFmMultiplex = false - soundMode = bilingual";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI audio status 3 - isProgrammeDump = false - isFmFmMultiplex = false - soundMode = bilingual";
             break;
         case 4:
             vbi.dump = false;
             vbi.fm = true;
             vbi.soundMode = VbiDecoder::VbiSoundModes::stereo_stereo;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI audio status 4 - isProgrammeDump = false - isFmFmMultiplex = true - soundMode = stereo_stereo";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI audio status 4 - isProgrammeDump = false - isFmFmMultiplex = true - soundMode = stereo_stereo";
             break;
         case 5:
             vbi.dump = false;
             vbi.fm = true;
             vbi.soundMode = VbiDecoder::VbiSoundModes::stereo_bilingual;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI audio status 5 - isProgrammeDump = false - isFmFmMultiplex = true - soundMode = stereo_bilingual";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI audio status 5 - isProgrammeDump = false - isFmFmMultiplex = true - soundMode = stereo_bilingual";
             break;
         case 6:
             vbi.dump = false;
             vbi.fm = true;
             vbi.soundMode = VbiDecoder::VbiSoundModes::crossChannelStereo;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI audio status 6 - isProgrammeDump = false - isFmFmMultiplex = true - soundMode = crossChannelStereo";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI audio status 6 - isProgrammeDump = false - isFmFmMultiplex = true - soundMode = crossChannelStereo";
             break;
         case 7:
             vbi.dump = false;
             vbi.fm = true;
             vbi.soundMode = VbiDecoder::VbiSoundModes::bilingual_bilingual;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI audio status 7 - isProgrammeDump = false - isFmFmMultiplex = true - soundMode = bilingual_bilingual";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI audio status 7 - isProgrammeDump = false - isFmFmMultiplex = true - soundMode = bilingual_bilingual";
             break;
         case 8:
             vbi.dump = true;
             vbi.fm = false;
             vbi.soundMode = VbiDecoder::VbiSoundModes::mono_dump;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI audio status 8 - isProgrammeDump = true - isFmFmMultiplex = false - soundMode = mono_dump";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI audio status 8 - isProgrammeDump = true - isFmFmMultiplex = false - soundMode = mono_dump";
             break;
         case 9:
             vbi.dump = true;
             vbi.fm = false;
             vbi.soundMode = VbiDecoder::VbiSoundModes::mono_dump;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI audio status 9 - isProgrammeDump = true - isFmFmMultiplex = false - soundMode = mono_dump";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI audio status 9 - isProgrammeDump = true - isFmFmMultiplex = false - soundMode = mono_dump";
             break;
         case 10:
             vbi.dump = true;
             vbi.fm = false;
             vbi.soundMode = VbiDecoder::VbiSoundModes::futureUse;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI audio status 10 - isProgrammeDump = true - isFmFmMultiplex = false - soundMode = futureUse";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI audio status 10 - isProgrammeDump = true - isFmFmMultiplex = false - soundMode = futureUse";
             break;
         case 11:
             vbi.dump = true;
             vbi.fm = false;
             vbi.soundMode = VbiDecoder::VbiSoundModes::mono_dump;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI audio status 11 - isProgrammeDump = true - isFmFmMultiplex = false - soundMode = mono_dump";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI audio status 11 - isProgrammeDump = true - isFmFmMultiplex = false - soundMode = mono_dump";
             break;
         case 12:
             vbi.dump = true;
             vbi.fm = true;
             vbi.soundMode = VbiDecoder::VbiSoundModes::stereo_dump;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI audio status 12 - isProgrammeDump = true - isFmFmMultiplex = true - soundMode = stereo_dump";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI audio status 12 - isProgrammeDump = true - isFmFmMultiplex = true - soundMode = stereo_dump";
             break;
         case 13:
             vbi.dump = true;
             vbi.fm = true;
             vbi.soundMode = VbiDecoder::VbiSoundModes::stereo_dump;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI audio status 13 - isProgrammeDump = true - isFmFmMultiplex = true - soundMode = stereo_dump";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI audio status 13 - isProgrammeDump = true - isFmFmMultiplex = true - soundMode = stereo_dump";
             break;
         case 14:
             vbi.dump = true;
             vbi.fm = true;
             vbi.soundMode = VbiDecoder::VbiSoundModes::bilingual_dump;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI audio status 14 - isProgrammeDump = true - isFmFmMultiplex = true - soundMode = bilingual_dump";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI audio status 14 - isProgrammeDump = true - isFmFmMultiplex = true - soundMode = bilingual_dump";
             break;
         case 15:
             vbi.dump = true;
             vbi.fm = true;
             vbi.soundMode = VbiDecoder::VbiSoundModes::bilingual_dump;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI audio status 15 - isProgrammeDump = true - isFmFmMultiplex = true - soundMode = bilingual_dump";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI audio status 15 - isProgrammeDump = true - isFmFmMultiplex = true - soundMode = bilingual_dump";
             break;
         default:
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI - Invalid audio status code!";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI - Invalid audio status code!";
             vbi.dump = false;
             vbi.fm = false;
             vbi.soundMode = VbiDecoder::VbiSoundModes::stereo;
@@ -414,7 +429,7 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
     // IEC 60857-1986 - 10.1.8 Programme status code (IEC Amendment 2) ------------------------------------------------
 
     // Check for programme status code on line 16
-    qint32 statusCodeAm2 = 0;
+    int32_t statusCodeAm2 = 0;
     if (((vbi16 & 0xFFF000) == 0x8DC000) || ((vbi16 & 0xFFF000) == 0x8BA000)) {
         statusCodeAm2 = vbi16;
     }
@@ -424,121 +439,121 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
         // Only fields specific to Am2 will be decoded
 
         // Get the x3, x4 and x5 parameters
-        quint32 x3 = (statusCode & 0x000F00) >> 8;
-        quint32 x4 = (statusCode & 0x0000F0) >> 4;
-        //quint32 x5 = (statusCode & 0x00000F);
+        uint32_t x3 = (statusCode & 0x000F00) >> 8;
+        uint32_t x4 = (statusCode & 0x0000F0) >> 4;
+        //uint32_t x5 = (statusCode & 0x00000F);
 
         // Get the copy/no copy flag from x34
         if ((x3 & 0x01) == 0x01) {
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) Copy permitted";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) Copy permitted";
             vbi.copyAm2 = true;
         } else {
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) Copy prohibited";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) Copy prohibited";
             vbi.copyAm2 = false;
         }
 
         // The audio channel status is given by x41, x42, x43 and x44 combined
         // (giving 16 possible audio status results)
-        quint32 audioStatus = 0;
+        uint32_t audioStatus = 0;
         if ((x4 & 0x08) == 0x08) audioStatus += 8; // X41 X42 X43 X44
         if ((x4 & 0x04) == 0x04) audioStatus += 4;
         if ((x4 & 0x02) == 0x02) audioStatus += 2;
         if ((x4 & 0x01) == 0x01) audioStatus += 1;
-        if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) Programme status code - audio status is" << audioStatus;
+        if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) Programme status code - audio status is" << audioStatus;
 
         // Configure according to the audio status code
         switch(audioStatus) {
         case 0:
             vbi.standardAm2 = true;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::stereo;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) audio status 0 - isVideoSignalStandard = true - soundMode = stereo";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) audio status 0 - isVideoSignalStandard = true - soundMode = stereo";
             break;
         case 1:
             vbi.standardAm2 = true;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::mono;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) audio status 1 - isVideoSignalStandard = true - soundMode = mono";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) audio status 1 - isVideoSignalStandard = true - soundMode = mono";
             break;
         case 2:
             vbi.standardAm2 = false;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::futureUse;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) audio status 2 - isVideoSignalStandard = false - soundMode = futureUse";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) audio status 2 - isVideoSignalStandard = false - soundMode = futureUse";
             break;
         case 3:
             vbi.standardAm2 = true;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::bilingual;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) audio status 3 - isVideoSignalStandard = true - soundMode = bilingual";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) audio status 3 - isVideoSignalStandard = true - soundMode = bilingual";
             break;
         case 4:
             vbi.standardAm2 = false;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::futureUse;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) audio status 4 - isVideoSignalStandard = false - soundMode = futureUse";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) audio status 4 - isVideoSignalStandard = false - soundMode = futureUse";
             break;
         case 5:
             vbi.standardAm2 = false;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::futureUse;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) audio status 5 - isVideoSignalStandard = false - soundMode = futureUse";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) audio status 5 - isVideoSignalStandard = false - soundMode = futureUse";
             break;
         case 6:
             vbi.standardAm2 = false;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::futureUse;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) audio status 6 - isVideoSignalStandard = false - soundMode = futureUse";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) audio status 6 - isVideoSignalStandard = false - soundMode = futureUse";
             break;
         case 7:
             vbi.standardAm2 = false;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::futureUse;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) audio status 7 - isVideoSignalStandard = false - soundMode = futureUse";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) audio status 7 - isVideoSignalStandard = false - soundMode = futureUse";
             break;
         case 8:
             vbi.standardAm2 = true;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::mono_dump;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) audio status 8 - isVideoSignalStandard = true - soundMode = mono_dump";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) audio status 8 - isVideoSignalStandard = true - soundMode = mono_dump";
             break;
         case 9:
             vbi.standardAm2 = false;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::futureUse;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) audio status 9 - isVideoSignalStandard = false - soundMode = futureUse";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) audio status 9 - isVideoSignalStandard = false - soundMode = futureUse";
             break;
         case 10:
             vbi.standardAm2 = false;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::futureUse;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) audio status 10 - isVideoSignalStandard = false - soundMode = futureUse";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) audio status 10 - isVideoSignalStandard = false - soundMode = futureUse";
             break;
         case 11:
             vbi.standardAm2 = false;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::futureUse;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) audio status 11 - isVideoSignalStandard = false - soundMode = futureUse";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) audio status 11 - isVideoSignalStandard = false - soundMode = futureUse";
             break;
         case 12:
             vbi.standardAm2 = false;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::futureUse;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) audio status 12 - isVideoSignalStandard = false - soundMode = futureUse";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) audio status 12 - isVideoSignalStandard = false - soundMode = futureUse";
             break;
         case 13:
             vbi.standardAm2 = false;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::futureUse;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) audio status 13 - isVideoSignalStandard = false - soundMode = futureUse";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) audio status 13 - isVideoSignalStandard = false - soundMode = futureUse";
             break;
         case 14:
             vbi.standardAm2 = false;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::futureUse;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) audio status 14 - isVideoSignalStandard = false - soundMode = futureUse";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) audio status 14 - isVideoSignalStandard = false - soundMode = futureUse";
             break;
         case 15:
             vbi.standardAm2 = false;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::futureUse;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) audio status 15 - isVideoSignalStandard = false - soundMode = futureUse";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) audio status 15 - isVideoSignalStandard = false - soundMode = futureUse";
             break;
         default:
             vbi.standardAm2 = false;
             vbi.soundModeAm2 = VbiDecoder::VbiSoundModes::stereo;
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI (Am2) - Invalid audio status code!";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI (Am2) - Invalid audio status code!";
         }
     }
 
     // IEC 60857-1986 - 10.1.9 Users code -----------------------------------------------------------------------------
 
     // Check for users code on line 16
-    qint32 usersCode = 0;
+    int32_t usersCode = 0;
 
     if ((vbi16 & 0xF0F000) == 0x80D000) {
         usersCode = vbi16;
@@ -546,16 +561,16 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
 
     if (usersCode != 0) {
         // User code found
-        quint32 x1 = (usersCode & 0x0F0000) >> 16;
-        quint32 x3x4x5 = (usersCode & 0x000FFF);
+        uint32_t x1 = (usersCode & 0x0F0000) >> 16;
+        uint32_t x3x4x5 = (usersCode & 0x000FFF);
 
         // x1 should be 0x00-0x07, x3-x5 are 0x00-0x0F
         if (x1 > 7) {
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI invalid user code, X1 is > 7";
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI invalid user code, X1 is > 7";
         } else {
             // Add the two results together to get the user code
-            vbi.userCode = QString::number(x1, 16).toUpper() + QString::number(x3x4x5, 16).toUpper();
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI user code is" << vbi.userCode;
+            vbi.userCode = toUpperHex(x1) + toUpperHex(x3x4x5);
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI user code is" << vbi.userCode;
         }
     }
 
@@ -565,10 +580,10 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
     // Both second and picture number must be valid for us to trust the code.
 
     if ((vbi16 & 0xF0F000) == 0x80E000) {
-        qint32 sec;
+        int32_t sec;
 
         // The first digit of the second is A-F, rather than 0-5.
-        quint32 x1 = (vbi16 & 0x0F0000) >> 16;
+        uint32_t x1 = (vbi16 & 0x0F0000) >> 16;
 
         if (x1 >= 0xA &&
             decodeBCD((vbi16 & 0x000F00) >> 8, sec) &&
@@ -579,7 +594,7 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
             // Set the type to CLV for the field as well
             vbi.type = VbiDecoder::VbiDiscTypes::clv;
 
-            if (verboseDebug) tbcDebugStream() << "VbiDecoder::decode(): VBI CLV picture number is" <<
+            if (verboseDebug) chd::log::debug() << "VbiDecoder::decode(): VBI CLV picture number is" <<
                         vbi.clvSec << "seconds," <<
                         vbi.clvPicNo << "picture number";
 
@@ -592,29 +607,29 @@ VbiDecoder::Vbi VbiDecoder::decode(qint32 vbi16, qint32 vbi17, qint32 vbi18)
 }
 
 // Private method to verify parity
-bool VbiDecoder::parity(quint32 x4, quint32 x5)
+bool VbiDecoder::parity(uint32_t x4, uint32_t x5)
 {
     // X51 is the parity with X41, X42 and X44
     // X52 is the parity with X41, X43 and X44
     // X53 is the parity with X42, X43 and X44
 
     // Get the parity bits from X5
-    qint32 x51, x52, x53;
+    int32_t x51, x52, x53;
     if ((x5 & 0x8) == 0x8) x51 = 1; else x51 = 0;
     if ((x5 & 0x4) == 0x4) x52 = 1; else x52 = 0;
     if ((x5 & 0x2) == 0x2) x53 = 1; else x53 = 0;
 
     // Get the data bits from X4
-    qint32 x41, x42, x43, x44;
+    int32_t x41, x42, x43, x44;
     if ((x4 & 0x8) == 0x8) x41 = 1; else x41 = 0;
     if ((x4 & 0x4) == 0x4) x42 = 1; else x42 = 0;
     if ((x4 & 0x2) == 0x2) x43 = 1; else x43 = 0;
     if ((x4 & 0x1) == 0x1) x44 = 1; else x44 = 0;
 
     // Count the data bits according to the IEC specification
-    qint32 x51count = x41 + x42 + x44;
-    qint32 x52count = x41 + x43 + x44;
-    qint32 x53count = x42 + x43 + x44;
+    int32_t x51count = x41 + x42 + x44;
+    int32_t x52count = x41 + x43 + x44;
+    int32_t x53count = x42 + x43 + x44;
 
     // Check if the parity is correct
     bool x51p = false;
@@ -632,13 +647,13 @@ bool VbiDecoder::parity(quint32 x4, quint32 x5)
 // Decode a BCD number from bcd into output.
 // Returns true on success; if any digits aren't in the range 0-9, returns
 // false and does not modify output.
-bool VbiDecoder::decodeBCD(quint32 bcd, qint32 &output)
+bool VbiDecoder::decodeBCD(uint32_t bcd, int32_t &output)
 {
-    qint32 value = 0;
+    int32_t value = 0;
 
-    quint32 place = 1;
+    uint32_t place = 1;
     while (bcd != 0) {
-        quint32 digit = bcd & 0xF;
+        uint32_t digit = bcd & 0xF;
         if (digit > 9) {
             return false;
         }

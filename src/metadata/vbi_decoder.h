@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     vbidecoder.cpp
@@ -25,7 +26,8 @@
 #ifndef VBIDECODER_H
 #define VBIDECODER_H
 
-#include <QDebug>
+#include <cstdint>
+#include <string>
 
 class VbiDecoder
 {
@@ -56,13 +58,13 @@ public:
     // Overall container struct for VBI information, with default values
     struct Vbi {
         VbiDiscTypes type = VbiDiscTypes::unknownDiscType;
-        QString userCode = "";
-        qint32 picNo = -1;
-        qint32 chNo = -1;
-        qint32 clvHr = -1;
-        qint32 clvMin = -1;
-        qint32 clvSec = -1;
-        qint32 clvPicNo = -1;
+        std::string userCode = "";
+        int32_t picNo = -1;
+        int32_t chNo = -1;
+        int32_t clvHr = -1;
+        int32_t clvMin = -1;
+        int32_t clvSec = -1;
+        int32_t clvPicNo = -1;
         VbiSoundModes soundMode = VbiSoundModes::futureUse;
         VbiSoundModes soundModeAm2 = VbiSoundModes::futureUse;
 
@@ -82,14 +84,14 @@ public:
     };
 
     VbiDecoder();
-    Vbi decodeFrame(qint32 vbi16_1, qint32 vbi17_1, qint32 vbi18_1,
-                    qint32 vbi16_2, qint32 vbi17_2, qint32 vbi18_2);
-    Vbi decode(qint32 vbi16, qint32 vbi17, qint32 vbi18);
+    Vbi decodeFrame(int32_t vbi16_1, int32_t vbi17_1, int32_t vbi18_1,
+                    int32_t vbi16_2, int32_t vbi17_2, int32_t vbi18_2);
+    Vbi decode(int32_t vbi16, int32_t vbi17, int32_t vbi18);
 
 private:
     bool verboseDebug;
-    bool parity(quint32 x4, quint32 x5);
-    bool decodeBCD(quint32 bcd, qint32 &output);
+    bool parity(uint32_t x4, uint32_t x5);
+    bool decodeBCD(uint32_t bcd, int32_t &output);
 };
 
 #endif // VBIDECODER_H
