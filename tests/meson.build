@@ -63,6 +63,17 @@ test_dropout_corrector = executable('test_dropout_corrector',
   dependencies: [sqlite3_dep])
 test('dropout_corrector', test_dropout_corrector)
 
+# Multi-source VBI frame alignment. Builds in-memory metadata for a primary
+# capture plus a VBI-offset CAV capture and a VBI-less capture, and asserts
+# sourceFrameForPrimaryFrame registers by disc frame number (positional
+# fallback when no VBI codes are present).
+test_multi_source_alignment = executable('test_multi_source_alignment',
+  'unit/test_multi_source_alignment.cpp',
+  include_directories: [public_inc, version_inc],
+  link_with: libchromadec.get_static_lib(),
+  dependencies: [sqlite3_dep])
+test('multi_source_alignment', test_multi_source_alignment)
+
 # integration test driving real fixtures end-to-end through
 # the public C ABI. Skips with PASS when CHD_ENCODE_ORC env var is unset
 # (no encode-orc binary on this machine), so plain `meson test` stays
