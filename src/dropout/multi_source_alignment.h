@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /************************************************************************
 
     correctorpool.h
@@ -23,101 +24,54 @@
 
 ************************************************************************/
 
-#ifndef CORRECTORPOOL_H
-#define CORRECTORPOOL_H
+#ifndef MULTI_SOURCE_ALIGNMENT_H
+#define MULTI_SOURCE_ALIGNMENT_H
 
-#include <QObject>
-#include <QAtomicInt>
-#include <QElapsedTimer>
-#include <QMutex>
-#include <QThread>
+#include <cstdint>
+#include <vector>
 
-#include "sourcevideo.h"
-#include "lddecodemetadata.h"
-#include "dropoutcorrect.h"
+#include "../metadata/core.h"
 
-class CorrectorPool : public QObject
+namespace chd::dropout {
+
+// Registers multiple captures of the same disc against one another using the
+// CAV picture numbers / CLV time-codes carried in each field's VBI metadata,
+// so frame N of the primary source can be matched to the same physical disc
+// frame in additional captures even when those captures start at different
+// points or skip frames. Sources that carry no usable VBI codes (for example
+// CVBS captures) report hasVbi() == false; the caller aligns those positionally.
+class MultiSourceAlignment
 {
-    Q_OBJECT
 public:
-    explicit CorrectorPool(QString _outputFilename, QString _outputJsonFilename,
-                           qint32 _maxThreads, QVector<LdDecodeMetaData *> &_ldDecodeMetaData, QVector<SourceVideo *> &_sourceVideos,
-                           bool _reverse, bool _intraField, bool _overCorrect, QObject *parent = nullptr);
+    // sources[0] is the primary capture; sources[1..] are additional captures.
+    // Scans every field's VBI to determine each source's disc type and the
+    // range of VBI frame numbers it covers.
+    explicit MultiSourceAlignment(std::vector<chd::metadata::LdDecodeMetaData *> sources);
 
-    bool process();
+    // True if the source carried valid CAV picture numbers or CLV time-codes.
+    bool hasVbi(int32_t sourceNumber) const;
 
-    // Member functions used by worker threads
-    bool getInputFrame(qint32& frameNumber,
-                       QVector<qint32> &firstFieldNumber, QVector<SourceVideo::Data> &firstFieldVideoData, QVector<LdDecodeMetaData::Field> &firstFieldMetadata,
-                       QVector<qint32> &secondFieldNumber, QVector<SourceVideo::Data> &secondFieldVideoData, QVector<LdDecodeMetaData::Field> &secondFieldMetadata,
-                       QVector<LdDecodeMetaData::VideoParameters> &videoParameters,
-                       bool& _reverse, bool& _intraField, bool& _overCorrect, QVector<qint32> &availableSourcesForFrame, QVector<double> &sourceFrameQuality);
+    // The sequential frame number in `sourceNo` holding the same picture as
+    // `frameNumber` in the primary source, or -1 if that source does not cover
+    // it. Sources without VBI are matched positionally.
+    int32_t sourceFrameForPrimaryFrame(int32_t frameNumber, int32_t sourceNo) const;
 
-    bool setOutputFrame(qint32 frameNumber,
-                        SourceVideo::Data firstTargetFieldData, SourceVideo::Data secondTargetFieldData,
-                        qint32 firstFieldSeqNo, qint32 secondFieldSeqNo,
-                        qint32 sameSourceReplacement, qint32 multiSourceReplacement, qint32 multiSourceCorrection, qint32 totalReplacementDistance);
-
-    // Reporting methods
-    qint32 getSameSourceConcealmentTotal();
-    qint32 getMultiSourceConcealmentTotal();
-    qint32 getMultiSourceCorrectionTotal();
+    int32_t convertSequentialFrameNumberToVbi(int32_t sequentialFrameNumber, int32_t sourceNumber) const;
+    int32_t convertVbiFrameNumberToSequential(int32_t vbiFrameNumber, int32_t sourceNumber) const;
+    std::vector<int32_t> getAvailableSourcesForFrame(int32_t vbiFrameNumber) const;
 
 private:
-    QString outputFilename;
-    QString outputMetadataFilename;
-    qint32 maxThreads;
-    bool reverse;
-    bool intraField;
-    bool overCorrect;
-    QElapsedTimer totalTimer;
+    void setMinAndMaxVbiFrames();
 
-    // Atomic abort flag shared by worker threads; workers watch this, and shut
-    // down as soon as possible if it becomes true
-    QAtomicInt abort;
+    std::vector<chd::metadata::LdDecodeMetaData *> ldDecodeMetaData;
 
-    // Input stream information (all guarded by inputMutex while threads are running)
-    QMutex inputMutex;
-    qint32 inputFrameNumber;
-    qint32 lastFrameNumber;
-    QVector<LdDecodeMetaData *> &ldDecodeMetaData;
-    QVector<SourceVideo *> &sourceVideos;
-
-    // Output stream information (all guarded by outputMutex while threads are running)
-    QMutex outputMutex;
-
-    struct OutputFrame {
-        SourceVideo::Data firstTargetFieldData;
-        SourceVideo::Data secondTargetFieldData;
-        qint32 firstFieldSeqNo;
-        qint32 secondFieldSeqNo;
-
-        // Statistics
-        qint32 sameSourceConcealment;
-        qint32 multiSourceConcealment;
-        qint32 multiSourceCorrection;
-        qint32 totalReplacementDistance;
-    };
-
-    qint32 outputFrameNumber;
-    QMap<qint32, OutputFrame> pendingOutputFrames;
-    QFile targetVideo;
-
-    // Local source information
-    QVector<bool> sourceDiscTypeCav;
-    QVector<qint32> sourceMinimumVbiFrame;
-    QVector<qint32> sourceMaximumVbiFrame;
-
-    // Reporting information
-    qint32 sameSourceConcealmentTotal;
-    qint32 multiSourceConcealmentTotal;
-    qint32 multiSourceCorrectionTotal;
-
-    bool setMinAndMaxVbiFrames();
-    qint32 convertSequentialFrameNumberToVbi(qint32 sequentialFrameNumber, qint32 sourceNumber);
-    qint32 convertVbiFrameNumberToSequential(qint32 vbiFrameNumber, qint32 sourceNumber);
-    QVector<qint32> getAvailableSourcesForFrame(qint32 vbiFrameNumber);
-    bool writeOutputField(const SourceVideo::Data &fieldData);
+    // Per-source VBI frame information, indexed by source number.
+    std::vector<bool> sourceHasVbi;
+    std::vector<bool> sourceDiscTypeCav;
+    std::vector<int32_t> sourceMinimumVbiFrame;
+    std::vector<int32_t> sourceMaximumVbiFrame;
 };
 
-#endif // CORRECTORPOOL_H
+}  // namespace chd::dropout
+
+#endif // MULTI_SOURCE_ALIGNMENT_H

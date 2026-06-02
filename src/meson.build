@@ -36,6 +36,7 @@ chromadec_sources = files(
   'decoders/comb/ntsc_decoder.cpp',
   'dropout/dropout_corrector.cpp',
   'dropout/luma_filters.cpp',
+  'dropout/multi_source_alignment.cpp',
   'pipeline/decoder_pool.cpp',
   'output/component_frame.cpp',
   'output/output_writer.cpp',
