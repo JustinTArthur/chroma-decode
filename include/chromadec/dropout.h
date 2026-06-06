@@ -40,24 +40,33 @@ typedef struct chd_dropout_span {
     int32_t x_end;
 } chd_dropout_span_t;
 
+/* Which dropout regions a detection query reports (mutually exclusive). */
+typedef enum chd_dropout_detect_mode {
+    CHD_DROPOUT_DETECTED    = 0,  /* raw flagged regions */
+    CHD_DROPOUT_OVERCORRECT = 1   /* detected, widened by the overcorrect margin */
+} chd_dropout_detect_mode_t;
+
 /* Low-level: the dropout spans for one frame, without running the chroma
- * decoder. Reports the raw detected regions (no correction applied). On success
- * *out_spans points to a newly-allocated array of *out_count spans owned by the
- * caller (free with chd_dropout_spans_free); a frame with no dropouts yields
- * *out_count == 0 and *out_spans == NULL. Requires a committed decoder. */
+ * decoder. mode selects which regions are reported (see chd_dropout_detect_mode).
+ * On success *out_spans points to a newly-allocated array of *out_count spans
+ * owned by the caller (free with chd_dropout_spans_free); a frame with no
+ * dropouts yields *out_count == 0 and *out_spans == NULL. Requires a committed
+ * decoder. */
 chd_status_t chd_decoder_get_dropout_spans(chd_decoder_t *d, int64_t frame_index,
+                                           chd_dropout_detect_mode_t mode,
                                            chd_dropout_span_t **out_spans,
                                            size_t *out_count);
 
 void chd_dropout_spans_free(chd_dropout_span_t *spans);
 
-/* Convenience: the same dropout regions rasterised into a self-describing
- * single-plane frame matching the committed output framing — clean samples 0,
- * dropped samples set. The mask follows the committed output format's precision
- * domain: GRAYS (1.0 dropped) for a float-committed decoder, GRAY16 (0xFFFF
- * dropped) otherwise. Free with chd_frame_free. Does not run the chroma
- * decoder. */
+/* Convenience: the same dropout regions (per mode) rasterised into a
+ * self-describing single-plane frame matching the committed output framing —
+ * clean samples 0, dropped samples set. The mask follows the committed output
+ * format's precision domain: GRAYS (1.0 dropped) for a float-committed decoder,
+ * GRAY16 (0xFFFF dropped) otherwise. Free with chd_frame_free. Does not run the
+ * chroma decoder. */
 chd_status_t chd_decode_dropout_mask(chd_decoder_t *d, int64_t frame_index,
+                                     chd_dropout_detect_mode_t mode,
                                      chd_frame_t **out);
 
 #ifdef __cplusplus

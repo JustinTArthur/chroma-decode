@@ -10,7 +10,9 @@
 //     reports the committed output framing via chd_decoder_get_output_info;
 //   - chd_decode_frame / chd_decode_frames_async reject a CHD_DEC_NONE decoder;
 //   - chd_decoder_get_dropout_spans maps each stored (startx, endx, fieldLine)
-//     into active-output pixel coordinates (interlace weave + horizontal crop);
+//     into active-output pixel coordinates (interlace weave + horizontal crop),
+//     in both CHD_DROPOUT_DETECTED and CHD_DROPOUT_OVERCORRECT modes (the latter
+//     widened by ±24 and clamped), and rejects an unknown mode;
 //   - a frame with no dropouts yields count 0 / spans NULL;
 //   - chd_decode_dropout_mask paints those spans into a single-plane frame whose
 //     format follows the committed precision domain (GRAY16, or GRAYS when the
@@ -274,7 +276,7 @@ int testDropoutSpansAndMask(const fs::path &dir) {
 
     chd_dropout_span_t *spans = nullptr;
     size_t count = 0;
-    REQUIRE(chd_decoder_get_dropout_spans(dec, 0, &spans, &count) == CHD_OK);
+    REQUIRE(chd_decoder_get_dropout_spans(dec, 0, CHD_DROPOUT_DETECTED, &spans, &count) == CHD_OK);
     REQUIRE(count == 2);
     REQUIRE(spans != nullptr);
     // Sorted by (y, x_start): B (y=59) precedes A (y=158).
@@ -293,10 +295,38 @@ int testDropoutSpansAndMask(const fs::path &dir) {
     }
     chd_dropout_spans_free(spans);
 
+    // ── CHD_DROPOUT_OVERCORRECT widens each region by ±24 (clamped) ────────
+    // Same rows, x extended outward by the overcorrect margin then clamped to
+    // the active region: A (300,400) -> (276,424); B starts at activeVideoStart
+    // so its left edge still clamps to 0, right edge (200) -> 224.
+    const int32_t kDots = 24;
+    const int32_t ocA0 = (300 - kDots) - activeVideoStart;
+    const int32_t ocA1 = (400 + kDots) - activeVideoStart;
+    const int32_t ocB0 = 0;
+    const int32_t ocB1 = (200 + kDots) - activeVideoStart;
+    chd_dropout_span_t *oc = nullptr;
+    size_t ocCount = 0;
+    REQUIRE(chd_decoder_get_dropout_spans(dec, 0, CHD_DROPOUT_OVERCORRECT, &oc, &ocCount) == CHD_OK);
+    REQUIRE(ocCount == 2);
+    REQUIRE(oc[0].y == yB);
+    REQUIRE(oc[0].x_start == ocB0);
+    REQUIRE(oc[0].x_end == ocB1);
+    REQUIRE(oc[1].y == yA);
+    REQUIRE(oc[1].x_start == ocA0);
+    REQUIRE(oc[1].x_end == ocA1);
+    chd_dropout_spans_free(oc);
+
+    // Unknown mode is rejected.
+    chd_dropout_span_t *bad = nullptr;
+    size_t badCount = 0;
+    REQUIRE(chd_decoder_get_dropout_spans(dec, 0, static_cast<chd_dropout_detect_mode_t>(99),
+                                          &bad, &badCount) == CHD_E_INVALID_ARG);
+    REQUIRE(bad == nullptr);
+
     // ── chd_decoder_get_dropout_spans (frame 1: clean) ────────────────────
     chd_dropout_span_t *none = reinterpret_cast<chd_dropout_span_t *>(0x1);
     size_t noneCount = 99;
-    REQUIRE(chd_decoder_get_dropout_spans(dec, 1, &none, &noneCount) == CHD_OK);
+    REQUIRE(chd_decoder_get_dropout_spans(dec, 1, CHD_DROPOUT_DETECTED, &none, &noneCount) == CHD_OK);
     REQUIRE(noneCount == 0);
     REQUIRE(none == nullptr);
     chd_dropout_spans_free(none);  // free(nullptr) is a no-op
@@ -304,11 +334,11 @@ int testDropoutSpansAndMask(const fs::path &dir) {
     // Out-of-range frame index.
     chd_dropout_span_t *oob = nullptr;
     size_t oobCount = 0;
-    REQUIRE(chd_decoder_get_dropout_spans(dec, 99, &oob, &oobCount) == CHD_E_OUT_OF_RANGE);
+    REQUIRE(chd_decoder_get_dropout_spans(dec, 99, CHD_DROPOUT_DETECTED, &oob, &oobCount) == CHD_E_OUT_OF_RANGE);
 
     // ── chd_decode_dropout_mask (frame 0) ─────────────────────────────────
     chd_frame_t *mask = nullptr;
-    REQUIRE(chd_decode_dropout_mask(dec, 0, &mask) == CHD_OK);
+    REQUIRE(chd_decode_dropout_mask(dec, 0, CHD_DROPOUT_DETECTED, &mask) == CHD_OK);
     REQUIRE(mask != nullptr);
 
     chd_frame_info_t mi{};
@@ -341,6 +371,20 @@ int testDropoutSpansAndMask(const fs::path &dir) {
 
     chd_frame_free(mask);
 
+    // Overcorrect mask paints the widened footprint: the sample just left of A's
+    // detected start (clear above) is now set, and it clears just past the
+    // widened start.
+    chd_frame_t *ocMask = nullptr;
+    REQUIRE(chd_decode_dropout_mask(dec, 0, CHD_DROPOUT_OVERCORRECT, &ocMask) == CHD_OK);
+    const void *ocData = nullptr;
+    ptrdiff_t ocStride = 0;
+    REQUIRE(chd_frame_get_plane(ocMask, CHD_PLANE_Y, &ocData, &ocStride) == CHD_OK);
+    const uint16_t *om = static_cast<const uint16_t *>(ocData);
+    REQUIRE(om[static_cast<size_t>(yA) * activeWidth + (xA0 - 1)] == 0xFFFF);
+    REQUIRE(om[static_cast<size_t>(yA) * activeWidth + ocA0] == 0xFFFF);
+    REQUIRE(om[static_cast<size_t>(yA) * activeWidth + (ocA0 - 1)] == 0);
+    chd_frame_free(ocMask);
+
     // ── Geometry agreement with a real decode (CHD_DEC_MONO) ──────────────
     chd_decoder_t *mono = nullptr;
     REQUIRE(chd_decoder_create(video, CHD_DEC_MONO, &mono) == CHD_OK);
@@ -365,7 +409,7 @@ int testDropoutSpansAndMask(const fs::path &dir) {
     REQUIRE(chd_decoder_commit(fdec) == CHD_OK);
 
     chd_frame_t *fmask = nullptr;
-    REQUIRE(chd_decode_dropout_mask(fdec, 0, &fmask) == CHD_OK);
+    REQUIRE(chd_decode_dropout_mask(fdec, 0, CHD_DROPOUT_DETECTED, &fmask) == CHD_OK);
     chd_frame_info_t fmi{};
     REQUIRE(chd_frame_get_info(fmask, &fmi) == CHD_OK);
     REQUIRE(fmi.format == CHD_PIXEL_GRAYS);

@@ -692,34 +692,55 @@ typedef struct chd_dropout_span {
 } chd_dropout_span_t;
 ```
 
+### chd_dropout_detect_mode_t
+
+```c
+typedef enum chd_dropout_detect_mode {
+    CHD_DROPOUT_DETECTED    = 0,
+    CHD_DROPOUT_OVERCORRECT = 1
+} chd_dropout_detect_mode_t;
+```
+
+Selects which regions the queries below report (mutually exclusive):
+
+| Value | Reports |
+|-------|---------|
+| `CHD_DROPOUT_DETECTED` | The raw regions flagged in the source metadata. |
+| `CHD_DROPOUT_OVERCORRECT` | The detected regions widened by the overcorrect margin (±24 samples, clamped to the active picture) — the footprint that overcorrect-mode concealment would touch. Independent of the configured [dropout options](#chd_decoder_set_dropout); reporting this footprint does not require `overcorrect` to be enabled. |
+
+Both modes read source metadata only — no replacement search, no chroma decode.
+
 ### chd_decoder_get_dropout_spans
 
 ```c
 chd_status_t chd_decoder_get_dropout_spans(chd_decoder_t *d, int64_t frame_index,
+                                           chd_dropout_detect_mode_t mode,
                                            chd_dropout_span_t **out_spans,
                                            size_t *out_count);
 void         chd_dropout_spans_free(chd_dropout_span_t *spans);
 ```
 
-Return the raw detected dropout regions for one frame, mapped into the committed
-[output framing](#chd_output_info_t): each span's `y`, `x_start`, and `x_end`
-index the same coordinate space as [`chd_frame_get_plane`](#chd_frame_get_plane)
-for a frame from the same committed decoder (interlace weave, crop, padding, and
-field order applied; spans clipped to the active picture, sorted by `y` then
-`x_start`). On `CHD_OK`, `*out_spans` is a newly-allocated array of `*out_count`
-spans the caller releases with `chd_dropout_spans_free`; a frame with no
-dropouts yields `*out_count == 0` and `*out_spans == NULL`. An out-of-range
-index returns `CHD_E_OUT_OF_RANGE`. Requires a prior
+Return the dropout regions for one frame selected by `mode`, mapped into the
+committed [output framing](#chd_output_info_t): each span's `y`, `x_start`, and
+`x_end` index the same coordinate space as
+[`chd_frame_get_plane`](#chd_frame_get_plane) for a frame from the same committed
+decoder (interlace weave, crop, padding, and field order applied; spans clipped
+to the active picture, sorted by `y` then `x_start`). On `CHD_OK`, `*out_spans`
+is a newly-allocated array of `*out_count` spans the caller releases with
+`chd_dropout_spans_free`; a frame with no dropouts yields `*out_count == 0` and
+`*out_spans == NULL`. An out-of-range index returns `CHD_E_OUT_OF_RANGE`; an
+unknown `mode` returns `CHD_E_INVALID_ARG`. Requires a prior
 [`chd_decoder_commit`](#chd_decoder_commit).
 
 ### chd_decode_dropout_mask
 
 ```c
 chd_status_t chd_decode_dropout_mask(chd_decoder_t *d, int64_t frame_index,
+                                     chd_dropout_detect_mode_t mode,
                                      chd_frame_t **out);
 ```
 
-Rasterise the same detected regions into a single-plane [frame](#frames)
+Rasterise the `mode`-selected regions into a single-plane [frame](#frames)
 matching the output framing: `0` for clean samples, set for dropped ones. The
 mask format follows the committed output format's precision domain: a float
 output format (`yuv444ps`, `rgbs`, `grays`) yields a

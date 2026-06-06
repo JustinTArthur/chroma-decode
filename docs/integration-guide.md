@@ -256,7 +256,7 @@ example above commits the default `yuv444p16`, so the mask is `GRAY16`:
 
 ```c
 chd_frame_t *mask = NULL;
-if (chd_decode_dropout_mask(mask_dec, frame_index, &mask) == CHD_OK) {
+if (chd_decode_dropout_mask(mask_dec, frame_index, CHD_DROPOUT_DETECTED, &mask) == CHD_OK) {
     const void *data; ptrdiff_t stride;
     chd_frame_get_plane(mask, CHD_PLANE_Y, &data, &stride);
     /* ... composite the mask against the decoded luma plane ... */
@@ -264,13 +264,18 @@ if (chd_decode_dropout_mask(mask_dec, frame_index, &mask) == CHD_OK) {
 }
 ```
 
+The `mode` argument selects which regions to report. `CHD_DROPOUT_DETECTED` gives
+the raw flagged regions; `CHD_DROPOUT_OVERCORRECT` widens them by the overcorrect
+margin to show the footprint overcorrect-mode concealment would overwrite. Both
+read metadata only — neither runs the corrector.
+
 For finer control — feathered or coloured overlays, say — ask for the raw spans
 and rasterise them yourself:
 
 ```c
 chd_dropout_span_t *spans = NULL;
 size_t count = 0;
-chd_decoder_get_dropout_spans(mask_dec, frame_index, &spans, &count);
+chd_decoder_get_dropout_spans(mask_dec, frame_index, CHD_DROPOUT_DETECTED, &spans, &count);
 for (size_t i = 0; i < count; i++) {
     /* mark columns [spans[i].x_start, spans[i].x_end) on row spans[i].y */
 }

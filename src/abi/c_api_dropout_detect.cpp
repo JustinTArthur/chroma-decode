@@ -47,6 +47,7 @@ struct OutputGeometry {
     int32_t height;
     int32_t firstActiveFrameLine;
     int32_t topPadLines;
+    int32_t fieldWidth;
 };
 
 OutputGeometry committedGeometry(const chd_decoder_t *d) {
@@ -56,7 +57,12 @@ OutputGeometry committedGeometry(const chd_decoder_t *d) {
     g.firstActiveFrameLine = d->videoParameters.firstActiveFrameLine;
     g.topPadLines          = d->outputWriter.getTopPadLines();
     g.height               = d->outputWriter.getOutputHeight();
+    g.fieldWidth           = d->videoParameters.fieldWidth;
     return g;
+}
+
+bool validDetectMode(chd_dropout_detect_mode_t mode) {
+    return mode == CHD_DROPOUT_DETECTED || mode == CHD_DROPOUT_OVERCORRECT;
 }
 
 int32_t outputPlaneCount(chd_pixel_format_t format) {
@@ -79,6 +85,7 @@ chd_pixel_format_t maskFormatFor(chd_pixel_format_t committed) {
 
 // Append this field's dropouts, mapped into output framing, to `spans`.
 void appendFieldSpans(const chd::decoders::SourceField &sf, const OutputGeometry &g,
+                      chd_dropout_detect_mode_t mode,
                       std::vector<chd_dropout_span_t> &spans) {
     const auto &dropOuts = sf.field.dropOuts;
     const int32_t offset = sf.getOffset();  // 0 top field, 1 bottom field
@@ -93,6 +100,14 @@ void appendFieldSpans(const chd::decoders::SourceField &sf, const OutputGeometry
 
         int32_t x0 = dropOuts.startx(i);
         int32_t x1 = dropOuts.endx(i);
+        if (mode == CHD_DROPOUT_OVERCORRECT) {
+            // Mirror DropoutCorrector::populateDropoutsVector's overcorrect
+            // widening (±24 samples, clamped to the field) so the reported
+            // region is the footprint overcorrect-mode concealment would touch.
+            const int32_t overCorrectionDots = 24;
+            x0 = (x0 > overCorrectionDots) ? x0 - overCorrectionDots : 0;
+            x1 = (x1 < g.fieldWidth - overCorrectionDots) ? x1 + overCorrectionDots : g.fieldWidth;
+        }
         if (x0 < avs) x0 = avs;
         if (x1 > ave) x1 = ave;
         if (x1 <= x0) continue;  // fully outside the active region horizontally
@@ -108,6 +123,7 @@ void appendFieldSpans(const chd::decoders::SourceField &sf, const OutputGeometry
 // Load the frame's two fields (no look-behind/ahead, no chroma decode) and
 // collect their dropout spans in output framing, ordered by (y, x_start).
 chd_status_t collectSpans(chd_decoder_t *d, int64_t frame_index,
+                          chd_dropout_detect_mode_t mode,
                           std::vector<chd_dropout_span_t> &spans) {
     chd::metadata::LdDecodeMetaData *meta = d->video->metadata.get();
     if (meta == nullptr) {
@@ -131,8 +147,8 @@ chd_status_t collectSpans(chd_decoder_t *d, int64_t frame_index,
 
     const OutputGeometry g = committedGeometry(d);
     const int32_t total = static_cast<int32_t>(fields.size());
-    if (startIndex < total)     appendFieldSpans(fields[startIndex], g, spans);
-    if (startIndex + 1 < total) appendFieldSpans(fields[startIndex + 1], g, spans);
+    if (startIndex < total)     appendFieldSpans(fields[startIndex], g, mode, spans);
+    if (startIndex + 1 < total) appendFieldSpans(fields[startIndex + 1], g, mode, spans);
 
     std::sort(spans.begin(), spans.end(),
               [](const chd_dropout_span_t &a, const chd_dropout_span_t &b) {
@@ -163,6 +179,7 @@ chd_status_t chd_decoder_get_output_info(const chd_decoder_t *d, chd_output_info
 }
 
 chd_status_t chd_decoder_get_dropout_spans(chd_decoder_t *d, int64_t frame_index,
+                                           chd_dropout_detect_mode_t mode,
                                            chd_dropout_span_t **out_spans,
                                            size_t *out_count) {
     if (d == nullptr || out_spans == nullptr || out_count == nullptr)
@@ -173,9 +190,13 @@ chd_status_t chd_decoder_get_dropout_spans(chd_decoder_t *d, int64_t frame_index
         chd::detail::set_last_error("chd_decoder_get_dropout_spans: chd_decoder_commit not called");
         return CHD_E_INVALID_ARG;
     }
+    if (!validDetectMode(mode)) {
+        chd::detail::set_last_error("chd_decoder_get_dropout_spans: unknown detect mode");
+        return CHD_E_INVALID_ARG;
+    }
 
     std::vector<chd_dropout_span_t> spans;
-    const chd_status_t rc = collectSpans(d, frame_index, spans);
+    const chd_status_t rc = collectSpans(d, frame_index, mode, spans);
     if (rc != CHD_OK) return rc;
     if (spans.empty()) return CHD_OK;  // *out_count == 0, *out_spans == nullptr
 
@@ -195,16 +216,21 @@ void chd_dropout_spans_free(chd_dropout_span_t *spans) {
     std::free(spans);
 }
 
-chd_status_t chd_decode_dropout_mask(chd_decoder_t *d, int64_t frame_index, chd_frame_t **out) {
+chd_status_t chd_decode_dropout_mask(chd_decoder_t *d, int64_t frame_index,
+                                     chd_dropout_detect_mode_t mode, chd_frame_t **out) {
     if (d == nullptr || out == nullptr) return arg_error("chd_decode_dropout_mask");
     *out = nullptr;
     if (!d->committed) {
         chd::detail::set_last_error("chd_decode_dropout_mask: chd_decoder_commit not called");
         return CHD_E_INVALID_ARG;
     }
+    if (!validDetectMode(mode)) {
+        chd::detail::set_last_error("chd_decode_dropout_mask: unknown detect mode");
+        return CHD_E_INVALID_ARG;
+    }
 
     std::vector<chd_dropout_span_t> spans;
-    const chd_status_t rc = collectSpans(d, frame_index, spans);
+    const chd_status_t rc = collectSpans(d, frame_index, mode, spans);
     if (rc != CHD_OK) return rc;
 
     const OutputGeometry g = committedGeometry(d);
