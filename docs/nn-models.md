@@ -85,28 +85,35 @@ The ONNX graph (opset 11; `Conv` / `LeakyRelu` / `Add` / `Sigmoid`) is:
 | input | `[N, 2, 4, 16, 16]` | float32 | Per-block amplitude spectrum; channel 0 is the spectrum, channel 1 a reference (point-reflected) copy. `N` = number of blocks (batched). |
 | output | `[N, 1, 4, 16, 16]` | float32 | Single-channel separation mask (sigmoid, 0..1). |
 
-### Model generation and the magnitude scale
+### Model series and the magnitude scale
 
-What matters when you load a `chroma_net` model is its **generation**, which
-fixes the input magnitude scale:
+What matters when you load a `chroma_net` model is its **series**, which fixes
+the input magnitude scale:
 
-| Generation | Compute precision | `CHD_OPT_NN_INPUT_MAGNITUDE_SCALE` |
+| Series | Compute precision | `CHD_OPT_NN_INPUT_MAGNITUDE_SCALE` |
 |---|---|---|
-| pre-v2 (the original "v1" line) | FP32 | `1.0` |
+| v1 series | FP32 | `1.0` |
 | v2 | FP16 | `128.0` |
+
+The **v1 series** covers the original `chroma_net` release plus at least one later
+retraining — distinct weights, same runtime contract: both feed the raw amplitude
+spectrum to the model. **v2** is a separate retraining that runs inference in FP16.
 
 The [`CHD_OPT_NN_INPUT_MAGNITUDE_SCALE`](api-reference.md#option-registry) option
 exists specifically to support the v2 FP16 flow. Per the author: "Since the v2
 model uses FP16 computation, you need to divide the amplitude spectrum by 128 at
-the input to prevent overflow." Set `1.0` for any pre-v2 model and `128.0` for
-v2; a mismatched scale produces garbage.
+the input to prevent overflow." Set `1.0` for any v1-series model and `128.0`
+for v2; a mismatched scale produces garbage.
 
-All generations share the same ONNX interface and architecture, and the weights
-are stored as FP32 either way (the v2 "FP16" is a runtime-compute choice, not the
-stored precision), so a model file does **not** announce its generation. Match
-the scale to the release the weights came from. More than one pre-v2 weight
-revision exists (the original release plus at least one later retraining), but
-they all use scale `1.0`; only v2 changed the regime.
+All series share the same ONNX interface and architecture, and the weights are
+stored as FP32 either way (the v2 "FP16" is a runtime-compute choice, not the
+stored precision), so a model file does **not** announce its series. Match the
+scale to the release the weights came from.
+
+> **Filenames are not authoritative.** Some integrations ship a v1-series
+> (scale `1.0`) model under a `chroma_net_v2.onnx` name; applying `128.0` to it
+> produces garbage. When unsure, treat an unidentified model as v1-series
+> (`1.0`); only use `128.0` for weights you know came from the v2 release.
 
 ### Provenance and training
 
