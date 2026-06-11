@@ -30,6 +30,32 @@ Any new public function must:
 3. Have its rationale and lifetime rules documented in the header.
 4. Pass the CI ABI-checker against the previous release tag.
 
+## Extending option structs
+
+Caller-populated option structs (`chd_nn_session_opts_t`, `chd_dropout_opts_t`)
+are passed **by pointer** and carry no `size`/version field, so the library
+cannot tell how large the caller's struct is. That constrains how they may grow
+without breaking binary compatibility:
+
+- **ABI-safe (allowed within a major version):** add a field by consuming a
+  slot from the trailing `reserved[]` array, leaving `sizeof` and every existing
+  field offset unchanged. Two rules make this sound:
+  1. The new field's **zero value must mean "previous behavior"** — an old
+     binary zero-fills `reserved`, so the library reads the new field as `0`.
+  2. Callers **must** zero-initialise, via the struct's `*_default()` initializer
+     (e.g. `chd_nn_session_opts_default`) or `= {0}`. This is already required.
+- **ABI break (major version only):** growing the struct past `reserved`,
+  reordering fields, or changing a field's type/size. An old caller binary then
+  allocates a smaller struct than a newer library reads through the pointer,
+  running past the caller's allocation.
+
+Once a struct's `reserved[]` is exhausted, the next field needs a versioned
+struct (`chd_..._opts_v2_t`) or a retrofitted leading `size_t struct_size` the
+library validates — both larger changes best timed to a major bump.
+
+New caller-populated option structs should ship a `reserved[]` tail from the
+start, as `chd_nn_session_opts_t` and `chd_dropout_opts_t` both do (`reserved[4]`).
+
 ## Version probe
 
 ```c

@@ -14,6 +14,10 @@ typedef struct chd_dropout_opts {
     int overcorrect;        /* extend dropout boundaries by ±24 samples */
     int intra_field_only;   /* skip cross-field replacement candidates */
     /* Extra sources are added separately via chd_video_add_extra_source_*. */
+
+    /* Reserved for future ABI extensions; zero-initialise the struct (e.g.
+     * `chd_dropout_opts_t o = {0}`). See docs/abi-stability.md. */
+    void *reserved[4];
 } chd_dropout_opts_t;
 
 typedef struct chd_dropout_stats {
