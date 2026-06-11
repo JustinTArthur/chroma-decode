@@ -10,9 +10,10 @@
 // quadrature demod). They DO NOT run inside the comb-filter chain.
 //
 // Both concrete decoders (LdzeugColorCnnDecoder, LdzeugLumaSepDecoder)
-// share the same Ort::Session lifecycle and field-vs-frame mode handling
-// via this base class. The session itself is supplied externally via
-// chd::nn::OrtSession; the base never constructs one.
+// share the same inference-engine lifecycle and field-vs-frame mode handling
+// via this base class. Inference goes through the backend-agnostic
+// chd::nn::InferenceEngine (ORT or native CoreML), supplied externally; the
+// base never constructs one.
 
 #ifndef CHD_DECODERS_LDZEUG_LDZEUG_BASE_H
 #define CHD_DECODERS_LDZEUG_LDZEUG_BASE_H
@@ -26,7 +27,7 @@
 #include "../decoder_base.h"
 #include "../source_field.h"
 
-namespace chd::nn { class OrtSession; }
+namespace chd::nn { class InferenceEngine; }
 
 namespace chd::decoders::ldzeug {
 
@@ -46,9 +47,9 @@ public:
     int32_t getLookBehind() const override { return 0; }
     int32_t getLookAhead()  const override { return 0; }
 
-    // Bind the Ort session that will drive inference. Must be set before
-    // decodeFrames is called; the decoder takes shared ownership.
-    void setNnModel(std::shared_ptr<chd::nn::OrtSession> session);
+    // Bind the inference engine that will drive inference. Must be set
+    // before decodeFrames is called; the decoder takes shared ownership.
+    void setNnModel(std::shared_ptr<chd::nn::InferenceEngine> engine);
 
     // Set the field-vs-frame input mode. Defaults to Field; choose Frame for
     // the weaved-frame model variant rather than the per-field variant.
@@ -57,7 +58,7 @@ public:
 
 protected:
     chd::metadata::LdDecodeMetaData::VideoParameters videoParameters{};
-    std::shared_ptr<chd::nn::OrtSession>             session_;
+    std::shared_ptr<chd::nn::InferenceEngine>        session_;
     Mode                                             mode_ = Mode::Field;
 };
 

@@ -32,6 +32,7 @@
 #include "../../src/decoders/ldzeug/ldzeug_color_cnn.h"
 #include "../../src/decoders/ldzeug/ldzeug_luma_sep.h"
 #include "../../src/metadata/core.h"
+#include "../../src/nn/ort_engine.h"
 #include "../../src/nn/ort_session.h"
 #endif
 
@@ -75,7 +76,7 @@ chd::metadata::LdDecodeMetaData::VideoParameters makeNtscVp() {
 int bindColorCnnAndConfigure(const std::shared_ptr<chd::nn::OrtSession> &session) {
     using namespace chd::decoders::ldzeug;
     LdzeugColorCnnDecoder decoder;
-    decoder.setNnModel(session);
+    decoder.setNnModel(std::make_shared<chd::nn::OrtEngine>(session));
     decoder.setMode(LdzeugDecoderBase::Mode::Field);
     decoder.setChromaPhase(0.0);
     decoder.setChromaGain(1.0);
@@ -141,7 +142,7 @@ int testLumaSepConfigure() {
         chd::nn::SessionOptions opts;
         auto session = std::make_shared<chd::nn::OrtSession>(fieldModel, opts);
         LdzeugLumaSepDecoder decoder;
-        decoder.setNnModel(session);
+        decoder.setNnModel(std::make_shared<chd::nn::OrtEngine>(session));
         decoder.setMode(LdzeugDecoderBase::Mode::Field);
         REQUIRE(decoder.configure(makeNtscVp()));
         REQUIRE(decoder.getLookAhead() == 0);
@@ -155,7 +156,7 @@ int testLumaSepConfigure() {
         chd::nn::SessionOptions opts;
         auto session = std::make_shared<chd::nn::OrtSession>(frameModel, opts);
         LdzeugLumaSepDecoder decoder;
-        decoder.setNnModel(session);
+        decoder.setNnModel(std::make_shared<chd::nn::OrtEngine>(session));
         decoder.setMode(LdzeugDecoderBase::Mode::Frame);
         REQUIRE(decoder.configure(makeNtscVp()));
         std::cout << "LdzeugLumaSep (frame) bound from " << frameModel << "\n";

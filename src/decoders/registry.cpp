@@ -15,7 +15,6 @@
 #if defined(CHD_WITH_NN)
 #include "ldzeug/ldzeug_color_cnn.h"
 #include "ldzeug/ldzeug_luma_sep.h"
-#include "../nn/ort_session.h"
 #endif
 
 namespace chd::decoders::registry {
@@ -248,12 +247,12 @@ std::unique_ptr<chd::decoders::Decoder> build(chd_decoder_kind_t kind, const Opt
 #if defined(CHD_WITH_NN)
 bool applyNnModel(chd_decoder_kind_t kind,
                   chd::decoders::Decoder &decoder,
-                  std::shared_ptr<chd::nn::OrtSession> session) {
-    if (!session) return true;  // nothing to bind is always OK
+                  std::shared_ptr<chd::nn::InferenceEngine> engine) {
+    if (!engine) return true;  // nothing to bind is always OK
     if (kind == CHD_DEC_NN_TRANSFORM3D) {
         auto *nd = dynamic_cast<chd::decoders::comb::NtscDecoder *>(&decoder);
         if (!nd) return false;
-        nd->setNnModel(std::move(session));
+        nd->setNnModel(std::move(engine));
         return true;
     }
     if (kind == CHD_DEC_LDZEUG_COLOR_CNN
@@ -261,7 +260,7 @@ bool applyNnModel(chd_decoder_kind_t kind,
      || kind == CHD_DEC_LDZEUG_LUMA_SEP_FRAME) {
         auto *ld = dynamic_cast<chd::decoders::ldzeug::LdzeugDecoderBase *>(&decoder);
         if (!ld) return false;
-        ld->setNnModel(std::move(session));
+        ld->setNnModel(std::move(engine));
         return true;
     }
     // Other kinds don't take a session; supplying one is a caller mistake.

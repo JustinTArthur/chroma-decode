@@ -8,6 +8,7 @@
 #include <string>
 
 #include "ort_env.h"
+#include "provider_select.h"
 #include "../common/log.h"
 
 namespace chd::nn {
@@ -98,11 +99,11 @@ Ort::SessionOptions OrtSession::prepareSessionOptions(const SessionOptions &opts
 
     const auto chain = buildAutoChain(opts.requestedProvider);
     std::string attachError;
-    chd_nn_provider_t attached = CHD_NN_EP_CPU;
+    chd_nn_backend_t attached = CHD_NN_ORT_CPU;
     if (!attachProviderChain(sessionOptions, chain, cache, &attached, &attachError)) {
         throw std::runtime_error("provider attach failed: " + attachError);
     }
-    activeProvider_ = attached;
+    activeBackend_ = attached;
     return sessionOptions;
 }
 

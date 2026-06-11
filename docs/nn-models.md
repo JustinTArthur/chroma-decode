@@ -37,12 +37,13 @@ and call [`chd_shutdown`](api-reference.md#chd_shutdown) once before exit. See
 the [integration guide](integration-guide.md#neural-decoders) for the full
 sequence.
 
-### Execution providers
+### Backends
 
-The provider is chosen via
-[`chd_nn_session_opts_t`](api-reference.md#session-options). With
-`CHD_NN_EP_AUTO` the library tries a platform-specific chain and uses the first
-that loads:
+The backend is chosen via `opts.backend` on
+[`chd_nn_session_opts_t`](api-reference.md#session-options). The default
+`CHD_NN_BACKEND_AUTO` infers it from the artifact (`.onnx` → ONNX Runtime,
+`.mlpackage`/`.mlmodelc` → native CoreML). `CHD_NN_ORT_AUTO` forces ONNX Runtime
+and tries a platform-specific EP chain, using the first that loads:
 
 | Platform | Auto chain |
 |---|---|
@@ -50,21 +51,147 @@ that loads:
 | macOS | CoreML, CPU |
 | Linux / other | CUDA, MIGraphX, CPU |
 
-Pinning a specific provider tries only that one and returns
-`CHD_E_NN_PROVIDER_UNAVAILABLE` if it is not present. Probe ahead of time with
-[`chd_nn_provider_is_available`](api-reference.md#chd_nn_provider_is_available),
-and read the provider actually chosen with
-[`chd_nn_model_get_active_provider`](api-reference.md#chd_nn_model_get_active_provider).
+Pinning a specific `CHD_NN_ORT_*` provider tries only that one and returns
+`CHD_E_NN_BACKEND_UNAVAILABLE` if it is not present. Probe ahead of time with
+[`chd_nn_backend_is_available`](api-reference.md#chd_nn_backend_is_available),
+and read the backend actually chosen with
+[`chd_nn_model_get_active_backend`](api-reference.md#chd_nn_model_get_active_backend)
+— which also distinguishes the native `CHD_NN_COREML` backend from the ORT
+CoreML EP (`CHD_NN_ORT_COREML`).
 
-!!! note "CoreML covers only part of the graph"
-    On macOS, the 3D-convolution operations in `chroma_net` are not all
-    supported by the CoreML EP; those nodes fall back to CPU regardless of the
-    provider chain. The model still runs correctly, just without full CoreML
-    acceleration.
+!!! note "The CoreML *EP* covers only part of the graph"
+    On macOS, the 3D-convolution operations in `chroma_net` are not supported
+    by the ONNX Runtime CoreML execution provider; those nodes fall back to
+    CPU regardless of the provider chain. The model still runs correctly, just
+    without GPU/ANE acceleration. For full acceleration, use the **native
+    CoreML** backend below instead of an ONNX Runtime backend.
 
 For TensorRT and MIGraphX, set `engine_cache_dir` to avoid recompiling the
 engine on every load (the first compile costs 15-30 s). See
 [session options](api-reference.md#session-options).
+
+### Native CoreML (macOS)
+
+To run a model on GPU/ANE through CoreML directly — rather than through ONNX
+Runtime's CoreML EP — load a `.mlpackage` with `opts.backend = CHD_NN_COREML`
+(or just let `CHD_NN_BACKEND_AUTO` see the `.mlpackage` extension) via
+[`chd_nn_model_load_from_file`](api-reference.md#chd_nn_model_load_from_file).
+The handle binds to a decoder exactly like an ONNX-backed one and reports
+`CHD_NN_COREML` as its active backend. This is the only route off CPU
+on macOS for nnTransform3D (the EP gates out its 3D conv), and a large win for
+ldzeug2 too: although the CoreML EP *can* run ldzeug2's 2D conv, it places only
+part of the graph (≈ 74 of 120 nodes, across 7 partitions) on CoreML and bounces
+the `Range`/`Gather`/`ScatterND`/`Slice` index machinery back to CPU at each
+boundary, whereas coremltools compiles the whole graph for the GPU. Native
+CoreML ran ldzeug2 `color_cnn` **~10× faster than the EP** (see Performance).
+
+Generate the `.mlpackage` offline from the ONNX model with `coremltools`:
+
+```bash
+.venv/bin/pip install coremltools onnx2torch torch onnx
+.venv/bin/python scripts/convert_coreml.py \
+    --model-type nntransform3d --onnx chroma_net.onnx --out chroma_net.mlpackage
+# ldzeug2 — one package per runtime shape (see fixed-shape note). color_cnn runs
+# in field mode (NTSC 263×910); luma_sep has both a field and a frame export:
+.venv/bin/python scripts/convert_coreml.py \
+    --model-type ldzeug-colorcnn --onnx color_cnn.onnx --out color_cnn.mlpackage \
+    --height 263 --width 910
+.venv/bin/python scripts/convert_coreml.py \
+    --model-type ldzeug-lumasep --onnx luma_sep.onnx --out luma_sep.mlpackage \
+    --height 263 --width 910
+```
+
+The script converts at **fp32** (`--precision fp32`, the default), which every
+bundled model needs — the reference harness and our ONNX-Runtime runs are all
+fp32. coremltools' default fp16 makes the GPU path produce garbage: measured
+rel-RMS ≈ 0.7 for `chroma_net` (precision-sensitive FFT magnitudes) and ≈ 0.9
+for ldzeug2 `color_cnn` (fp16 wrecks its `Range`/`Gather`/`ScatterND` index
+math); fp16 also blocks the GPU-resident `outputBackings` path. At fp32,
+nnTransform3D `chroma_net` and both ldzeug2 models (`color_cnn` and `luma_sep`)
+match ONNX Runtime to rel-RMS ≈ 2e-6 at every tested shape, and the
+GPU-resident Layer-2 nnTransform3D pipeline matches the FFTW Layer-1 pipeline
+to ≈ 3e-6. Don't use `--precision fp16` for the current weights.
+
+The conversion route is ONNX → `onnx2torch` → TorchScript → `coremltools`. The
+script first applies two pre-passes `onnx2torch` needs: folding `Constant`-node
+weights into initializers (`luma_sep` exports its conv weights as `Constant`
+outputs, which `onnx2torch`'s Conv converter can't otherwise resolve) and
+rewriting `SAME_UPPER` convolution padding to explicit pads.
+
+The `.mlpackage` artifacts are not committed; regenerate them per machine / in
+CI. Availability is reported by `chd_has_feature("coreml")` (false on non-Apple
+builds and when configured with `-Dwith_coreml=disabled`). The native engine
+runs on CPU+GPU (the Apple Neural Engine can't take `chroma_net`'s 3D conv); it
+falls back to CPU-only if a GPU predict fails.
+
+Native CoreML is a self-contained backend and does **not** require ONNX Runtime.
+A macOS build with `-Dwith_onnxruntime=false -Dwith_coreml=enabled` ships the
+ldzeug and nnTransform3D decoders running entirely on CoreML, with no ORT
+dependency linked. When both backends are built (the macOS default) they coexist:
+load a `.onnx` for ORT or a `.mlpackage` for native CoreML, and
+[`chd_nn_model_get_active_backend`](api-reference.md#chd_nn_model_get_active_backend)
+distinguishes them at runtime.
+
+!!! important "Convert at a fixed input shape, one package per shape"
+    Every package only runs at the shape it was converted at: the TorchScript
+    trace bakes the example dims into the model's dynamic-shape ops, so a
+    flexible (`RangeDim`) shape either runs far slower or fails at runtime.
+
+    - **nnTransform3D** fixes the input batch at 256 (`NNT3D_BATCH`, matching
+      `kBatchBlocks` in `nntransform3d_pipeline_coreml.mm`); a dynamic batch ran
+      **~30× slower** (CoreML processes it tile-by-tile). `runCoreMLPipeline`
+      pads its last partial chunk up to this size — conv is per-batch-element
+      independent, so the padding doesn't affect the real tiles. If you change
+      `NNT3D_BATCH`, change `kBatchBlocks` to match and reconvert.
+    - **ldzeug2** must be converted once per `[1,C,height,width]` you decode
+      (`--height`/`--width` = the decoder's `modelHeight` × `fieldWidth`).
+      `color_cnn` runs in field mode, so for NTSC that is `263×910`. A flexible
+      `RangeDim` package fails at any non-default shape with *"Error in
+      dynamically resizing for sequence length (error -7)"* — `color_cnn`'s
+      `Range`/`ScatterND`/`Expand` ops don't re-derive under a resized input.
+
+**Performance** (one M-series GPU). Two views: the full decoder pipeline and the
+NN inference in isolation. Both are **single-threaded** — in production the
+[`DecoderPool`](api-reference.md) runs frames across all cores (inter-frame
+parallelism), which speeds the CPU paths up roughly by the core count and
+narrows the gaps below. Native-backend frames match the ONNX Runtime CPU path to
+**≤ 1 LSB out of 65535** (rel-RMS ≈ 1e-6) for every model.
+
+Full pipeline, per frame (I/O → demod → NN → YUV):
+
+| model | native CoreML | ORT CPU (1 thread) | ORT CoreML EP |
+|---|---|---|---|
+| nnTransform3D `chroma_net` | ≈ 0.78 s | ≈ 25 s | ≈ 27 s |
+| ldzeug2 `color_cnn` (field) | ≈ 18 ms | ≈ 1.5 s | ≈ 157 ms |
+| ldzeug2 `luma_sep` (field) | ≈ 42 ms | ≈ 5.9 s | ≈ 314 ms |
+
+(A frame is two fields for the field-mode ldzeug2 decoders.) The ORT CoreML EP
+doesn't help nnTransform3D — it runs the 3D conv on CPU anyway and adds
+partition overhead, landing slightly *slower* than plain CPU.
+
+NN inference in isolation, one ldzeug2 field `[1,C,263,910]`:
+
+| backend | color_cnn | luma_sep |
+|---|---|---|
+| native CoreML | ≈ 8.3 ms | ≈ 19 ms |
+| ORT CoreML EP | ≈ 79 ms | ≈ 157 ms |
+| ORT CPU, all cores | ≈ 110 ms | ≈ 392 ms |
+| ORT CPU, 1 thread | ≈ 782 ms | ≈ 3014 ms |
+
+`CpuAndGpu` and `All` measure identically (the model runs on the GPU; the ANE
+doesn't engage), so the default `CpuAndGpu` loses nothing.
+
+For nnTransform3D, the 3D FFT/window wrapping the model stay on the CPU
+(double-precision FFTW) by default — only the convolution moves to GPU. An
+experimental **GPU-resident** path (macOS 14+) is available by setting
+`CHD_NNTRANSFORM3D_COREML_FFT=mps`: the spectrum stays in shared
+unified-memory Metal buffers across the MPSGraph device FFT, the magnitude and
+mask Metal kernels, and a `cpuAndGPU` CoreML convolution (written in place via
+`outputBackings`), avoiding the per-tile host round-trip. It falls back to the
+FFTW FFT on older macOS, when no Metal device is present, or on any
+setup/runtime failure. In practice it's **not worth enabling**: the run is
+conv-bound (the FFT is ~50 ms of the ~770 ms frame), so Layer 2 measured within
+1% of the FFTW default while running the FFT at lower precision (f32 vs f64).
 
 ## nnTransform3D (`chroma_net`)
 
@@ -122,8 +249,7 @@ software-encoded with `ld-chroma-encoder`, deliberately chosen for heavy motion
 and high-frequency detail, with no film source material. The canonical sources
 of truth for the model are the author's own harnesses and notes (the v1
 modified-ld-chroma-decoder harness, the v2 standalone CUDA harness `main.cu`,
-and the author's release quotes); downstream ports such as tbc-tools infer their
-behaviour from those same sources, as does this library.
+and the author's release quotes).
 
 ## ldzeug2 models
 

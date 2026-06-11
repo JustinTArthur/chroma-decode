@@ -18,8 +18,15 @@
 
 # Python venv
 .venv/
+.venv-coreml/
 __pycache__/
 *.pyc
+
+# Generated native-CoreML model artifacts (produced by scripts/convert_coreml.py;
+# converted from ONNX, never committed — consumers / CI generate them locally)
+*.mlpackage/
+*.mlmodelc/
+*.mlmodel
 
 # Local Claude state
 .claude/settings.local.json

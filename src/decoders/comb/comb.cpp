@@ -44,16 +44,24 @@
 #include "../../common/log.h"
 
 #if defined(CHD_WITH_NN)
-#include <onnxruntime_cxx_api.h>
-
-#include "../../nn/ort_session.h"
+#include "../../nn/inference_engine.h"
 #include "../nntransform3d/nntransform3d_fft_cpu.h"
 #include "../nntransform3d/nntransform3d_window.h"
+#if defined(CHD_WITH_ORT)
+#include <onnxruntime_cxx_api.h>
+
+#include "../../nn/ort_engine.h"
+#include "../../nn/ort_session.h"
+#endif
 #if defined(CHD_WITH_CUDA)
 #include "../nntransform3d/nntransform3d_pipeline_cuda.h"
 #endif
 #if defined(CHD_WITH_ROCM)
 #include "../nntransform3d/nntransform3d_pipeline_hip.h"
+#endif
+#if defined(CHD_WITH_COREML)
+#include "../../nn/coreml_engine.h"
+#include "../nntransform3d/nntransform3d_pipeline_coreml.h"
 #endif
 #endif
 
@@ -167,9 +175,9 @@ void Comb::updateConfiguration(const chd::metadata::LdDecodeMetaData::VideoParam
 }
 
 #if defined(CHD_WITH_NN)
-void Comb::setNnModel(std::shared_ptr<chd::nn::OrtSession> session)
+void Comb::setNnModel(std::shared_ptr<chd::nn::InferenceEngine> engine)
 {
-    nnSession = std::move(session);
+    nnSession = std::move(engine);
 }
 #endif
 
@@ -990,13 +998,15 @@ void Comb::FrameBuffer::copyRawToLuma()
 
 #if defined(CHD_WITH_NN)
 
+#if defined(CHD_WITH_ORT)
 namespace {
-// Index into the 3D tile buffer used by split3DnnTransform.
+// Index into the 3D tile buffer used by split3DnnTransform's ORT CPU body.
 inline int32_t IDX3(int32_t t, int32_t y, int32_t x, int32_t Nt, int32_t Ny, int32_t Nx) {
     (void)Nt;
     return (t * Ny * Nx) + (y * Nx) + x;
 }
 }  // namespace
+#endif
 
 // ─── split3DnnTransform ──────────────────────────────────────────────────────
 //
@@ -1015,7 +1025,7 @@ inline int32_t IDX3(int32_t t, int32_t y, int32_t x, int32_t Nt, int32_t Ny, int
 //     chd::decoders::nntransform3d::{getThreadLocalCpuPlans,
 //     getSineWindows} rather than thread_local statics inline.
 bool Comb::FrameBuffer::split3DnnTransform(FrameBuffer &nextFrame,
-                                           chd::nn::OrtSession &session,
+                                           chd::nn::InferenceEngine &engine,
                                            std::mutex &runMutex,
                                            double inputMagnitudeScale)
 {
@@ -1040,36 +1050,68 @@ bool Comb::FrameBuffer::split3DnnTransform(FrameBuffer &nextFrame,
     ensureNnBuffers(*this);
     ensureNnBuffers(nextFrame);
 
-    // ── Provider dispatch ──────────────────────────────────────────────
-    // For sessions attached to a GPU EP, hand off to a GPU pipeline that
-    // keeps the FFT output, ORT input tensor, model output, and inverse-
-    // FFT input/output all resident on the device across the entire
-    // split-block loop. The CPU body below round-trips through host
-    // memory per inference, which defeats the point on a GPU EP.
-    const chd_nn_provider_t activeProvider = session.activeProvider();
-    (void)activeProvider;
+    // ── Backend dispatch ───────────────────────────────────────────────
+    // Native CoreML runs its own .mlpackage pipeline; the device-resident GPU
+    // pipelines (CUDA/ROCm) and the CPU fallback body all run inference through
+    // ONNX Runtime and need the underlying ORT session.
+    const chd_nn_backend_t activeBackend = engine.activeBackend();
+    (void)activeBackend;
+
+#if defined(CHD_WITH_COREML)
+    if (activeBackend == CHD_NN_COREML) {
+        auto *coreMLEngine = dynamic_cast<chd::nn::CoreMLEngine *>(&engine);
+        if (coreMLEngine) {
+            return chd::decoders::nntransform3d::runCoreMLPipeline(
+                videoParameters,
+                rawbuffer.data(),
+                nextFrame.rawbuffer.data(),
+                nnAccChroma, nnWeightSum,
+                nextFrame.nnAccChroma, nextFrame.nnWeightSum,
+                *coreMLEngine, runMutex, inputMagnitudeScale);
+        }
+    }
+#endif
+
+#if defined(CHD_WITH_ORT)
+    // For sessions attached to a GPU EP, hand off to a GPU pipeline that keeps
+    // the FFT output, ORT input tensor, model output, and inverse-FFT
+    // input/output all resident on the device across the entire split-block
+    // loop. The CPU body below round-trips through host memory per inference,
+    // which defeats the point on a GPU EP.
+    auto *ortEngine = dynamic_cast<chd::nn::OrtEngine *>(&engine);
+
 #if defined(CHD_WITH_CUDA)
-    if (activeProvider == CHD_NN_EP_CUDA || activeProvider == CHD_NN_EP_TENSORRT) {
+    if (ortEngine && (activeBackend == CHD_NN_ORT_CUDA || activeBackend == CHD_NN_ORT_TENSORRT)) {
         return chd::decoders::nntransform3d::runCudaPipeline(
             videoParameters,
             rawbuffer.data(),
             nextFrame.rawbuffer.data(),
             nnAccChroma, nnWeightSum,
             nextFrame.nnAccChroma, nextFrame.nnWeightSum,
-            session, runMutex, inputMagnitudeScale);
+            ortEngine->ortSession(), runMutex, inputMagnitudeScale);
     }
 #endif
 #if defined(CHD_WITH_ROCM)
-    if (activeProvider == CHD_NN_EP_MIGRAPHX) {
+    if (ortEngine && activeBackend == CHD_NN_ORT_MIGRAPHX) {
         return chd::decoders::nntransform3d::runHipPipeline(
             videoParameters,
             rawbuffer.data(),
             nextFrame.rawbuffer.data(),
             nnAccChroma, nnWeightSum,
             nextFrame.nnAccChroma, nextFrame.nnWeightSum,
-            session, runMutex, inputMagnitudeScale);
+            ortEngine->ortSession(), runMutex, inputMagnitudeScale);
     }
 #endif
+
+    // CPU fallback body — requires an ORT session.
+    if (ortEngine == nullptr) {
+        static std::once_flag noCpuPathWarnedOnce;
+        std::call_once(noCpuPathWarnedOnce, []() {
+            chd::log::warn() << "nnTransform3D: active engine has no CPU path; falling back to 2D chroma";
+        });
+        return false;
+    }
+    chd::nn::OrtSession &session = ortEngine->ortSession();
 
     auto &plans = nntransform3d::getThreadLocalCpuPlans();
     if (plans.forward == nullptr || plans.inverse == nullptr) {
@@ -1260,6 +1302,11 @@ bool Comb::FrameBuffer::split3DnnTransform(FrameBuffer &nextFrame,
         }
     }
     return true;
+#else
+    // No ONNX Runtime in this build — only the native CoreML path above can
+    // run nnTransform3D. Any other engine falls back to 2D chroma.
+    return false;
+#endif  // CHD_WITH_ORT
 }
 
 // Normalise the overlap-add chroma into clpbuffer[2] so the rest of the

@@ -17,6 +17,7 @@
 
 #include "nn_test_model.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -55,31 +56,43 @@ int testFeatureFlag() {
 }
 
 int testProviderAvailability() {
-    // CPU is always available.
-    REQUIRE(chd_nn_provider_is_available(CHD_NN_EP_CPU) == 1);
-    // AUTO should report available (always — it's not a concrete provider).
-    REQUIRE(chd_nn_provider_is_available(CHD_NN_EP_AUTO) == 1);
+    // CHD_NN_BACKEND_AUTO is available whenever any backend is built — and the
+    // test body only runs when chd_has_feature("nn") is 1, so it must hold here.
+    REQUIRE(chd_nn_backend_is_available(CHD_NN_BACKEND_AUTO) == 1);
 
+    // The CHD_NN_ORT_* backends and the ORT auto chain are ONNX-Runtime
+    // concepts; only assert their availability when the ORT backend is built
+    // (a native-CoreML-only build reports them unavailable).
+    if (chd_has_feature("onnxruntime") == 1) {
+        // CPU is always available; the ORT auto chain too.
+        REQUIRE(chd_nn_backend_is_available(CHD_NN_ORT_CPU) == 1);
+        REQUIRE(chd_nn_backend_is_available(CHD_NN_ORT_AUTO) == 1);
 #if defined(__APPLE__)
-    // CoreML EP should be present in any current macOS ORT build (Homebrew
-    // 1.26.0 bundles it).
-    REQUIRE(chd_nn_provider_is_available(CHD_NN_EP_COREML) == 1);
-    // The DirectML / TensorRT / MIGraphX providers are Windows-/Linux-only
-    // and absent on macOS.
-    REQUIRE(chd_nn_provider_is_available(CHD_NN_EP_DIRECTML) == 0);
-    REQUIRE(chd_nn_provider_is_available(CHD_NN_EP_MIGRAPHX) == 0);
+        // CoreML EP should be present in any current macOS ORT build (Homebrew
+        // 1.26.0 bundles it).
+        REQUIRE(chd_nn_backend_is_available(CHD_NN_ORT_COREML) == 1);
+        // The DirectML / TensorRT / MIGraphX providers are Windows-/Linux-only
+        // and absent on macOS.
+        REQUIRE(chd_nn_backend_is_available(CHD_NN_ORT_DIRECTML) == 0);
+        REQUIRE(chd_nn_backend_is_available(CHD_NN_ORT_MIGRAPHX) == 0);
 #endif
+    }
+
+    // Native CoreML availability tracks its build feature flag, independent of
+    // whether the ORT backend is present.
+    REQUIRE(chd_nn_backend_is_available(CHD_NN_COREML) == (chd_has_feature("coreml") ? 1 : 0));
     return 0;
 }
 
 int testSessionOptsDefault() {
     chd_nn_session_opts_t opts{};
     chd_nn_session_opts_default(&opts);
-    REQUIRE(opts.provider           == CHD_NN_EP_AUTO);
+    REQUIRE(opts.backend            == CHD_NN_BACKEND_AUTO);
     REQUIRE(opts.device_id          == 0);
     REQUIRE(opts.enable_graph_optim == 1);
     REQUIRE(opts.enable_mem_pattern == 1);
     REQUIRE(opts.intra_op_threads   == 1);
+    REQUIRE(opts.coreml_compute     == CHD_NN_COREML_CPU_AND_GPU);
     return 0;
 }
 
@@ -91,10 +104,18 @@ int testLoadNonexistentModel() {
     REQUIRE(chd_nn_model_load_from_file(nullptr, nullptr, &m) == CHD_E_INVALID_ARG);
     REQUIRE(m == nullptr);
 
-    REQUIRE(chd_nn_model_load_from_file("/nonexistent/path/to/model.onnx", nullptr, &m)
-            == CHD_E_NN_MODEL_LOAD);
+    // A `.onnx` path resolves to the ORT backend under AUTO. With ORT built it
+    // fails to load (missing file → CHD_E_NN_MODEL_LOAD); in a CoreML-only build
+    // the ORT backend is unavailable instead. Either way it must not crash, and
+    // the error detail names the entry point.
+    if (chd_has_feature("onnxruntime") == 1) {
+        REQUIRE(chd_nn_model_load_from_file("/nonexistent/path/to/model.onnx", nullptr, &m)
+                == CHD_E_NN_MODEL_LOAD);
+    } else {
+        REQUIRE(chd_nn_model_load_from_file("/nonexistent/path/to/model.onnx", nullptr, &m)
+                == CHD_E_NN_BACKEND_UNAVAILABLE);
+    }
     REQUIRE(m == nullptr);
-    // The error detail must be informative.
     const char *err = chd_last_error();
     REQUIRE(err != nullptr);
     REQUIRE(std::strstr(err, "chd_nn_model_load_from_file") != nullptr);
@@ -114,10 +135,17 @@ int testLoadFromMemoryInvalid() {
     REQUIRE(m == nullptr);
     REQUIRE(chd_nn_model_load_from_memory(dummy, 4, nullptr, nullptr) == CHD_E_INVALID_ARG);
 
-    // Well-formed call, but the bytes aren't a valid ONNX model: ORT must
-    // reject them and we surface CHD_E_NN_MODEL_LOAD with an informative msg.
-    REQUIRE(chd_nn_model_load_from_memory(dummy, sizeof(dummy), nullptr, &m)
-            == CHD_E_NN_MODEL_LOAD);
+    // Well-formed call, but the bytes aren't a valid ONNX model. With ORT built,
+    // it rejects them (CHD_E_NN_MODEL_LOAD); in a CoreML-only build the in-memory
+    // ORT path is unavailable (CHD_E_NN_BACKEND_UNAVAILABLE). Either way the
+    // message names the entry point.
+    if (chd_has_feature("onnxruntime") == 1) {
+        REQUIRE(chd_nn_model_load_from_memory(dummy, sizeof(dummy), nullptr, &m)
+                == CHD_E_NN_MODEL_LOAD);
+    } else {
+        REQUIRE(chd_nn_model_load_from_memory(dummy, sizeof(dummy), nullptr, &m)
+                == CHD_E_NN_BACKEND_UNAVAILABLE);
+    }
     REQUIRE(m == nullptr);
     const char *err = chd_last_error();
     REQUIRE(err != nullptr);
@@ -133,6 +161,12 @@ int testLoadRealModel() {
     // above, and the only place the public chd_nn_model_load_from_memory
     // symbol is exercised against real weights. Skips when no model is
     // discoverable on this machine.
+    // The committed fixture is ONNX, loaded through the ORT backend. Skip when
+    // ORT isn't built (e.g. a native-CoreML-only build).
+    if (chd_has_feature("onnxruntime") != 1) {
+        std::cout << "Skipping real-model load test (ONNX Runtime backend not built).\n";
+        return 0;
+    }
     const std::string modelPath = chd_test::modelFromEnvOrFixture("CHD_TEST_NN_MODEL");
     if (modelPath.empty()) {
         std::cout << "Skipping real-model load test (no model fixture available).\n";
@@ -143,8 +177,8 @@ int testLoadRealModel() {
     chd_nn_model_t *fileModel = nullptr;
     REQUIRE(chd_nn_model_load_from_file(modelPath.c_str(), nullptr, &fileModel) == CHD_OK);
     REQUIRE(fileModel != nullptr);
-    chd_nn_provider_t fileProvider = CHD_NN_EP_AUTO;
-    REQUIRE(chd_nn_model_get_active_provider(fileModel, &fileProvider) == CHD_OK);
+    chd_nn_backend_t fileBackend = CHD_NN_BACKEND_AUTO;
+    REQUIRE(chd_nn_model_get_active_backend(fileModel, &fileBackend) == CHD_OK);
 
     // Memory loader: same bytes, via the in-memory entry point.
     std::vector<char> bytes = chd_test::readFileBytes(modelPath);
@@ -154,17 +188,64 @@ int testLoadRealModel() {
     REQUIRE(chd_nn_model_load_from_memory(bytes.data(), bytes.size(), nullptr, &memModel)
             == CHD_OK);
     REQUIRE(memModel != nullptr);
-    chd_nn_provider_t memProvider = CHD_NN_EP_AUTO;
-    REQUIRE(chd_nn_model_get_active_provider(memModel, &memProvider) == CHD_OK);
+    chd_nn_backend_t memBackend = CHD_NN_BACKEND_AUTO;
+    REQUIRE(chd_nn_model_get_active_backend(memModel, &memBackend) == CHD_OK);
 
-    // Identical model + opts must resolve to the same provider regardless of
+    // Identical model + opts must resolve to the same backend regardless of
     // how the bytes were sourced.
-    REQUIRE(memProvider == fileProvider);
+    REQUIRE(memBackend == fileBackend);
 
     chd_nn_model_free(memModel);
     chd_nn_model_free(fileModel);
     std::cout << "Loaded real model via file + memory (" << bytes.size()
-              << " bytes), provider " << static_cast<int>(memProvider) << ".\n";
+              << " bytes), backend " << static_cast<int>(memBackend) << ".\n";
+    return 0;
+}
+
+int testCoreMLLoad() {
+    // Native CoreML is now selected through the unified loader by pinning
+    // opts.backend = CHD_NN_COREML (or by passing a .mlpackage under AUTO).
+    chd_nn_session_opts_t opts{};
+    chd_nn_session_opts_default(&opts);
+    opts.backend = CHD_NN_COREML;
+
+    // Argument validation is the same on every build.
+    chd_nn_model_t *m = nullptr;
+    REQUIRE(chd_nn_model_load_from_file(nullptr, &opts, &m) == CHD_E_INVALID_ARG);
+    REQUIRE(m == nullptr);
+
+    if (chd_has_feature("coreml") != 1) {
+        // Built without native CoreML (non-Apple, or with_coreml=disabled):
+        // pinning the native backend must report it unavailable, not crash.
+        REQUIRE(chd_nn_model_load_from_file("/nonexistent.mlpackage", &opts, &m)
+                == CHD_E_NN_BACKEND_UNAVAILABLE);
+        REQUIRE(m == nullptr);
+        std::cout << "Native CoreML not built; load returned UNAVAILABLE as expected.\n";
+        return 0;
+    }
+
+    // Native CoreML built: a path that doesn't exist must fail the load
+    // cleanly (compile/load error), not crash.
+    REQUIRE(chd_nn_model_load_from_file("/nonexistent.mlpackage", &opts, &m)
+            == CHD_E_NN_MODEL_LOAD);
+    REQUIRE(m == nullptr);
+
+    // Happy path against a real .mlpackage when one is provided (artifacts
+    // aren't committed; convert with scripts/convert_coreml.py). Skips
+    // otherwise. Loaded under AUTO to also exercise extension-based dispatch.
+    const char *pkg = std::getenv("CHD_TEST_COREML_MODEL");
+    if (pkg == nullptr || pkg[0] == '\0') {
+        std::cout << "Skipping native-CoreML load happy path (set CHD_TEST_COREML_MODEL).\n";
+        return 0;
+    }
+    chd_nn_model_t *model = nullptr;
+    REQUIRE(chd_nn_model_load_from_file(pkg, nullptr, &model) == CHD_OK);
+    REQUIRE(model != nullptr);
+    chd_nn_backend_t backend = CHD_NN_BACKEND_AUTO;
+    REQUIRE(chd_nn_model_get_active_backend(model, &backend) == CHD_OK);
+    REQUIRE(backend == CHD_NN_COREML);
+    chd_nn_model_free(model);
+    std::cout << "Loaded native CoreML model " << pkg << " via AUTO dispatch.\n";
     return 0;
 }
 
@@ -175,8 +256,8 @@ int testFreeNullHandle() {
 }
 
 int testGetActiveProviderNull() {
-    chd_nn_provider_t p = CHD_NN_EP_AUTO;
-    REQUIRE(chd_nn_model_get_active_provider(nullptr, &p) == CHD_E_INVALID_ARG);
+    chd_nn_backend_t b = CHD_NN_BACKEND_AUTO;
+    REQUIRE(chd_nn_model_get_active_backend(nullptr, &b) == CHD_E_INVALID_ARG);
     return 0;
 }
 
@@ -197,6 +278,7 @@ int main() {
     rc |= testLoadNonexistentModel();
     rc |= testLoadFromMemoryInvalid();
     rc |= testLoadRealModel();
+    rc |= testCoreMLLoad();
     rc |= testFreeNullHandle();
     rc |= testGetActiveProviderNull();
     // Tear down the Ort::Env explicitly so its destructor runs before C++

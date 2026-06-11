@@ -18,7 +18,7 @@ typedef enum chd_status {
     CHD_E_DECODER_UNKNOWN          = 8,
     CHD_E_DECODER_INCOMPATIBLE     = 9,
     CHD_E_NN_MODEL_LOAD            = 10,
-    CHD_E_NN_PROVIDER_UNAVAILABLE  = 11,
+    CHD_E_NN_BACKEND_UNAVAILABLE   = 11,
     CHD_E_NN_INFERENCE             = 12,
     CHD_E_OUT_OF_RANGE             = 13,
     CHD_E_CANCELLED                = 14,

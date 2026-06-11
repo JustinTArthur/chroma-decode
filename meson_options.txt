@@ -1,6 +1,6 @@
-option('with_nn',
+option('with_onnxruntime',
        type: 'boolean', value: true,
-       description: 'Enable ONNX Runtime NN decoders')
+       description: 'Enable the ONNX Runtime inference backend (NN decoders via ORT)')
 
 option('with_cuda',
        type: 'feature', value: 'auto',
@@ -9,6 +9,10 @@ option('with_cuda',
 option('with_rocm',
        type: 'feature', value: 'auto',
        description: 'Build HIP/hipFFT pipeline for nnTransform3D (ROCm + MIGraphX EPs)')
+
+option('with_coreml',
+       type: 'feature', value: 'auto',
+       description: 'Build native CoreML inference pipeline (macOS only; MLModel + MPSGraph FFT for nnTransform3D and ldzeug2)')
 
 option('with_tests',
        type: 'boolean', value: true,

@@ -18,7 +18,7 @@ const char *chd_status_str(chd_status_t s) {
         case CHD_E_DECODER_UNKNOWN:         return "CHD_E_DECODER_UNKNOWN";
         case CHD_E_DECODER_INCOMPATIBLE:    return "CHD_E_DECODER_INCOMPATIBLE";
         case CHD_E_NN_MODEL_LOAD:           return "CHD_E_NN_MODEL_LOAD";
-        case CHD_E_NN_PROVIDER_UNAVAILABLE: return "CHD_E_NN_PROVIDER_UNAVAILABLE";
+        case CHD_E_NN_BACKEND_UNAVAILABLE:  return "CHD_E_NN_BACKEND_UNAVAILABLE";
         case CHD_E_NN_INFERENCE:            return "CHD_E_NN_INFERENCE";
         case CHD_E_OUT_OF_RANGE:            return "CHD_E_OUT_OF_RANGE";
         case CHD_E_CANCELLED:               return "CHD_E_CANCELLED";

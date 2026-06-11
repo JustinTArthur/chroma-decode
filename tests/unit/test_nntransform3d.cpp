@@ -35,6 +35,7 @@
 #include "../../src/decoders/comb/comb.h"
 #include "../../src/decoders/comb/ntsc_decoder.h"
 #include "../../src/metadata/core.h"
+#include "../../src/nn/ort_engine.h"
 #include "../../src/nn/ort_session.h"
 #endif
 
@@ -109,7 +110,7 @@ int bindSessionAndConfigure(const std::shared_ptr<chd::nn::OrtSession> &session)
     cfg.nnInputMagnitudeScale = 128.0;
 
     NtscDecoder decoder(cfg);
-    decoder.setNnModel(session);
+    decoder.setNnModel(std::make_shared<chd::nn::OrtEngine>(session));
 
     chd::metadata::LdDecodeMetaData::VideoParameters vp;
     vp.system = chd::metadata::NTSC;

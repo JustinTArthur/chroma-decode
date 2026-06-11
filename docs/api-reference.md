@@ -22,7 +22,7 @@ repeated on every function.
 - A function that can fail returns [`chd_status_t`](#status-codes); `CHD_OK`
   (`0`) is success, any other value is failure.
 - Accessors that cannot meaningfully fail return their value directly
-  (`chd_version`, `chd_cancel_is_requested`, `chd_nn_provider_is_available`,
+  (`chd_version`, `chd_cancel_is_requested`, `chd_nn_backend_is_available`,
   `chd_has_feature`).
 - **Output parameters are written only on `CHD_OK`.** On failure, a `**out`
   handle is left untouched. Initialise your pointer to `NULL` and check the
@@ -118,8 +118,19 @@ freed. Compile-time equivalents are the `CHROMADEC_VERSION_*` macros in
 int chd_has_feature(const char *feature);   /* 1 = compiled in, 0 = not */
 ```
 
-Query optional build features. Recognised names: `"nn"`, `"cuda"`, `"fftw"`,
-`"sqlite"`. Returns `0` for `NULL` or any unknown name.
+Query optional build features. Recognised names: `"nn"`, `"onnxruntime"`,
+`"coreml"`, `"cuda"`, `"fftw"`, `"sqlite"`. Returns `0` for `NULL` or any unknown
+name.
+
+`"nn"` reports whether the neural-decoder framework is present — true when *any*
+inference backend is built. The individual backends have their own flags:
+`"onnxruntime"` (the ONNX Runtime backend, build option `with_onnxruntime`) and
+`"coreml"` (the native CoreML backend, build option `with_coreml`). The two are
+independent: a macOS build with `-Dwith_onnxruntime=false -Dwith_coreml=enabled`
+reports `"nn"`=1, `"coreml"`=1, `"onnxruntime"`=0, and runs the ldzeug and
+nnTransform3D decoders entirely on native CoreML (`.onnx` models and the
+`CHD_NN_ORT_*` backends are then unavailable — see
+[`chd_nn_model_load_from_file`](#chd_nn_model_load_from_file)).
 
 ---
 
@@ -144,7 +155,7 @@ Declared in `<chromadec/errors.h>`.
 | `CHD_E_DECODER_UNKNOWN`         | Unknown decoder kind.                                                                     |
 | `CHD_E_DECODER_INCOMPATIBLE`    | Decoder kind is invalid for this video standard/encoding.                                 |
 | `CHD_E_NN_MODEL_LOAD`           | The NN model file failed to load.                                                         |
-| `CHD_E_NN_PROVIDER_UNAVAILABLE` | The requested execution provider is not available in this build/host.                     |
+| `CHD_E_NN_BACKEND_UNAVAILABLE`  | The requested inference backend is not available in this build/host.                      |
 | `CHD_E_NN_INFERENCE`            | Inference failed at runtime.                                                              |
 | `CHD_E_OUT_OF_RANGE`            | A frame index (or similar) is outside the valid range.                                    |
 | `CHD_E_CANCELLED`               | The operation was cancelled via a [`chd_cancel_t`](#cancellation).                        |
@@ -761,32 +772,70 @@ Declared in `<chromadec/nn.h>`. Available only when the library was built with
 NN support (`chd_has_feature("nn")`). A `chd_nn_model_t` wraps a loaded ONNX
 model and its execution-provider session.
 
-### Execution providers
+### Backends
 
 ```c
-typedef enum chd_nn_provider {
-    CHD_NN_EP_AUTO     = 0,   /* platform default chain */
-    CHD_NN_EP_CPU      = 1,
-    CHD_NN_EP_CUDA     = 2,
-    CHD_NN_EP_TENSORRT = 3,
-    CHD_NN_EP_COREML   = 4,
-    CHD_NN_EP_DIRECTML = 5,
-    CHD_NN_EP_MIGRAPHX = 6
-} chd_nn_provider_t;
+typedef enum chd_nn_backend {
+    CHD_NN_BACKEND_AUTO  = 0,   /* best across all backends; inferred from artifact */
+
+    CHD_NN_ORT_AUTO      = 10,  /* ONNX Runtime, per-OS EP fallback chain */
+    CHD_NN_ORT_CPU       = 11,
+    CHD_NN_ORT_CUDA      = 12,
+    CHD_NN_ORT_TENSORRT  = 13,
+    CHD_NN_ORT_COREML    = 14,  /* ONNX Runtime CoreML execution provider */
+    CHD_NN_ORT_DIRECTML  = 15,
+    CHD_NN_ORT_MIGRAPHX  = 16,
+
+    CHD_NN_COREML        = 20   /* native CoreML .mlpackage via MLModel */
+} chd_nn_backend_t;
 ```
+
+A backend names the runtime that runs inference. The family is encoded in the
+name: the `CHD_NN_ORT_*` values select an ONNX Runtime execution provider;
+values with no `ORT_` infix (e.g. `CHD_NN_COREML`) are native, non-ORT backends.
+
+- `CHD_NN_BACKEND_AUTO` (the default) picks the best backend for the model
+  *artifact*: a `.onnx` loads through ONNX Runtime with the per-OS EP auto chain
+  (`CHD_NN_ORT_AUTO`); a `.mlpackage`/`.mlmodelc` loads through `CHD_NN_COREML`.
+- `CHD_NN_ORT_AUTO` forces ONNX Runtime and walks its per-OS provider chain
+  (Windows: TensorRT → CUDA → DirectML → CPU; Linux: CUDA → MIGraphX → CPU;
+  macOS: CoreML → CPU), attaching the first that succeeds.
+- A specific `CHD_NN_ORT_*` value pins that one EP (no fallback; load fails with
+  `CHD_E_NN_BACKEND_UNAVAILABLE` if it can't attach).
+- `CHD_NN_COREML` forces the native CoreML backend (requires a `.mlpackage`).
+
+`CHD_NN_ORT_COREML` (the ORT CoreML EP) and `CHD_NN_COREML` (native) are distinct
+and distinguishable after load via
+[`chd_nn_model_get_active_backend`](#chd_nn_model_get_active_backend).
+
+### CoreML compute units
+
+```c
+typedef enum chd_nn_coreml_compute {
+    CHD_NN_COREML_CPU_AND_GPU = 0,  /* default: CPU + GPU, no ANE */
+    CHD_NN_COREML_ALL         = 1,  /* CPU + GPU + Apple Neural Engine */
+    CHD_NN_COREML_CPU_ONLY    = 2   /* CPU only */
+} chd_nn_coreml_compute_t;
+```
+
+Applies to the native `CHD_NN_COREML` backend only (ignored by every ORT
+backend). The default `CHD_NN_COREML_CPU_AND_GPU` is required for nnTransform3D
+(the ANE cannot run its 3D convolution); `CHD_NN_COREML_ALL` lets CoreML use the
+ANE for ANE-friendly models.
 
 ### Session options
 
 ```c
 typedef struct chd_nn_session_opts {
-    chd_nn_provider_t provider;     /* AUTO unless caller pins */
-    int32_t device_id;              /* 0 unless multi-GPU */
-    int     enable_graph_optim;     /* default 1 */
-    int     enable_mem_pattern;     /* default 1 */
-    int32_t inter_op_threads;       /* default 1 */
-    int32_t intra_op_threads;       /* default 1 */
-    const char *engine_cache_dir;   /* see below */
-    void *reserved[4];              /* zero-initialised; do not repurpose */
+    chd_nn_backend_t backend;            /* AUTO unless caller pins */
+    int32_t device_id;                   /* 0 unless multi-GPU */
+    int     enable_graph_optim;          /* default 1 */
+    int     enable_mem_pattern;          /* default 1 */
+    int32_t inter_op_threads;            /* default 1 */
+    int32_t intra_op_threads;            /* default 1 */
+    const char *engine_cache_dir;        /* see below */
+    chd_nn_coreml_compute_t coreml_compute; /* native CoreML only */
+    void *reserved[4];                   /* zero-initialised; do not repurpose */
 } chd_nn_session_opts_t;
 ```
 
@@ -818,9 +867,10 @@ breaking source compatibility; always leave it zeroed.
 void chd_nn_session_opts_default(chd_nn_session_opts_t *out);
 ```
 
-Fill `*out` with default session options (AUTO provider, the defaults noted
-above, zeroed reserved fields). Always initialise via this function rather than
-by hand, so new fields pick up correct defaults.
+Fill `*out` with default session options (`CHD_NN_BACKEND_AUTO`, the defaults
+noted above, `CHD_NN_COREML_CPU_AND_GPU`, zeroed reserved fields). Always
+initialise via this function rather than by hand, so new fields pick up correct
+defaults.
 
 ### chd_nn_model_load_from_file / chd_nn_model_load_from_memory / chd_nn_model_free { #chd_nn_model_load_from_file }
 
@@ -835,35 +885,55 @@ chd_status_t chd_nn_model_load_from_memory(const void *model_data,
 void chd_nn_model_free(chd_nn_model_t *m);
 ```
 
-Load an ONNX model — either from a file on disk
-(`chd_nn_model_load_from_file`) or from an in-memory buffer
-(`chd_nn_model_load_from_memory`), for callers that embed the model as a
-compiled-in byte array and want no filesystem dependency. The buffer is
-consumed during the call and need not outlive it. Both produce an identical
-`chd_nn_model_t`. `opts_or_null` of `NULL` uses
-[defaults](#chd_nn_session_opts_default). On `CHD_E_NN_PROVIDER_UNAVAILABLE`
-the pinned provider isn't available in this build/host;
-`CHD_E_NN_MODEL_LOAD` indicates a bad or unreadable model. Remember
+Load a model from a file on disk (`chd_nn_model_load_from_file`) or from an
+in-memory buffer (`chd_nn_model_load_from_memory`), for callers that embed the
+model as a compiled-in byte array and want no filesystem dependency. The buffer
+is consumed during the call and need not outlive it.
+
+`opts.backend` selects the runtime (see [Backends](#backends)). The default
+`CHD_NN_BACKEND_AUTO` infers it from the artifact: a `.onnx` loads through ONNX
+Runtime; a `.mlpackage`/`.mlmodelc` loads through the native CoreML backend. A
+pinned backend forces that path and requires the matching artifact (a native
+backend pinned against a `.onnx` fails to load, and vice versa).
+
+The in-memory loader works with any backend that can ingest a serialized model
+buffer. ONNX Runtime can, so the `CHD_NN_ORT_*` backends and
+`CHD_NN_BACKEND_AUTO` (which resolves to ONNX Runtime here) all load from
+memory. Pinning `CHD_NN_COREML` returns `CHD_E_INVALID_ARG`: a `.mlpackage` is
+a multi-file on-disk bundle with no in-memory load API, so use
+[`chd_nn_model_load_from_file`](#chd_nn_model_load_from_file) instead. This is
+a per-backend limitation.
+
+`opts_or_null` of `NULL` uses [defaults](#chd_nn_session_opts_default). On
+`CHD_E_NN_BACKEND_UNAVAILABLE` the pinned backend isn't available in this
+build/host (e.g. `CHD_NN_COREML` on a non-Apple build, or one configured with
+`-Dwith_coreml=disabled` — detect at runtime with `chd_has_feature("coreml")`);
+`CHD_E_NN_MODEL_LOAD` indicates a bad or unreadable model. The native CoreML
+`.mlpackage` is produced offline from the ONNX model with `coremltools` (see
+`scripts/convert_coreml.py`) and is not shipped with the library. Remember
 [`chd_shutdown`](#chd_shutdown) before exit once any model has been loaded.
 
-### chd_nn_model_get_active_provider
+### chd_nn_model_get_active_backend
 
 ```c
-chd_status_t chd_nn_model_get_active_provider(const chd_nn_model_t *m,
-                                              chd_nn_provider_t *out);
+chd_status_t chd_nn_model_get_active_backend(const chd_nn_model_t *m,
+                                             chd_nn_backend_t *out);
 ```
 
-Report the execution provider actually selected for a loaded model. Useful
-after `CHD_NN_EP_AUTO`, which resolves a platform-specific chain.
+Report the backend actually selected for a loaded model. Useful after
+`CHD_NN_BACKEND_AUTO` / `CHD_NN_ORT_AUTO` (which resolve to a concrete value),
+and to distinguish the native `CHD_NN_COREML` backend from the ORT CoreML EP
+(`CHD_NN_ORT_COREML`).
 
-### chd_nn_provider_is_available
+### chd_nn_backend_is_available
 
 ```c
-int chd_nn_provider_is_available(chd_nn_provider_t p);   /* 1 = yes, 0 = no */
+int chd_nn_backend_is_available(chd_nn_backend_t b);   /* 1 = yes, 0 = no */
 ```
 
-Query whether a provider can be used on this build and host without attempting
-a model load.
+Query whether a backend can be used on this build and host without attempting a
+model load. The AUTO sentinels report available (they always resolve to at least
+CPU); `CHD_NN_COREML` tracks the `coreml` build feature.
 
 ---
 

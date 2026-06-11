@@ -176,15 +176,17 @@ model attached before commit:
 
 ```c
 chd_nn_session_opts_t opts;
-chd_nn_session_opts_default(&opts);     /* AUTO provider, sane defaults */
-opts.provider = CHD_NN_EP_AUTO;
+chd_nn_session_opts_default(&opts);     /* CHD_NN_BACKEND_AUTO, sane defaults */
 
 chd_nn_model_t *model = NULL;
 if (chd_nn_model_load_from_file("chroma_net_v2.onnx", &opts, &model) != CHD_OK) {
     fprintf(stderr, "model: %s\n", chd_last_error());
     /* ... */
 }
-/* Or, to load a model embedded in the binary (no file needed):
+/* AUTO infers the backend from the artifact: a .onnx loads through ONNX
+ * Runtime, a .mlpackage through the native CoreML backend. To force one,
+ * set opts.backend (e.g. CHD_NN_COREML for native CoreML, CHD_NN_ORT_CPU for
+ * CPU-only ONNX Runtime). Or load an embedded ONNX model (no file needed):
  *   chd_nn_model_load_from_memory(model_bytes, model_len, &opts, &model); */
 
 chd_decoder_t *dec = NULL;
@@ -202,12 +204,12 @@ lifetime, free the decoder first, then `chd_nn_model_free(model)`.
     exit. It tears down the ONNX Runtime environment and is intentionally never
     automatic. Skip it and you risk a static-destruction crash on exit.
 
-Provider availability can be probed up front with
-[`chd_nn_provider_is_available`](api-reference.md#chd_nn_provider_is_available),
-and the provider actually chosen by `CHD_NN_EP_AUTO` read back with
-[`chd_nn_model_get_active_provider`](api-reference.md#chd_nn_model_get_active_provider).
+Backend availability can be probed up front with
+[`chd_nn_backend_is_available`](api-reference.md#chd_nn_backend_is_available),
+and the backend actually chosen by `CHD_NN_BACKEND_AUTO` read back with
+[`chd_nn_model_get_active_backend`](api-reference.md#chd_nn_model_get_active_backend).
 See [NN model conventions](nn-models.md) for model paths, magnitude scales, and
-per-platform provider notes.
+per-platform backend notes.
 
 ## Dropout correction
 

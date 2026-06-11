@@ -7,6 +7,57 @@ All notable changes to this project will be documented in this file. Format:
 ## [Unreleased]
 
 ### Added
+- Native CoreML is now a standalone inference backend, buildable **without**
+  ONNX Runtime. A macOS build with `-Dwith_onnxruntime=false -Dwith_coreml=enabled`
+  ships the ldzeug and nnTransform3D decoders running entirely on CoreML, with no
+  ORT linked — the original purpose of the native path (an alternative to ORT's
+  CoreML execution provider), previously unreachable because the build forced ORT
+  to be present. The NN framework (`chd::nn::InferenceEngine`, the decoders, the
+  `chd_nn_*` C ABI) is backend-agnostic and now compiles when *either* backend is
+  present. Build option `with_nn` is renamed `with_onnxruntime` (it always meant
+  the ORT backend); a new internal `CHD_WITH_ORT` gates ORT-only code while
+  `CHD_WITH_NN` becomes the "any NN backend" umbrella. `chd_has_feature("nn")` now
+  reports the framework (true for either backend); new `chd_has_feature("onnxruntime")`
+  reports the ORT backend specifically (`"coreml"` already reported native CoreML).
+  Requesting a `.onnx` / `CHD_NN_ORT_*` backend in a CoreML-only build returns
+  `CHD_E_NN_BACKEND_UNAVAILABLE`. CUDA/ROCm pipelines remain ORT-family (they
+  require the ORT backend).
+- Native CoreML backend (macOS) — `chd::nn::CoreMLEngine`, an Objective-C++
+  `InferenceEngine` implementation that drives an offline-converted
+  `.mlpackage` through `MLModel` / `MLMultiArray`. This is the only route to
+  GPU/ANE on macOS for nnTransform3D, whose 3D convolution the ONNX Runtime
+  CoreML execution provider gates out to CPU; for ldzeug2 `color_cnn` it also
+  beats the EP (~10× — the EP leaves the model's index ops on CPU across many
+  partition boundaries). Covers all bundled models — nnTransform3D `chroma_net`
+  and both ldzeug2 models (`color_cnn` and `luma_sep`). Models are converted with
+  `scripts/convert_coreml.py` (ONNX → onnx2torch → TorchScript → coremltools,
+  with pre-passes that fold `Constant`-node weights into initializers and rewrite
+  SAME convolution padding), which must emit **fp32** at a **fixed input shape**:
+  a flexible (`RangeDim`) shape runs ~30× slower for nnTransform3D and fails at
+  runtime for ldzeug2 (`error -7`). An optional
+  GPU-resident Layer-2 path for nnTransform3D (`CHD_NNTRANSFORM3D_COREML_FFT=mps`)
+  runs a device 3-D FFT via MPSGraph plus Metal magnitude/mask kernels, keeping
+  the spectrum in a shared `MTLBuffer` across FFT → conv → IFFT; it is
+  macOS-14-gated and falls back transparently to the FFTW Layer-1 path on older
+  SDKs/OSes, headless hosts, or any MPS failure. Output matches ONNX Runtime to
+  rel-RMS ≈ 2e-6 at every tested shape. Gated by the `with_coreml` build option
+  (`chd_has_feature("coreml")`). nnTransform3D model + algorithm by
+  **asdfqazsnbb**; ldzeug2 by **jsaowji**.
+- Backend-selection NN ABI. `chd_nn_session_opts_t.backend` — a family-grouped
+  `chd_nn_backend_t`: `CHD_NN_BACKEND_AUTO`; the ONNX Runtime execution
+  providers (`CHD_NN_ORT_*`, including `CHD_NN_ORT_AUTO` for the per-OS EP
+  chain); and native non-ORT backends with no `ORT_` infix (`CHD_NN_COREML`) —
+  replaces the previous ORT-only provider enum. `chd_nn_model_load_from_file`
+  dispatches on it: `CHD_NN_BACKEND_AUTO` infers the backend from the artifact
+  (`.onnx` → ONNX Runtime, `.mlpackage`/`.mlmodelc` → native CoreML), and a
+  pinned backend forces its path (and requires the matching artifact). New
+  `opts.coreml_compute` (`CHD_NN_COREML_CPU_AND_GPU` default / `_ALL` to allow
+  the ANE / `_CPU_ONLY`) selects native CoreML compute units.
+  `chd_nn_model_get_active_backend` / `chd_nn_backend_is_available` report the
+  resolved backend and distinguish the native `CHD_NN_COREML` backend from the
+  ORT CoreML EP (`CHD_NN_ORT_COREML`). Backed by a new `chd::nn::InferenceEngine`
+  interface with `OrtEngine` and `CoreMLEngine` implementations; the decoders'
+  `setNnModel` entry points now take a `shared_ptr<chd::nn::InferenceEngine>`.
 - `CHD_PIXEL_RGBS` output format — full-range single-precision float
   `E′R E′G E′B` planes, computed direct from the decoder's component signals
   via the BT.601/H.273 MatrixCoefficients=5/6 Y′CbCr → R′G′B′ matrix with no
@@ -41,7 +92,7 @@ All notable changes to this project will be documented in this file. Format:
   meaningless graph that lets the NN tests exercise the model loaders and
   provider attach unconditionally in CI, without shipping the large,
   separately licensed real weights. `test_nn_framework` drives both public C
-  ABI loaders against it and asserts they resolve the same execution provider;
+  ABI loaders against it and asserts they resolve the same active backend;
   `test_nntransform3d` and `test_ldzeug` (color_cnn) bind sessions built both
   from a path and from an in-memory buffer. A shared, path-free helper
   (`tests/unit/nn_test_model.h`) resolves each model from a dedicated env var
@@ -268,7 +319,7 @@ All notable changes to this project will be documented in this file. Format:
   `LdzeugLumaSepDecoder` (NN extracts Y; chroma is derived as
   CVBS−Y plus an analytical I/Q demod with optional `c_colorlp_b`
   bandpass). Both share `LdzeugDecoderBase`, take a
-  `chd::nn::OrtSession` via `setNnModel`, and select between
+  `chd::nn::InferenceEngine` via `setNnModel`, and select between
   per-field and weaved-frame input via `setMode`. NTSC-only (the
   reference weights bundled by jsaowji are NTSC). Original
   algorithm + models authored by **jsaowji**. Smoke test loads
@@ -282,7 +333,7 @@ All notable changes to this project will be documented in this file. Format:
   three new `Comb::FrameBuffer` methods (`split3DnnTransform`,
   `finalizeNnTransform3D`, `fallbackNnTransform3DTo2D`); exposed at
   the public C++ surface as `chd::decoders::comb::NtscDecoder::
-  setNnModel(std::shared_ptr<chd::nn::OrtSession>)`. Sibling-decoder
+  setNnModel(std::shared_ptr<chd::nn::InferenceEngine>)`. Sibling-decoder
   semantics at the C ABI (`CHD_DEC_NN_TRANSFORM3D` is a distinct
   decoder kind) — full C ABI wiring lands later alongside
   `chd_decoder_create` / `chd_decoder_set_nn_model`. The FFT/window
@@ -302,7 +353,7 @@ All notable changes to this project will be documented in this file. Format:
   reports which provider actually attached. The C ABI exposes
   `chd_nn_model_load_from_file`, `chd_nn_model_load_from_memory`,
   `chd_nn_model_free`,
-  `chd_nn_model_get_active_provider`, `chd_nn_provider_is_available`,
+  `chd_nn_model_get_active_backend`, `chd_nn_backend_is_available`,
   `chd_nn_session_opts_default`. `chd_has_feature("nn"/"cuda"/
   "fftw"/"sqlite")` is wired through to the build-time `with_*`
   options. nnTransform3D and ldzeug2 decoder ports are deferred to
@@ -313,6 +364,15 @@ All notable changes to this project will be documented in this file. Format:
   meson build fails loudly if `with_nn=true` and ORT is not
   discoverable via pkg-config or `-Donnxruntime_root`; pass
   `-Dwith_nn=false` to disable.
+- Apple frameworks for the native CoreML backend (`with_coreml`, `auto`-enabled
+  on macOS when `with_nn` is on): `CoreML`, `Foundation`, and — for the
+  GPU-resident nnTransform3D Layer-2 FFT path — `Metal` and
+  `MetalPerformanceShadersGraph` (built against a macOS 14+ SDK; the Layer-2
+  code is `@available`-gated at runtime). No effect on non-Apple builds.
+  Producing the `.mlpackage` artifacts is an offline step requiring `coremltools`
+  + `onnx2torch` + `torch` (see `scripts/convert_coreml.py`); these are a
+  build-time conversion toolchain, not a library runtime dependency, and the
+  generated artifacts are not committed.
 - Decoder framework: `chd::decoders::Decoder` synchronous interface,
   `SourceField` data container, `chd::output::ComponentFrame` and
   `chd::output::OutputWriter`. Filter library

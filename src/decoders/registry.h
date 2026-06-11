@@ -27,7 +27,7 @@
 #include "decoder_base.h"
 
 #if defined(CHD_WITH_NN)
-namespace chd::nn { class OrtSession; }
+namespace chd::nn { class InferenceEngine; }
 #endif
 
 namespace chd::decoders::registry {
@@ -67,7 +67,7 @@ std::unique_ptr<chd::decoders::Decoder> build(chd_decoder_kind_t kind,
 // false if the kind doesn't support NN but a session was supplied.
 bool applyNnModel(chd_decoder_kind_t kind,
                   chd::decoders::Decoder &decoder,
-                  std::shared_ptr<chd::nn::OrtSession> session);
+                  std::shared_ptr<chd::nn::InferenceEngine> engine);
 #endif
 
 // True if `kind` is one of the NN-driven kinds (nnTransform3D, ldzeug2).

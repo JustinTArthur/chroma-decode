@@ -8,10 +8,8 @@
 #include <stdexcept>
 #include <vector>
 
-#include <onnxruntime_cxx_api.h>
-
 #include "../../common/log.h"
-#include "../../nn/ort_session.h"
+#include "../../nn/inference_engine.h"
 #include "../filter/deemp.h"
 #include "../filter/firfilter.h"
 
@@ -156,15 +154,6 @@ void LdzeugLumaSepDecoder::decodeFrames(
 
     std::vector<double> iWork, qWork, iFilt, qFilt;
 
-    Ort::MemoryInfo memInfo = Ort::MemoryInfo::CreateCpu(
-        OrtArenaAllocator, OrtMemTypeDefault);
-
-    Ort::AllocatorWithDefaultOptions allocator;
-    auto inputName  = session_->session().GetInputNameAllocated(0, allocator);
-    auto outputName = session_->session().GetOutputNameAllocated(0, allocator);
-    const char *inputNamePtr  = inputName.get();
-    const char *outputNamePtr = outputName.get();
-
     const int32_t inputCount = static_cast<int32_t>(inputFields.size());
     const int32_t outFrameCap = static_cast<int32_t>(componentFrames.size());
 
@@ -208,18 +197,14 @@ void LdzeugLumaSepDecoder::decodeFrames(
                 }
             }
 
-            const std::array<int64_t, 4> inputShape = { 1, 1, frameHeight, fieldWidth };
-            Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
-                memInfo, frameBuffer.data(), frameBuffer.size(),
-                inputShape.data(), inputShape.size());
-            auto outputs = session_->session().Run(
-                Ort::RunOptions{ nullptr },
-                &inputNamePtr,  &inputTensor, 1,
-                &outputNamePtr, 1);
-            if (outputs.empty()) {
+            chd::nn::TensorSpec input;
+            input.data  = frameBuffer.data();
+            input.shape = { 1, 1, frameHeight, fieldWidth };
+            auto outputs = session_->run({ input });
+            if (outputs->count() == 0) {
                 throw std::runtime_error("ldzeug2_luma_sep: inference produced no outputs");
             }
-            const float *yOut = outputs[0].GetTensorData<float>();
+            const float *yOut = outputs->data(0);
 
             // Per-line demod: cvbs row from the source field, Y row from
             // the NN output (which is in frame coordinates).
@@ -249,18 +234,14 @@ void LdzeugLumaSepDecoder::decodeFrames(
                     }
                 }
 
-                const std::array<int64_t, 4> inputShape = { 1, 1, fieldHeight, fieldWidth };
-                Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
-                    memInfo, fieldBuffer.data(), fieldBuffer.size(),
-                    inputShape.data(), inputShape.size());
-                auto outputs = session_->session().Run(
-                    Ort::RunOptions{ nullptr },
-                    &inputNamePtr,  &inputTensor, 1,
-                    &outputNamePtr, 1);
-                if (outputs.empty()) {
+                chd::nn::TensorSpec input;
+                input.data  = fieldBuffer.data();
+                input.shape = { 1, 1, fieldHeight, fieldWidth };
+                auto outputs = session_->run({ input });
+                if (outputs->count() == 0) {
                     throw std::runtime_error("ldzeug2_luma_sep: inference produced no outputs");
                 }
-                const float *yOut = outputs[0].GetTensorData<float>();
+                const float *yOut = outputs->data(0);
                 for (int32_t y = 0; y < fieldHeight; ++y) {
                     const int32_t frameLine = y * 2 + yOffset;
                     if (frameLine >= frameHeight) break;

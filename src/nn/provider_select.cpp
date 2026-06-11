@@ -21,15 +21,15 @@ namespace {
 const char *providerName(ProviderPreference p)
 {
     switch (p) {
-        case CHD_NN_EP_AUTO:     return "auto";
-        case CHD_NN_EP_CPU:      return "CPU";
-        case CHD_NN_EP_CUDA:     return "CUDA";
-        case CHD_NN_EP_TENSORRT: return "TensorRT";
-        case CHD_NN_EP_COREML:   return "CoreML";
-        case CHD_NN_EP_DIRECTML: return "DirectML";
-        case CHD_NN_EP_MIGRAPHX: return "MIGraphX";
+        case CHD_NN_ORT_AUTO:     return "auto";
+        case CHD_NN_ORT_CPU:      return "CPU";
+        case CHD_NN_ORT_CUDA:     return "CUDA";
+        case CHD_NN_ORT_TENSORRT: return "TensorRT";
+        case CHD_NN_ORT_COREML:   return "CoreML";
+        case CHD_NN_ORT_DIRECTML: return "DirectML";
+        case CHD_NN_ORT_MIGRAPHX: return "MIGraphX";
+        default:                  return "unknown";  // non-ORT backend
     }
-    return "unknown";
 }
 
 // ORT's name for each provider in Ort::GetAvailableProviders()'s list.
@@ -38,15 +38,14 @@ const char *providerName(ProviderPreference p)
 const char *availabilityKey(ProviderPreference p)
 {
     switch (p) {
-        case CHD_NN_EP_CPU:      return "CPUExecutionProvider";
-        case CHD_NN_EP_CUDA:     return "CUDAExecutionProvider";
-        case CHD_NN_EP_TENSORRT: return "TensorrtExecutionProvider";
-        case CHD_NN_EP_COREML:   return "CoreMLExecutionProvider";
-        case CHD_NN_EP_DIRECTML: return "DmlExecutionProvider";
-        case CHD_NN_EP_MIGRAPHX: return "MIGraphXExecutionProvider";
-        case CHD_NN_EP_AUTO:     return "";
+        case CHD_NN_ORT_CPU:      return "CPUExecutionProvider";
+        case CHD_NN_ORT_CUDA:     return "CUDAExecutionProvider";
+        case CHD_NN_ORT_TENSORRT: return "TensorrtExecutionProvider";
+        case CHD_NN_ORT_COREML:   return "CoreMLExecutionProvider";
+        case CHD_NN_ORT_DIRECTML: return "DmlExecutionProvider";
+        case CHD_NN_ORT_MIGRAPHX: return "MIGraphXExecutionProvider";
+        default:                  return "";
     }
-    return "";
 }
 
 // ─── Linux CUDA driver loader ─────────────────────────────────────────────
@@ -152,27 +151,27 @@ std::vector<ProviderPreference> buildAutoChain(ProviderPreference requested)
 {
     std::vector<ProviderPreference> autoChain;
 #if defined(_WIN32)
-    autoChain = { CHD_NN_EP_TENSORRT, CHD_NN_EP_CUDA, CHD_NN_EP_DIRECTML, CHD_NN_EP_CPU };
+    autoChain = { CHD_NN_ORT_TENSORRT, CHD_NN_ORT_CUDA, CHD_NN_ORT_DIRECTML, CHD_NN_ORT_CPU };
 #elif defined(__APPLE__)
-    autoChain = { CHD_NN_EP_COREML, CHD_NN_EP_CPU };
+    autoChain = { CHD_NN_ORT_COREML, CHD_NN_ORT_CPU };
 #else
     // Linux + everything else
-    autoChain = { CHD_NN_EP_CUDA, CHD_NN_EP_MIGRAPHX, CHD_NN_EP_CPU };
+    autoChain = { CHD_NN_ORT_CUDA, CHD_NN_ORT_MIGRAPHX, CHD_NN_ORT_CPU };
 #endif
 
-    if (requested == CHD_NN_EP_AUTO) return autoChain;
+    if (requested == CHD_NN_ORT_AUTO || requested == CHD_NN_BACKEND_AUTO) return autoChain;
 
     // Caller pinned a specific provider: try only that one, then fall through
     // to CPU as the universal fallback only if the caller pinned CPU
     // explicitly. The ABI contract is: "Explicit: try only that one;
-    // CHD_E_NN_PROVIDER_UNAVAILABLE on failure".
+    // CHD_E_NN_BACKEND_UNAVAILABLE on failure".
     return { requested };
 }
 
 bool providerIsAvailable(ProviderPreference provider)
 {
-    if (provider == CHD_NN_EP_AUTO) return true;
-    if (provider == CHD_NN_EP_CPU)  return true;  // always
+    if (provider == CHD_NN_BACKEND_AUTO || provider == CHD_NN_ORT_AUTO) return true;
+    if (provider == CHD_NN_ORT_CPU)  return true;  // always
     const std::string key = availabilityKey(provider);
     if (key.empty()) return false;
     try {
@@ -479,15 +478,16 @@ bool attachProviderChain(Ort::SessionOptions &options,
         bool ok = false;
         std::string err;
         switch (provider) {
-            case CHD_NN_EP_CPU:      ok = attachCpu     (options, &err);        break;
-            case CHD_NN_EP_CUDA:     ok = attachCuda    (options, &err);        break;
-            case CHD_NN_EP_COREML:   ok = attachCoreML  (options, &err);        break;
-            case CHD_NN_EP_DIRECTML: ok = attachDirectML(options, &err);        break;
-            case CHD_NN_EP_TENSORRT: ok = attachTensorRT(options, cache, &err); break;
-            case CHD_NN_EP_MIGRAPHX: ok = attachMIGraphX(options, cache, &err); break;
-            case CHD_NN_EP_AUTO:
-                // AUTO can't appear in a resolved chain.
-                err = "AUTO is not a concrete provider";
+            case CHD_NN_ORT_CPU:      ok = attachCpu     (options, &err);        break;
+            case CHD_NN_ORT_CUDA:     ok = attachCuda    (options, &err);        break;
+            case CHD_NN_ORT_COREML:   ok = attachCoreML  (options, &err);        break;
+            case CHD_NN_ORT_DIRECTML: ok = attachDirectML(options, &err);        break;
+            case CHD_NN_ORT_TENSORRT: ok = attachTensorRT(options, cache, &err); break;
+            case CHD_NN_ORT_MIGRAPHX: ok = attachMIGraphX(options, cache, &err); break;
+            default:
+                // AUTO sentinels and non-ORT backends can't appear in a
+                // resolved ORT chain.
+                err = "not a concrete ORT execution provider";
                 break;
         }
         if (ok) {

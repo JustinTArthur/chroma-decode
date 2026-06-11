@@ -30,18 +30,20 @@
 #include "../reader/source.h"
 
 // chd_nn_model is only populated when the build has NN support (the C ABI
-// rejects loads cleanly when with_nn=false). Forward-declare the wrapper so
-// translation units that don't pull in ORT headers can still compile.
+// rejects loads cleanly when with_nn=false). The model handle holds a
+// backend-agnostic InferenceEngine (ORT or native CoreML), so this only
+// needs the ORT-free interface header.
 #if defined(CHD_WITH_NN)
-#include "../nn/ort_session.h"
+#include "../nn/inference_engine.h"
 #endif
 
 // One extra source for multi-source dropout correction. Each extra
 // carries its own ISource AND its own LdDecodeMetaData — the multi-source
 // DropoutCorrector::correctFrame overload needs per-source Field metadata
-// (dropouts + bPSNR) which the source itself doesn't carry. For TBC
-// extras the metadata is loaded from the .db sidecar; for CVBS extras
-// it's synthesized from the source's parameters() + field count.
+// (dropouts + bPSNR) which the source itself doesn't carry. For sources
+// opened with an ld-decode sidecar the metadata is loaded from the
+// .db/.json sidecar; for CVBS sources it's synthesized from the source's
+// parameters() + field count.
 struct chd_video_extra {
     std::unique_ptr<chd::reader::ISource> source;
     std::unique_ptr<chd::metadata::LdDecodeMetaData> metadata;
@@ -50,17 +52,29 @@ struct chd_video_extra {
 
 extern "C" {
 struct chd_video {
-    // Primary source. `metadata` is always non-null after a successful
-    // chd_video_open_*; metadataSynthesized==false means it was loaded
-    // from a TBC sqlite/json sidecar, true means it was synthesized in
-    // memory from the CVBS source's ISource::parameters() + field count.
-    // chd_video_get_info uses the flag to decide whether to report
-    // CHD_ENC_CVBS_U16_4FSC or the actual CVBS sample encoding.
+    // Primary source. For a Y/C capture opened with chd_video_open_yc this
+    // is the luma plane and `chromaSource` below holds the chroma plane;
+    // otherwise `chromaSource` is null and this is the whole composite.
+    // `metadata` is always non-null after a successful chd_video_open_*;
+    // metadataSynthesized==false means it was loaded from an ld-decode
+    // sqlite/json sidecar, true means it was synthesized in memory from the
+    // source's ISource::parameters() + field count.
     std::unique_ptr<chd::metadata::LdDecodeMetaData> metadata;
     std::unique_ptr<chd::reader::ISource> source;
-    std::string tbcPath;
+    std::string primaryPath;
     bool metadataSynthesized = false;
     std::vector<chd_video_extra> extraSources;
+
+    // Decode-level Y/C merge: when non-null, `source` carries luma and this
+    // carries the separately-decoded chroma plane (a vhs-decode luma.tbc +
+    // chroma.tbc pair). The luma plane is decoded with a Mono decoder and the
+    // chroma plane with the configured colour decoder; their U/V are merged.
+    // CVBS .y/.c pairs do NOT use this path (their chroma is centred-at-512,
+    // not composite-shaped, so it can't be colour-decoded as-is); they open a
+    // single CvbsYcSource as `source` with `chromaSource` left null.
+    std::unique_ptr<chd::reader::ISource> chromaSource;
+    std::unique_ptr<chd::metadata::LdDecodeMetaData> chromaMetadata;
+    std::vector<chd_video_extra> chromaExtraSources;
 };
 
 // Per-decoder state. The lifecycle has two phases:
@@ -80,7 +94,7 @@ struct chd_decoder {
     // to inspect what the caller asked for.
     chd::decoders::registry::OptionMaps optionMaps;
 #if defined(CHD_WITH_NN)
-    std::shared_ptr<chd::nn::OrtSession> nnModelPending;
+    std::shared_ptr<chd::nn::InferenceEngine> nnModelPending;
 #endif
 
     bool dropoutOptsSet = false;
@@ -111,6 +125,15 @@ struct chd_decoder {
     std::vector<std::unique_ptr<chd::decoders::Decoder>> decoders;
     std::vector<std::unique_ptr<std::mutex>>             decoderMutexes;
 
+    // Decode-level Y/C merge (video->chromaSource != nullptr). `decoders`
+    // above are then Mono instances decoding the luma plane; these decode the
+    // chroma plane with the configured colour kind. Indexed by the same worker
+    // index as `decoders` and only ever touched while that worker holds
+    // decoderMutexes[workerIdx], so they need no separate mutex.
+    std::vector<std::unique_ptr<chd::decoders::Decoder>> chromaDecoders;
+    int32_t chromaLookBehind = 0;
+    int32_t chromaLookAhead  = 0;
+
     // Configured pipeline state. videoParameters is the post-padding
     // copy from OutputWriter::updateConfiguration (which mutates the
     // active-region bounds when padding > 1). OutputWriter::convert is
@@ -129,6 +152,10 @@ struct chd_decoder {
     // VBI, so it must run once). Read-only afterwards, shared across workers.
     std::unique_ptr<chd::dropout::MultiSourceAlignment> multiSourceAlignment;
     std::once_flag multiSourceAlignmentOnce;
+
+    // Same, for the chroma plane's extra sources in a Y/C merge.
+    std::unique_ptr<chd::dropout::MultiSourceAlignment> chromaMultiSourceAlignment;
+    std::once_flag chromaMultiSourceAlignmentOnce;
 
     // Protects lastDropoutStats updates + reads. Small fast path —
     // worker takes it after the decode body to publish the stats.
@@ -164,7 +191,7 @@ struct chd_cancel {
 
 #if defined(CHD_WITH_NN)
 struct chd_nn_model {
-    std::shared_ptr<chd::nn::OrtSession> session;
+    std::shared_ptr<chd::nn::InferenceEngine> engine;
 };
 #else
 struct chd_nn_model {

@@ -8,10 +8,8 @@
 #include <stdexcept>
 #include <vector>
 
-#include <onnxruntime_cxx_api.h>
-
 #include "../../common/log.h"
-#include "../../nn/ort_session.h"
+#include "../../nn/inference_engine.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -85,33 +83,23 @@ void LdzeugColorCnnDecoder::decodeFrames(
     const size_t planeStride = (mode_ == Mode::Frame) ? frameStride : fieldStride;
     std::vector<float> inputBuffer(3 * planeStride);
 
-    Ort::MemoryInfo memInfo = Ort::MemoryInfo::CreateCpu(
-        OrtArenaAllocator, OrtMemTypeDefault);
-
     const int32_t modelHeight = (mode_ == Mode::Frame) ? frameHeight : fieldHeight;
-    const std::array<int64_t, 4> inputShape = { 1, 3, modelHeight, fieldWidth };
 
-    // Cache input/output names (ORT requires them as raw c_str pointers
-    // owned by the AllocatedStringPtr).
-    Ort::AllocatorWithDefaultOptions allocator;
-    auto inputName  = session_->session().GetInputNameAllocated(0, allocator);
-    auto outputName = session_->session().GetOutputNameAllocated(0, allocator);
-    const char *inputNamePtr  = inputName.get();
-    const char *outputNamePtr = outputName.get();
-
-    auto runOnce = [&](Ort::Value &&inputTensor) {
-        auto outputs = session_->session().Run(
-            Ort::RunOptions{ nullptr },
-            &inputNamePtr,  &inputTensor, 1,
-            &outputNamePtr, 1);
-        if (outputs.empty()) {
+    // Run one inference over the [1,3,H,W] input buffer; returns the engine
+    // result (kept alive by the caller while it reads the output planes).
+    auto runOnce = [&]() {
+        chd::nn::TensorSpec input;
+        input.data  = inputBuffer.data();
+        input.shape = { 1, 3, modelHeight, fieldWidth };
+        auto result = session_->run({ input });
+        if (result->count() == 0) {
             throw std::runtime_error("ldzeug2_color_cnn: inference produced no outputs");
         }
-        const auto outShape = outputs[0].GetTensorTypeAndShapeInfo().GetShape();
+        const auto outShape = result->shape(0);
         if (outShape.size() != 4 || outShape[1] != 3) {
             throw std::runtime_error("ldzeug2_color_cnn: unexpected output tensor shape");
         }
-        return outputs;
+        return result;
     };
 
     const int32_t inputCount = static_cast<int32_t>(inputFields.size());
@@ -154,12 +142,9 @@ void LdzeugColorCnnDecoder::decodeFrames(
                 }
             }
 
-            Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
-                memInfo, inputBuffer.data(), inputBuffer.size(),
-                inputShape.data(), inputShape.size());
-            auto outputs = runOnce(std::move(inputTensor));
+            auto outputs = runOnce();
 
-            const float *outData = outputs[0].GetTensorData<float>();
+            const float *outData = outputs->data(0);
             const float *yPlane  = outData + 0 * frameStride;
             const float *iPlane  = outData + 1 * frameStride;
             const float *qPlane  = outData + 2 * frameStride;
@@ -206,12 +191,9 @@ void LdzeugColorCnnDecoder::decodeFrames(
                 }
             }
 
-            Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
-                memInfo, inputBuffer.data(), inputBuffer.size(),
-                inputShape.data(), inputShape.size());
-            auto outputs = runOnce(std::move(inputTensor));
+            auto outputs = runOnce();
 
-            const float *outData = outputs[0].GetTensorData<float>();
+            const float *outData = outputs->data(0);
             const float *yPlane  = outData + 0 * fieldStride;
             const float *iPlane  = outData + 1 * fieldStride;
             const float *qPlane  = outData + 2 * fieldStride;

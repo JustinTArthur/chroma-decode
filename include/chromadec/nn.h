@@ -9,18 +9,34 @@
 extern "C" {
 #endif
 
-typedef enum chd_nn_provider {
-    CHD_NN_EP_AUTO     = 0,   /* platform default chain */
-    CHD_NN_EP_CPU      = 1,
-    CHD_NN_EP_CUDA     = 2,
-    CHD_NN_EP_TENSORRT = 3,
-    CHD_NN_EP_COREML   = 4,
-    CHD_NN_EP_DIRECTML = 5,
-    CHD_NN_EP_MIGRAPHX = 6
-} chd_nn_provider_t;
+/* Inference backend. Family-grouped: AUTO (best across all backends), then the
+ * ONNX Runtime execution providers (the CHD_NN_ORT_* infix), then native non-ORT
+ * backends (CHD_NN_<name>, no ORT_ infix). Per-value semantics live in the docs
+ * site. */
+typedef enum chd_nn_backend {
+    CHD_NN_BACKEND_AUTO  = 0,   /* best across all backends; inferred from artifact */
+
+    CHD_NN_ORT_AUTO      = 10,  /* ONNX Runtime, per-OS EP fallback chain */
+    CHD_NN_ORT_CPU       = 11,
+    CHD_NN_ORT_CUDA      = 12,
+    CHD_NN_ORT_TENSORRT  = 13,
+    CHD_NN_ORT_COREML    = 14,  /* ONNX Runtime CoreML execution provider */
+    CHD_NN_ORT_DIRECTML  = 15,
+    CHD_NN_ORT_MIGRAPHX  = 16,
+
+    CHD_NN_COREML        = 20   /* native CoreML .mlpackage via MLModel */
+} chd_nn_backend_t;
+
+/* Compute units for the native CoreML backend (CHD_NN_COREML); ignored by every
+ * ONNX Runtime backend. */
+typedef enum chd_nn_coreml_compute {
+    CHD_NN_COREML_CPU_AND_GPU = 0,  /* default: CPU + GPU, no ANE */
+    CHD_NN_COREML_ALL         = 1,  /* CPU + GPU + Apple Neural Engine */
+    CHD_NN_COREML_CPU_ONLY    = 2   /* CPU only */
+} chd_nn_coreml_compute_t;
 
 typedef struct chd_nn_session_opts {
-    chd_nn_provider_t provider;     /* AUTO unless caller pins */
+    chd_nn_backend_t backend;       /* AUTO unless caller pins */
     int32_t device_id;              /* 0 unless multi-GPU */
     int     enable_graph_optim;     /* default 1 */
     int     enable_mem_pattern;     /* default 1 */
@@ -28,6 +44,8 @@ typedef struct chd_nn_session_opts {
      * intra-op > 1 oversubscribes CPU. */
     int32_t inter_op_threads;
     int32_t intra_op_threads;
+    /* Native CoreML (CHD_NN_COREML) compute units; ignored otherwise. */
+    chd_nn_coreml_compute_t coreml_compute;
 
     /* Optional directory for caching compiled EP engines/binaries (TensorRT
      * engine plans, MIGraphX compiled models). Avoids the 15-30 s graph
@@ -53,8 +71,11 @@ typedef struct chd_nn_session_opts {
 
 void chd_nn_session_opts_default(chd_nn_session_opts_t *out);
 
-/* Load an ONNX model from a file on disk. `model_path` is read by the
- * ONNX Runtime; the file only needs to outlive this call. */
+/* Load a model from a file on disk. The backend in `opts` selects the runtime:
+ * CHD_NN_BACKEND_AUTO (the default) infers it from the artifact — a `.onnx`
+ * loads through ONNX Runtime (EP via the auto chain), a `.mlpackage`/`.mlmodelc`
+ * through the native CoreML backend. A pinned backend forces that path and
+ * requires the matching artifact. The file only needs to outlive this call. */
 chd_status_t chd_nn_model_load_from_file(const char *model_path,
                                          const chd_nn_session_opts_t *opts_or_null,
                                          chd_nn_model_t **out);
@@ -62,7 +83,9 @@ chd_status_t chd_nn_model_load_from_file(const char *model_path,
 /* Load an ONNX model from an in-memory buffer — for callers that embed the
  * model as a compiled-in byte array and want no filesystem dependency.
  * `model_data` points to `model_size` bytes of serialized ONNX. The bytes
- * are consumed during this call and need not outlive it. */
+ * are consumed during this call and need not outlive it. A backend that can
+ * ingest a model buffer is required: ONNX Runtime can; CHD_NN_COREML can't
+ * (its .mlpackage is an on-disk bundle) and returns CHD_E_INVALID_ARG. */
 chd_status_t chd_nn_model_load_from_memory(const void *model_data,
                                            size_t model_size,
                                            const chd_nn_session_opts_t *opts_or_null,
@@ -70,10 +93,12 @@ chd_status_t chd_nn_model_load_from_memory(const void *model_data,
 
 void chd_nn_model_free(chd_nn_model_t *m);
 
-chd_status_t chd_nn_model_get_active_provider(const chd_nn_model_t *m,
-                                               chd_nn_provider_t *out);
+/* The backend actually in use after load (e.g. CHD_NN_ORT_CPU when an ORT
+ * AUTO chain fell back to CPU, or CHD_NN_COREML for the native backend). */
+chd_status_t chd_nn_model_get_active_backend(const chd_nn_model_t *m,
+                                             chd_nn_backend_t *out);
 
-int chd_nn_provider_is_available(chd_nn_provider_t p);
+int chd_nn_backend_is_available(chd_nn_backend_t b);
 
 #ifdef __cplusplus
 }

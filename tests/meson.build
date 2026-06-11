@@ -134,8 +134,10 @@ test('nn_framework', test_nn_framework)
 # internal-header access (Comb::Configuration, NtscDecoder::setNnModel,
 # chd::nn::OrtSession). Constructs a session from the located model (the
 # synthetic fixture by default, or real weights via $CHD_TEST_NN_MODEL) and
-# binds it — both from a file path and from an in-memory buffer.
-if has_nn
+# binds it — both from a file path and from an in-memory buffer. Gated on the
+# ORT backend specifically: these construct chd::nn::OrtSession / OrtEngine and
+# link ort_dep, so they don't apply to a native-CoreML-only build.
+if has_ort
   test_nntransform3d = executable('test_nntransform3d',
     'unit/test_nntransform3d.cpp',
     include_directories: [public_inc, version_inc],

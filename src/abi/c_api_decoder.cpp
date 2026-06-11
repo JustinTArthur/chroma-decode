@@ -339,7 +339,7 @@ chd_status_t chd_decoder_set_nn_model(chd_decoder_t *d, chd_nn_model_t *m) {
             "chd_decoder_set_nn_model: decoder kind does not accept an NN model");
         return CHD_E_INVALID_ARG;
     }
-    d->nnModelPending = (m != nullptr) ? m->session : nullptr;
+    d->nnModelPending = (m != nullptr) ? m->engine : nullptr;
     return CHD_OK;
 #else
     (void)m;

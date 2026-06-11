@@ -47,19 +47,31 @@ chromadec_sources = files(
 chromadec_deps = [threads_dep, sqlite3_dep, fftw3_dep]
 chromadec_cpp_args = []
 chromadec_cuda_args = []
+# Backend-agnostic NN framework scaffolding: the decoders and the shared
+# nnTransform3D FFT/window helpers. Built whenever any NN backend is present
+# (has_nn = has_ort or has_coreml). ldzeug runs on either backend through the
+# InferenceEngine interface; the nnTransform3D FFT/window helpers back both the
+# ORT CPU path and the native CoreML host-FFT path.
 if has_nn
   chromadec_sources += files(
-    'nn/ort_env.cpp',
-    'nn/ort_session.cpp',
-    'nn/provider_select.cpp',
     'decoders/nntransform3d/nntransform3d_fft_cpu.cpp',
     'decoders/nntransform3d/nntransform3d_window.cpp',
     'decoders/ldzeug/ldzeug_base.cpp',
     'decoders/ldzeug/ldzeug_color_cnn.cpp',
     'decoders/ldzeug/ldzeug_luma_sep.cpp',
   )
-  chromadec_deps += [ort_dep]
   chromadec_cpp_args += ['-DCHD_WITH_NN=1']
+endif
+# ONNX Runtime backend: the OrtEngine/OrtSession implementation and EP selection.
+if has_ort
+  chromadec_sources += files(
+    'nn/ort_env.cpp',
+    'nn/ort_session.cpp',
+    'nn/ort_engine.cpp',
+    'nn/provider_select.cpp',
+  )
+  chromadec_deps += [ort_dep]
+  chromadec_cpp_args += ['-DCHD_WITH_ORT=1']
 endif
 if has_fftw
   chromadec_cpp_args += ['-DCHD_WITH_FFTW=1']
@@ -107,6 +119,21 @@ if has_rocm
   chromadec_cpp_args += ['-DCHD_WITH_ROCM=1']
 endif
 
+# Native CoreML path (macOS). The .mm sources are compiled by the `objcpp`
+# language; they share the same defines + include dirs as the C++ sources, so
+# objcpp_args mirrors cpp_args (plus -std and ARC). Must come after the blocks
+# above so chromadec_cpp_args is fully populated before we copy it.
+chromadec_objcpp_args = []
+if has_coreml
+  chromadec_sources += files(
+    'nn/coreml_engine.mm',
+    'decoders/nntransform3d/nntransform3d_pipeline_coreml.mm',
+  )
+  chromadec_deps += [coreml_frameworks]
+  chromadec_cpp_args += ['-DCHD_WITH_COREML=1']
+  chromadec_objcpp_args = chromadec_cpp_args + ['-std=c++17', '-fobjc-arc']
+endif
+
 # Symbol export discipline:
 # - On ELF (Linux), restrict exported symbols via a version script.
 # - On macOS, restrict via -exported_symbols_list.
@@ -125,6 +152,7 @@ libchromadec = library('chromadec',
   dependencies: chromadec_deps,
   cpp_args: chromadec_cpp_args,
   cuda_args: chromadec_cuda_args,
+  objcpp_args: chromadec_objcpp_args,
   # NOTE: do NOT add -fvisibility=hidden. The version script (ELF) /
   # exports list (Mach-O) is the source of truth for what's exported.
   # -fvisibility=hidden would hide every internal symbol *and* the C ABI

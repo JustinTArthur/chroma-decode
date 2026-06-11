@@ -5,7 +5,7 @@
 // Attaching an EP to an Ort::SessionOptions is a fallible op
 // (the runtime may not have the provider library available, or the provider
 // may reject the model at session-create time). attachProviderChain walks a
-// per-OS priority list per the chd_nn_provider_t the caller asked for,
+// per-OS priority list per the ORT-family chd_nn_backend_t the caller asked for,
 // attaching the first provider that succeeds and reporting back which one
 // actually attached.
 //
@@ -15,7 +15,7 @@
 //   macOS:   CoreML → CPU
 //
 // Explicit (non-AUTO) requests try only that provider; if the attach fails,
-// they return CHD_E_NN_PROVIDER_UNAVAILABLE rather than silently falling
+// they return CHD_E_NN_BACKEND_UNAVAILABLE rather than silently falling
 // back. CPU is the always-available leaf.
 //
 // Provider availability queries use Ort::GetAvailableProviders() rather than
@@ -35,10 +35,10 @@
 
 namespace chd::nn {
 
-// Map back-and-forth between the public C ABI enum and our internal one.
-// (No internal enum currently — kept as a typedef so we can introduce one
-// later without churning call sites.)
-using ProviderPreference = chd_nn_provider_t;
+// ORT execution-provider preference. A subset of the public chd_nn_backend_t
+// enum — only the ORT-family values (CHD_NN_ORT_*) ever reach this subsystem;
+// the native backends (CHD_NN_COREML, …) are dispatched before ORT is touched.
+using ProviderPreference = chd_nn_backend_t;
 
 // Engine-cache configuration passed through to the attach helpers that
 // support persistent caching of compiled graphs (TensorRT, MIGraphX).
@@ -68,7 +68,7 @@ bool providerIsAvailable(ProviderPreference provider);
 // MIGraphX). EPs that don't ignore it.
 //
 // The CPU provider is appended implicitly (ORT's default), so a chain that
-// reaches it always succeeds — but `outAttached` is set to CHD_NN_EP_CPU.
+// reaches it always succeeds — but `outAttached` is set to CHD_NN_ORT_CPU.
 //
 // On failure (every provider in the chain failed to attach with an error
 // different from "provider not available"), `outError` carries a multi-line

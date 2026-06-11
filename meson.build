@@ -28,7 +28,7 @@ ort_dep = dependency('libonnxruntime', required: false)
 if not ort_dep.found()
   ort_dep = dependency('onnxruntime', required: false)
 endif
-if not ort_dep.found() and get_option('with_nn') and get_option('onnxruntime_root') != ''
+if not ort_dep.found() and get_option('with_onnxruntime') and get_option('onnxruntime_root') != ''
   ort_root = get_option('onnxruntime_root')
   ort_lib  = cpp.find_library('onnxruntime',
                               dirs: [ort_root / 'lib'],
@@ -40,7 +40,10 @@ if not ort_dep.found() and get_option('with_nn') and get_option('onnxruntime_roo
   endif
 endif
 
-has_nn     = get_option('with_nn') and ort_dep.found()
+# ONNX Runtime backend. The NN framework (interface, decoders, C ABI) is
+# backend-agnostic; `has_nn` (the umbrella "any NN backend present") is computed
+# after CoreML discovery below as `has_ort or has_coreml`.
+has_ort    = get_option('with_onnxruntime') and ort_dep.found()
 has_fftw   = fftw3_dep.found()
 has_sqlite = sqlite3_dep.found()
 
@@ -56,7 +59,7 @@ has_sqlite = sqlite3_dep.found()
 # this build option — every inference round-trips through host memory.
 cuda_opt = get_option('with_cuda')
 has_cuda = false
-if not cuda_opt.disabled() and has_nn
+if not cuda_opt.disabled() and has_ort
   cuda_dep = dependency('cuda',
                         version: '>=11.0',
                         modules: ['cudart', 'cufft'],
@@ -76,7 +79,7 @@ endif
 # being listed alongside the C++ sources. ROCm is Linux-only.
 rocm_opt = get_option('with_rocm')
 has_rocm = false
-if not rocm_opt.disabled() and has_nn and host_machine.system() == 'linux'
+if not rocm_opt.disabled() and has_ort and host_machine.system() == 'linux'
   hipcc = find_program('hipcc', required: rocm_opt)
   # Always include /opt/rocm (AMD's apt/dnf default on Ubuntu/RHEL/SLES);
   # CMake silently ignores it on distros installing under /usr. User-set
@@ -103,16 +106,52 @@ if not rocm_opt.disabled() and has_nn and host_machine.system() == 'linux'
   endif
 endif
 
-# If the user explicitly requested NN support but ORT is missing, fail loudly
-# rather than silently dropping NN. The default for with_nn is `true`, so
-# silent absence would mean every Linux/macOS dev build without ORT installed
-# would quietly omit NN — and that bites later when an integration test
-# loads a model expecting NN to be present.
-if get_option('with_nn') and not ort_dep.found()
-  error('with_nn=true but ONNX Runtime was not found via pkg-config or ' +
+# ── CoreML / Metal toolkit discovery (macOS only) ─────────────────────────────
+# Native CoreML inference for the models the ORT CoreML execution provider
+# can't accelerate (nnTransform3D's 3D conv) plus an MPSGraph device FFT. The
+# Objective-C++ sources are compiled by the `objcpp` language (added here,
+# native: false so it targets the host like the rest of the library) and link
+# against the CoreML / Metal system frameworks.
+#
+# This is a fully independent inference backend — it does NOT require ONNX
+# Runtime. `with_onnxruntime=false -Dwith_coreml=enabled` yields a CoreML-only
+# library on macOS. (It also sits alongside the ORT CoreML EP when ORT is
+# present, adding the native .mlpackage path the EP can't accelerate.)
+coreml_opt = get_option('with_coreml')
+has_coreml = false
+if not coreml_opt.disabled() and host_machine.system() == 'darwin'
+  objcpp_ok = add_languages('objcpp', required: coreml_opt, native: false)
+  # MetalPerformanceShadersGraph carries the GPU FFT used by nnTransform3D
+  # Layer 2; CoreML + Foundation + Metal cover model load + buffer interop.
+  coreml_frameworks = dependency('appleframeworks',
+                                 modules: ['CoreML', 'Foundation', 'Metal',
+                                           'MetalPerformanceShadersGraph'],
+                                 required: coreml_opt)
+  if objcpp_ok and coreml_frameworks.found()
+    has_coreml = true
+  endif
+elif coreml_opt.enabled()
+  # Explicit request on a non-macOS host can't be satisfied — fail loudly
+  # rather than silently dropping it.
+  error('with_coreml=enabled but the native CoreML backend is macOS-only.')
+endif
+
+# The NN framework (the chd::nn::InferenceEngine interface, the ldzeug and
+# nnTransform3D decoders, and the chd_nn_* C ABI) is backend-agnostic and is
+# built when EITHER inference backend is present.
+has_nn = has_ort or has_coreml
+
+# If the user explicitly requested the ONNX Runtime backend but ORT is missing,
+# fail loudly rather than silently dropping it. The default for with_onnxruntime
+# is `true`, so silent absence would mean every Linux/macOS dev build without ORT
+# installed would quietly omit it — and that bites later when an integration test
+# loads a model expecting ORT to be present. (On macOS you can instead build the
+# native CoreML backend alone with -Dwith_onnxruntime=false -Dwith_coreml=enabled.)
+if get_option('with_onnxruntime') and not ort_dep.found()
+  error('with_onnxruntime=true but ONNX Runtime was not found via pkg-config or ' +
         '-Donnxruntime_root. Install ORT (Homebrew formula `onnxruntime`, ' +
         'apt `libonnxruntime-dev`, or download Microsoft GitHub release) or ' +
-        'pass -Dwith_nn=false to disable NN decoders.')
+        'pass -Dwith_onnxruntime=false to disable the ORT backend.')
 endif
 
 # ── Public headers + library (include/ defines version_h via configure_file,
@@ -151,9 +190,10 @@ cmake_mod.configure_package_config_file(
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 summary({
-  'NN decoders (ONNX Runtime)':    has_nn,
+  'ONNX Runtime backend':          has_ort,
   'CUDA cuFFT pipeline (NV/TRT)':  has_cuda,
   'HIP hipFFT pipeline (ROCm/MX)': has_rocm,
+  'CoreML pipeline (macOS)':       has_coreml,
   'FFTW3 (Transform-PAL)':         has_fftw,
   'SQLite3 (metadata)':            has_sqlite,
   'Tests':                         get_option('with_tests'),

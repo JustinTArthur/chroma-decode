@@ -41,7 +41,7 @@
 #include "comb.h"
 
 #if defined(CHD_WITH_NN)
-namespace chd::nn { class OrtSession; }
+namespace chd::nn { class InferenceEngine; }
 #endif
 
 namespace chd::decoders::comb {
@@ -55,12 +55,12 @@ public:
     int32_t getLookAhead() const override;
 
 #if defined(CHD_WITH_NN)
-    // Bind the nnTransform3D ONNX session. Caller must also set
+    // Bind the nnTransform3D inference engine. Caller must also set
     // config.combConfig.nnTransform3D = true (and dimensions = 3) for the
-    // session to actually be used. Passing nullptr unbinds. This is the
+    // engine to actually be used. Passing nullptr unbinds. This is the
     // public C++ entry point that the C ABI's chd_decoder_set_nn_model
     // will dispatch to later; this only exposes the C++ surface.
-    void setNnModel(std::shared_ptr<chd::nn::OrtSession> session);
+    void setNnModel(std::shared_ptr<chd::nn::InferenceEngine> engine);
 #endif
 
     void decodeFrames(const std::vector<chd::decoders::SourceField> &inputFields,

@@ -42,7 +42,7 @@
 #include "../source_field.h"
 
 #if defined(CHD_WITH_NN)
-namespace chd::nn { class OrtSession; }
+namespace chd::nn { class InferenceEngine; }
 #endif
 
 namespace chd::decoders::comb {
@@ -86,12 +86,12 @@ public:
                              const Configuration &configuration);
 
 #if defined(CHD_WITH_NN)
-    // Bind the ONNX Runtime session used by nnTransform3D. The session
-    // is thread-safe (Ort::Session::Run is reentrant) so one session is
-    // shared across all worker threads. Pass nullptr to unbind; the
-    // decoder will fall back to 2D chroma. Caller retains shared
+    // Bind the inference engine used by nnTransform3D. The engine is
+    // thread-safe (ORT Run / CoreML predict are both reentrant) so one
+    // engine is shared across all worker threads. Pass nullptr to unbind;
+    // the decoder will fall back to 2D chroma. Caller retains shared
     // ownership.
-    void setNnModel(std::shared_ptr<chd::nn::OrtSession> session);
+    void setNnModel(std::shared_ptr<chd::nn::InferenceEngine> engine);
 #endif
 
     // Decode a sequence of fields into a sequence of interlaced frames
@@ -116,7 +116,7 @@ private:
     // threads via the DecoderPool — Ort::Session is documented as
     // thread-safe; concurrent Run() calls inside the per-tile
     // loop are serialised by nnRunMutex below to match tbc-tools.
-    std::shared_ptr<chd::nn::OrtSession> nnSession;
+    std::shared_ptr<chd::nn::InferenceEngine> nnSession;
     std::mutex nnRunMutex;
 #endif
 
@@ -144,7 +144,7 @@ private:
         // Returns true on success, false if the session became unusable
         // mid-frame (in which case the caller should fall back to 2D).
         bool split3DnnTransform(FrameBuffer &nextFrame,
-                                chd::nn::OrtSession &session,
+                                chd::nn::InferenceEngine &engine,
                                 std::mutex &runMutex,
                                 double inputMagnitudeScale);
         void finalizeNnTransform3D();

@@ -5,7 +5,7 @@
 #include <utility>
 
 #include "../../common/log.h"
-#include "../../nn/ort_session.h"
+#include "../../nn/inference_engine.h"
 
 namespace chd::decoders::ldzeug {
 
@@ -20,9 +20,9 @@ bool LdzeugDecoderBase::configure(
     return true;
 }
 
-void LdzeugDecoderBase::setNnModel(std::shared_ptr<chd::nn::OrtSession> session)
+void LdzeugDecoderBase::setNnModel(std::shared_ptr<chd::nn::InferenceEngine> engine)
 {
-    session_ = std::move(session);
+    session_ = std::move(engine);
 }
 
 }  // namespace chd::decoders::ldzeug

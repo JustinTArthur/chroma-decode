@@ -22,14 +22,12 @@
 
 #include <chromadec/nn.h>
 
-#include "provider_select.h"
-
 namespace chd::nn {
 
 // Options the C ABI gives us when loading a model. Mirrors
 // chd_nn_session_opts_t but in C++ form, with defaults already applied.
 struct SessionOptions {
-    chd_nn_provider_t requestedProvider = CHD_NN_EP_AUTO;
+    chd_nn_backend_t  requestedProvider = CHD_NN_ORT_AUTO;
     int32_t           deviceId          = 0;
     bool              enableGraphOptim  = true;
     bool              enableMemPattern  = true;
@@ -61,10 +59,10 @@ public:
     // call Run() concurrently per ORT docs.
     Ort::Session &session() { return *session_; }
 
-    // The provider ORT actually ended up using (after fallback). May be
-    // CPU even when the caller requested CUDA, if AUTO was selected and
-    // CUDA wasn't available.
-    chd_nn_provider_t activeProvider() const { return activeProvider_; }
+    // The backend ORT actually ended up using (after fallback) — always an
+    // ORT-family value (e.g. CHD_NN_ORT_CPU when an AUTO chain fell back to
+    // CPU because CUDA wasn't available).
+    chd_nn_backend_t activeBackend() const { return activeBackend_; }
 
     // Best-effort accessor for input/output metadata. Empty until lazily
     // populated on first call.
@@ -74,14 +72,14 @@ public:
 private:
     // Shared construction prologue: force-inits the process-wide Ort::Env,
     // applies common options, and attaches the provider chain (setting
-    // activeProvider_). `cacheModelPath` is only used for engine-cache
+    // activeBackend_). `cacheModelPath` is only used for engine-cache
     // keying and may be empty for in-memory models. Returns the configured
     // SessionOptions ready to hand to an Ort::Session constructor.
     Ort::SessionOptions prepareSessionOptions(const SessionOptions &opts,
                                               const std::string &cacheModelPath);
 
     std::unique_ptr<Ort::Session> session_;
-    chd_nn_provider_t             activeProvider_ = CHD_NN_EP_CPU;
+    chd_nn_backend_t              activeBackend_ = CHD_NN_ORT_CPU;
     std::vector<std::string>      inputNames_;
     std::vector<std::string>      outputNames_;
     bool                          ioNamesCached_ = false;
