@@ -1,0 +1,6 @@
+# Track the wrap pins (and any local package files); ignore everything Meson
+# downloads or unpacks here (subproject sources, packagecache, wraplock).
+*
+!.gitignore
+!*.wrap
+!packagefiles/

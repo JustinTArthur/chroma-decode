@@ -44,6 +44,48 @@ Then include the umbrella header (or the individual headers you need):
 The public surface is pure C, so the headers are consumable from both C and
 C++ without a C++ runtime requirement at the boundary.
 
+## Consuming as a Meson subproject
+
+The linking examples above assume libchromadec is already installed to a prefix
+your build can discover. A Meson project can instead build libchromadec **inline
+as a subproject**, with no install step and no system copy: pin the source with a
+wrap file and let Meson clone and build it as part of your configure.
+
+Drop a `subprojects/chromadec.wrap` into your project:
+
+```ini
+[wrap-git]
+url = https://github.com/JustinTArthur/chroma-decode
+revision = main
+depth = 1
+```
+
+Then consume it with the **same line** you would use for an installed copy:
+
+```meson
+chromadec_dep = dependency('chromadec', version: '>= 0.1')
+executable('my_consumer', 'main.c', dependencies: chromadec_dep)
+```
+
+libchromadec calls
+[`meson.override_dependency`](https://mesonbuild.com/Reference-manual_builtin_meson.html#mesonoverride_dependency),
+so when no system install is found `dependency('chromadec')` transparently
+resolves to the subproject. Vendored and installed consumption are then identical
+at the call site — flip between them by adding or removing the wrap, with no edit
+to your `meson.build`.
+
+!!! note "Transitive dependencies"
+    A wrap fetches libchromadec's source, not most of its dependencies.
+    **SQLite3** (required) is the exception: libchromadec ships its own
+    `sqlite3.wrap`, so when no system SQLite is found it is fetched and built
+    from source as a nested subproject automatically — a consumer who wraps
+    libchromadec inherits that fallback and needs nothing installed for it.
+    **FFTW3** and **ONNX Runtime** (optional, feature-gating Transform-PAL and
+    the neural decoders) have no bundled fallback and are still resolved from
+    **your** environment; install them as you would for a standalone build. To
+    force the SQLite fallback even when a system copy exists, configure with
+    `--force-fallback-for=sqlite3`.
+
 ## A minimal decode
 
 The shape of every integration is the same: initialise, open a source, create

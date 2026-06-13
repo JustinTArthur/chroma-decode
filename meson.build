@@ -20,7 +20,13 @@ threads_dep = dependency('threads')
 # SQLite3 is required: the TBC metadata sidecars
 # live in SQLite files (`*.tbc.db`) and chd_video_open_composite cannot work without
 # the skeleton's `required: false` is upgraded here.
-sqlite3_dep = dependency('sqlite3', required: true)
+# default_options apply only when the wrap fallback builds SQLite from the
+# amalgamation; a system libsqlite3 is linked as-is. We use core SQL only (no
+# FTS/R-Tree/virtual tables), so the bundled copy drops every optional extension
+# and links statically into libchromadec rather than shipping a separate .dylib.
+sqlite3_dep = dependency('sqlite3', required: true,
+                         default_options: ['default_library=static',
+                                           'all-extensions=disabled'])
 fftw3_dep   = dependency('fftw3',   required: false)
 
 # ONNX Runtime discovery: pkg-config first, then -Donnxruntime_root fallback.
@@ -158,6 +164,16 @@ endif
 #    placed at build/include/chromadec/version.h so <chromadec/version.h> works).
 subdir('include')
 subdir('src')
+
+# ── Subproject dependency ─────────────────────────────────────────────────────
+# Let a parent Meson project consume this tree as a subproject without an install
+# step. override_dependency makes the parent's `dependency('chromadec')` resolve
+# to this object when no system copy is found, so vendored and installed
+# consumption use the identical line.
+chromadec_dep = declare_dependency(
+  link_with: libchromadec,
+  include_directories: [public_inc, version_inc])
+meson.override_dependency('chromadec', chromadec_dep)
 
 if get_option('with_tests') and has_sqlite # tests need sqlite for fixture I/O
   subdir('tests')

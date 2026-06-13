@@ -7,6 +7,16 @@ All notable changes to this project will be documented in this file. Format:
 ## [Unreleased]
 
 ### Added
+- libchromadec can now be consumed as a **Meson subproject**: it calls
+  `meson.override_dependency('chromadec', …)`, so a parent project's
+  `dependency('chromadec')` resolves to the in-tree build when no system copy is
+  installed — vendored and installed consumption use the identical line. SQLite3,
+  the one required dependency, gains a bundled `subprojects/sqlite3.wrap` fallback
+  that builds from the amalgamation when no system libsqlite3 is found, linked
+  **statically** into libchromadec and trimmed to core SQL (all optional
+  extensions disabled), so a wrapped build needs nothing installed for it. A
+  system libsqlite3, when present, is still linked as-is. Documented in the
+  integration guide's new "Consuming as a Meson subproject" section.
 - Native CoreML is now a standalone inference backend, buildable **without**
   ONNX Runtime. A macOS build with `-Dwith_onnxruntime=false -Dwith_coreml=enabled`
   ships the ldzeug and nnTransform3D decoders running entirely on CoreML, with no
