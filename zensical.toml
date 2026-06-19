@@ -17,6 +17,7 @@ nav = [
   { "Architecture" = "architecture.md" },
   { "Integration guide" = "integration-guide.md" },
   { "C API reference" = "api-reference.md" },
+  { "Rust bindings" = "rust-bindings.md" },
   { "File formats" = "file-formats.md" },
   { "NN models" = "nn-models.md" },
   { "ABI stability" = "abi-stability.md" },

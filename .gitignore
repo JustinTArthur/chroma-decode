@@ -5,6 +5,9 @@
 /subprojects/packagecache/
 /subprojects/*/
 
+# Rust workspace build output
+/rust/target/
+
 # Zensical documentation site output
 /site/
 

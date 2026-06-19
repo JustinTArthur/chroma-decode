@@ -1,0 +1,76 @@
+name: rust
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # Build libchromadec, then gate the first-party Rust bindings: rustfmt,
+  # clippy (warnings = errors), and the test suite including the encode-orc
+  # -driven stream integration test. Linux x86_64 only — the crate is
+  # platform-portable and the C library is already matrix-tested in build.yml.
+  rust-bindings:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config libsqlite3-dev libfftw3-dev
+
+      - name: Python venv (meson)
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install meson
+
+      - name: Download ONNX Runtime (Microsoft release, Linux x64 CPU)
+        run: |
+          ORT_VER=1.26.0
+          curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-x64-${ORT_VER}.tgz"
+          mkdir -p ${HOME}/ort
+          tar -xzf ort.tgz -C ${HOME}/ort --strip-components=1
+          echo "ORT_ROOT=${HOME}/ort" >> $GITHUB_ENV
+
+      - name: Build libchromadec
+        run: |
+          . .venv/bin/activate
+          meson setup build -Donnxruntime_root="${ORT_ROOT}"
+          meson compile -C build
+
+      - name: Rust toolchain
+        run: |
+          rustup component add rustfmt clippy
+          rustc --version && cargo --version
+
+      - name: Set up encode-orc (drives the stream integration fixture)
+        uses: ./.github/actions/setup-encode-orc
+
+      - name: rustfmt
+        working-directory: rust
+        run: cargo fmt --check
+
+      # build.rs resolves libchromadec via pkg-config from the build tree.
+      - name: clippy (deny warnings)
+        working-directory: rust
+        env:
+          PKG_CONFIG_PATH: ${{ github.workspace }}/build/meson-uninstalled:${{ github.workspace }}/build/meson-private
+        run: cargo clippy --all-targets --features tokio -- -D warnings
+
+      - name: Default build (feature-gated code compiles out)
+        working-directory: rust
+        env:
+          PKG_CONFIG_PATH: ${{ github.workspace }}/build/meson-uninstalled:${{ github.workspace }}/build/meson-private
+        run: cargo build
+
+      - name: Test (incl. stream integration via encode-orc)
+        working-directory: rust
+        env:
+          PKG_CONFIG_PATH: ${{ github.workspace }}/build/meson-uninstalled:${{ github.workspace }}/build/meson-private
+          LD_LIBRARY_PATH: ${{ github.workspace }}/build/src:${{ env.ORT_ROOT }}/lib
+        run: cargo test --features tokio

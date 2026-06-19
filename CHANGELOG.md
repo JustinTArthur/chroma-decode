@@ -7,6 +7,16 @@ All notable changes to this project will be documented in this file. Format:
 ## [Unreleased]
 
 ### Added
+- First-party **Rust bindings**, a two-crate workspace under `rust/`:
+  `chromadec-sys` (raw bindgen-generated FFI over the C headers) and
+  `chromadec` (a safe wrapper — owning handle types with `Drop`, `Result`-based
+  errors that capture `chd_last_error`, Rust enums mirroring the C enums, and
+  zero-copy `PlaneView` borrows tied to the owning `Frame`'s lifetime). Rust has
+  no stable ABI, so the bindings layer on the existing C ABI as source crates
+  rather than changing the native artifact. `chromadec-sys`'s build script finds
+  the library via pkg-config (including a build tree's `meson-uninstalled`
+  directory) or an explicit `CHROMADEC_LIB_DIR`/`CHROMADEC_INCLUDE_DIR`
+  override. Documented on the new "Rust bindings" docs page.
 - libchromadec can now be consumed as a **Meson subproject**: it calls
   `meson.override_dependency('chromadec', …)`, so a parent project's
   `dependency('chromadec')` resolves to the in-tree build when no system copy is
