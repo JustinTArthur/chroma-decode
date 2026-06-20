@@ -58,7 +58,9 @@ public:
 
 protected:
     void forwardFFTTile(int32_t tileX, int32_t tileY, int32_t tileZ, const std::vector<chd::decoders::SourceField> &inputFields);
-    void inverseFFTTile(int32_t tileX, int32_t tileY, int32_t tileZ, int32_t startFieldIndex, int32_t endFieldIndex);
+    void inverseFFTTile(int32_t tileX, int32_t tileY, int32_t tileZ,
+                        const std::vector<chd::decoders::SourceField> &inputFields,
+                        int32_t startFieldIndex, int32_t endFieldIndex);
     void applyFilter();
     void overlayFFTFrame(int32_t positionX, int32_t positionY,
                          const std::vector<chd::decoders::SourceField> &inputFields, int32_t fieldIndex,
