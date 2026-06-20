@@ -88,17 +88,58 @@ static const VideoSystemDefaults &getSystemDefaults(const LdDecodeMetaData::Vide
     return VIDEO_SYSTEM_DEFAULTS[videoParameters.system];
 }
 
+// Normalise a video-system name for tolerant matching: trim, upper-case, and
+// fold '-' and ' ' to '_' so "PAL-M", "pal m" and "PAL_M" all compare equal.
+static std::string normaliseVideoSystemName(std::string name)
+{
+    const auto notSpace = [](unsigned char c) { return std::isspace(c) == 0; };
+    name.erase(name.begin(), std::find_if(name.begin(), name.end(), notSpace));
+    name.erase(std::find_if(name.rbegin(), name.rend(), notSpace).base(), name.end());
+
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) -> char {
+        if (c == '-' || c == ' ') return '_';
+        return static_cast<char>(std::toupper(c));
+    });
+    return name;
+}
+
 // Look up a video system by name.
 // Return true and set system if found; if not found, return false.
 bool parseVideoSystemName(std::string name, VideoSystem &system)
 {
-    // Search VIDEO_SYSTEM_DEFAULTS for a matching name
+    const std::string normalisedName = normaliseVideoSystemName(name);
+
+    // Search VIDEO_SYSTEM_DEFAULTS for a matching (normalised) name
     for (const auto &defaults: VIDEO_SYSTEM_DEFAULTS) {
-        if (name == defaults.name) {
+        if (normalisedName == normaliseVideoSystemName(defaults.name)) {
             system = defaults.system;
             return true;
         }
     }
+
+    // Legacy/alternate metadata aliases:
+    // MPAL/PALM/PAL_M and Nlinha name the 525-line PAL variant -> PAL-M.
+    if (normalisedName == "MPAL" || normalisedName == "PALM" || normalisedName == "PAL_M"
+        || normalisedName == "N_LINHA" || normalisedName == "NLINHA"
+        || normalisedName == "PAL_N_LINHA" || normalisedName == "PAL_NLINHA") {
+        system = PAL_M;
+        return true;
+    }
+
+    // NTSC aliases used by some tooling/presets.
+    if (normalisedName == "NTSCJ" || normalisedName == "NTSC_J") {
+        system = NTSC;
+        return true;
+    }
+
+    // PAL-family aliases emitted/accepted by vhs-decode workflows, mapped to
+    // PAL line-system defaults.
+    if (normalisedName == "SECAM" || normalisedName == "MESECAM" || normalisedName == "PALN"
+        || normalisedName == "PAL_N" || normalisedName == "405" || normalisedName == "819") {
+        system = PAL;
+        return true;
+    }
+
     return false;
 }
 
