@@ -458,7 +458,7 @@ void PalColour::decodeLine(const chd::decoders::SourceField &inputField, const C
     in2 = (line.number + 1) >= lastLine  ? blackLine : (chromaData + ((line.number + 1) * videoParameters.fieldWidth));
     in3 = (line.number - 2) <  firstLine ? blackLine : (chromaData + ((line.number - 2) * videoParameters.fieldWidth));
     in4 = (line.number + 2) >= lastLine  ? blackLine : (chromaData + ((line.number + 2) * videoParameters.fieldWidth));
-    in5 = (line.number - 2) <  firstLine ? blackLine : (chromaData + ((line.number - 3) * videoParameters.fieldWidth));
+    in5 = (line.number - 3) <  firstLine ? blackLine : (chromaData + ((line.number - 3) * videoParameters.fieldWidth));
     in6 = (line.number + 3) >= lastLine  ? blackLine : (chromaData + ((line.number + 3) * videoParameters.fieldWidth));
 
     // Clamp end position to max width so we don't go out of bounds.
