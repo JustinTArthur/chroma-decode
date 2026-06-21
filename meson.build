@@ -17,16 +17,12 @@ cc  = meson.get_compiler('c')
 # ── Dependencies ──────────────────────────────────────────────────────────────
 threads_dep = dependency('threads')
 
-# SQLite3 is required: the TBC metadata sidecars
-# live in SQLite files (`*.tbc.db`) and chd_video_open_composite cannot work without
-# the skeleton's `required: false` is upgraded here.
-# default_options apply only when the wrap fallback builds SQLite from the
-# amalgamation; a system libsqlite3 is linked as-is. We use core SQL only (no
-# FTS/R-Tree/virtual tables), so the bundled copy drops every optional extension
-# and links statically into libchromadec rather than shipping a separate .dylib.
-sqlite3_dep = dependency('sqlite3', required: true,
-                         default_options: ['default_library=static',
-                                           'all-extensions=disabled'])
+# SQLite3 is required: TBC metadata sidecars can live in SQLite files
+# (`*.tbc.db`) and chd_video_open_composite cannot work without it. A system libsqlite3
+# is linked as-is; when none is found, the bundled overlay (subprojects/
+# packagefiles/sqlite3) builds a trimmed, core-SQL-only static copy that gets
+# folded into libchromadec via link_whole below rather than shipped separately.
+sqlite3_dep = dependency('sqlite3', required: true)
 fftw3_dep   = dependency('fftw3',   required: false)
 
 # ONNX Runtime discovery: pkg-config first, then -Donnxruntime_root fallback.
@@ -52,6 +48,15 @@ endif
 has_ort    = get_option('with_onnxruntime') and ort_dep.found()
 has_fftw   = fftw3_dep.found()
 has_sqlite = sqlite3_dep.found()
+
+# When SQLite comes from the bundled overlay (no system copy), fold its objects
+# into libchromadec via link_whole so the installed static archive is self-
+# contained for SQLite and no standalone libsqlite3 is published. A system SQLite
+# stays external, resolved through Requires.private.
+sqlite3_whole = []
+if has_sqlite and sqlite3_dep.type_name() == 'internal'
+  sqlite3_whole = [subproject('sqlite3').get_variable('libsqlite3')]
+endif
 
 # ── CUDA toolkit discovery ────────────────────────────────────────────────────
 # When `with_cuda=auto` (the default), the build tries to find the CUDA
@@ -184,12 +189,33 @@ if get_option('with_examples')
 endif
 
 # ── pkg-config + CMake config installation ────────────────────────────────────
+# libchromadec is implemented in C++ behind a C ABI and ships a static archive
+# (default_library=both). A shared object records its language runtime as a
+# NEEDED entry, but a static archive does not, so a C consumer static-linking via
+# `pkg-config --static` must put the C++ standard library on its own link line.
+# pkg-config has no portable way to query a library's link language, so emit the
+# stdlib into Libs.private ourselves. Detect the one actually in use by probing
+# its version macro (honours a forced -stdlib=): _LIBCPP_VERSION means libc++,
+# otherwise assume libstdc++. MSVC links its runtime implicitly, so emit nothing.
+cxx_runtime_libs = []
+if cpp.get_id() != 'msvc'
+  if cpp.get_define('_LIBCPP_VERSION', prefix: '#include <utility>') != ''
+    cxx_runtime_libs = ['-lc++']
+  else
+    cxx_runtime_libs = ['-lstdc++']
+  endif
+endif
+
 pkg = import('pkgconfig')
 pkg.generate(libchromadec,
              name: 'chromadec',
              description: 'Composite video chroma decoding library',
              version: meson.project_version(),
-             url: 'https://github.com/JustinTArthur/chroma-decode')
+             url: 'https://github.com/JustinTArthur/chroma-decode',
+             libraries_private: cxx_runtime_libs,
+             # Advertise the link language for tooling that learns to consume it
+             # (Meson custom-variable / pkgconf Link.ABI / CPS link_languages).
+             variables: ['link_language=c++'])
 
 cmake_mod = import('cmake')
 cmake_mod.write_basic_package_version_file(

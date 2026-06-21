@@ -4,3 +4,4 @@
 !.gitignore
 !*.wrap
 !packagefiles/
+!packagefiles/**

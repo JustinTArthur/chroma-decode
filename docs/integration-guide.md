@@ -35,6 +35,24 @@ downstream project links it idiomatically from either build system.
     cc main.c $(pkg-config --cflags --libs chromadec)
     ```
 
+=== "Autotools"
+
+    In `configure.ac`:
+
+    ```m4
+    PKG_CHECK_MODULES([CHROMADEC], [chromadec >= 0.1])
+    ```
+
+    Then apply the flags to the consuming target in `Makefile.am`:
+
+    ```makefile
+    my_consumer_CFLAGS = $(CHROMADEC_CFLAGS)
+    my_consumer_LDADD  = $(CHROMADEC_LIBS)
+    ```
+
+    `PKG_CHECK_MODULES` requires `pkg.m4` (from pkg-config) on your Autoconf
+    macro path; most pkg-config installs provide it.
+
 Then include the umbrella header (or the individual headers you need):
 
 ```c
@@ -43,6 +61,54 @@ Then include the umbrella header (or the individual headers you need):
 
 The public surface is pure C, so the headers are consumable from both C and
 C++ without a C++ runtime requirement at the boundary.
+
+## Static linking
+
+Most consumers link libchromadec dynamically, and the shared object resolves its
+own dependencies. Load-time needs are recorded for the dynamic loader to pull
+in: the C++ runtime library, FFTW, ONNX Runtime, and SQLite (if not embedded).
+Either way, linking `-lchromadec` is all your link step does.
+
+The static archive (`libchromadec.a`) is different. It doesn't convey
+dependencies the way the shared object does, so your final link has to supply
+them. Ask pkg-config for the **static** view and it expands the full private
+link line for you from metadata the build generates. Example:
+
+```sh
+cc app.c $(pkg-config --static --cflags --libs chromadec)
+```
+
+The `--static` flag is the opt-in. Without it, pkg-config emits only
+`-lchromadec`; with it, it appends `Libs.private` and recurses into
+`Requires.private`, so you never list the C++ runtime or the optional deps by
+hand. Meson's `dependency('chromadec', static: true)` does the same.
+
+CMake has no equivalent switch. Our package config resolves through
+`pkg_check_modules`, whose imported target (`chromadec::chromadec`) is always
+built from the dynamic link flags; there is no argument that makes it static. A
+CMake consumer that must link statically bypasses the imported target and uses
+the static flags pkg-config exposes as variables:
+
+```cmake
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(CHROMADEC REQUIRED chromadec)
+target_link_libraries(my_consumer PRIVATE ${CHROMADEC_STATIC_LDFLAGS})
+```
+
+These must be resolvable at that final link:
+
+- **The C++ runtime library.** libchromadec is implemented in C++ behind its C
+  ABI; the `.pc` conveys the standard library (`-lc++` or `-lstdc++`) detected
+  at build time in `Libs.private`, so `--static` adds it for you, nothing to
+  install.
+- **FFTW3 and ONNX Runtime**, when those features were enabled. They're always
+  external; their pkg-config files (`fftw3`, `libonnxruntime`) must be on your
+  `PKG_CONFIG_PATH`, or `pkg-config --static` errors.
+- **SQLite3, only if libchromadec was built against a shared/system SQLite.**
+  It then stays external and you provide `sqlite3` the same way. If
+  libchromadec was built with bundled SQLite (no system copy at build time),
+  that SQLite is folded into `libchromadec.a` and you need nothing for
+  it.
 
 ## Consuming as a Meson subproject
 
@@ -102,7 +168,7 @@ int main(void) {
 
     /* 1. Open a source. NULL sidecar → auto-locate <path>.db or <path>.json. */
     chd_video_t *video = NULL;
-    if (chd_video_open_composite("capture.tbc", NULL, &video) != CHD_OK) {
+    if (chd_video_open_composite("capture.tbc", NULL, NULL, &video) != CHD_OK) {
         fprintf(stderr, "open: %s\n", chd_last_error());
         return 1;
     }
@@ -163,12 +229,10 @@ int main(void) {
 
 ## Opening other source types
 
-[`chd_video_open_composite`](api-reference.md#chd_video_open_composite) handles
-ld-decode `.tbc` files. For CVBS captures use
-[`chd_video_open_composite`](api-reference.md#chd_video_open_composite)
-(single `.composite` file) or
-[`chd_video_open_yc`](api-reference.md#chd_video_open_yc) (separate
-Y/C files). Both accept an optional
+[`chd_video_open_composite`](api-reference.md#chd_video_open_composite) opens a
+single-file composite (an ld-decode `.tbc` or a CVBS `.composite`).
+[`chd_video_open_yc`](api-reference.md#chd_video_open_yc) opens a dual-file Y/C
+pair (luma + chroma `.tbc`, or CVBS `.y` + `.c`). Both accept an optional
 [`chd_video_params_t`](api-reference.md#chd_video_params_t) override for when
 metadata is absent or you need to force parameters.
 
@@ -259,7 +323,7 @@ Configure correction on the decoder, optionally registering extra captures of
 the same content as replacement sources **before** creating the decoder:
 
 ```c
-chd_video_add_extra_source_composite(video, "second-pass.tbc");
+chd_video_add_extra_source_composite(video, "second-pass.tbc", NULL);
 
 chd_dropout_opts_t dz = { .enabled = 1, .overcorrect = 0, .intra_field_only = 0 };
 chd_decoder_set_dropout(dec, &dz);
@@ -365,7 +429,7 @@ On failure, [`chd_last_error()`](api-reference.md#chd_last_error) gives a
 thread-local detail string for that thread's most recent failing call:
 
 ```c
-chd_status_t rc = chd_video_open_composite(path, NULL, &video);
+chd_status_t rc = chd_video_open_composite(path, NULL, NULL, &video);
 if (rc != CHD_OK) {
     fprintf(stderr, "%s: %s\n", chd_status_str(rc), chd_last_error());
 }
