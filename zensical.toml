@@ -22,7 +22,6 @@ nav = [
   { "NN models" = "nn-models.md" },
   { "ABI stability" = "abi-stability.md" },
   { "Attribution" = "attribution.md" },
-  { "Design notes" = "design-notes.md" },
 ]
 
 # ----------------------------------------------------------------------------

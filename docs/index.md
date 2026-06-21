@@ -5,8 +5,6 @@ into component Y'CbCr output.
 
 ## Contents
 
-- [Initial design thoughts](design-notes.md): the planning document that
-  kicked the project off
 - [Architecture](architecture.md): current design and module layout
 - [Integration guide](integration-guide.md): open a source, decode, handle
   output; includes migrating from ld-chroma-decoder
