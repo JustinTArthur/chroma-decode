@@ -109,11 +109,13 @@ bool optionApplies(chd_decoder_kind_t kind, const std::string &name, OptionType 
 
     // Comb-only options.
     if (type == OptionType::Bool && name == CHD_OPT_PHASE_COMPENSATION) return comb;
-    if (type == OptionType::I32  && name == CHD_OPT_COMB_DIMENSIONS)    return comb;
-    if (type == OptionType::Bool && name == CHD_OPT_COMB_ADAPTIVE)      return comb;
-    if (type == OptionType::F64  && name == CHD_OPT_COMB_ADAPT_THRESHOLD) return comb;
-    if (type == OptionType::F64  && name == CHD_OPT_COMB_CHROMA_WEIGHT) return comb;
-    if (type == OptionType::Bool && name == CHD_OPT_COMB_SHOW_MAP)      return comb;
+
+    // Adaptive-3D knobs: the 3D candidate penalties they tune only run on the
+    // adaptive 3D comb, so they apply there alone instead of silently
+    // no-opping on the other comb kinds.
+    if (type == OptionType::F64  && name == CHD_OPT_COMB_ADAPT_THRESHOLD) return kind == CHD_DEC_NTSC_3D;
+    if (type == OptionType::F64  && name == CHD_OPT_COMB_CHROMA_WEIGHT)   return kind == CHD_DEC_NTSC_3D;
+    if (type == OptionType::Bool && name == CHD_OPT_COMB_SHOW_MAP)        return kind == CHD_DEC_NTSC_3D;
 
     // Cross-system chroma-filter intent + numeric upper-sideband geometry.
     // Both apply to the comb (NTSC) and PalColour (PAL/PAL-M) decoders;
@@ -167,7 +169,6 @@ void fillCombConfig(chd::decoders::comb::Comb::Configuration &c, const OptionMap
     c.cNRLevel    = findOr(o.f64, CHD_OPT_CHROMA_NR_LEVEL, c.cNRLevel);
     c.adaptThreshold = findOr(o.f64, CHD_OPT_COMB_ADAPT_THRESHOLD, c.adaptThreshold);
     c.chromaWeight   = findOr(o.f64, CHD_OPT_COMB_CHROMA_WEIGHT, c.chromaWeight);
-    c.adaptive   = findOr(o.boolean, CHD_OPT_COMB_ADAPTIVE, c.adaptive);
     c.showMap    = findOr(o.boolean, CHD_OPT_COMB_SHOW_MAP, c.showMap);
     c.phaseCompensation = findOr(o.boolean, CHD_OPT_PHASE_COMPENSATION, c.phaseCompensation);
 
@@ -193,8 +194,8 @@ void fillCombConfig(chd::decoders::comb::Comb::Configuration &c, const OptionMap
         c.ssbBetaEdgeWidthHz  = o.sidebandCalib->edge_width_hz;
     }
 
-    // Kind-specific defaults override the f64/i32 maps where the kind is
-    // sufficiently prescriptive (e.g. NTSC_1D ⇒ dimensions = 1).
+    // Dimensionality and adaptivity are determined by the decoder kind. There
+    // are no separate options.
     switch (kind) {
         case CHD_DEC_NTSC_1D: c.dimensions = 1; c.adaptive = false; break;
         case CHD_DEC_NTSC_2D: c.dimensions = 2; c.adaptive = false; break;
@@ -207,9 +208,7 @@ void fillCombConfig(chd::decoders::comb::Comb::Configuration &c, const OptionMap
             c.nnInputMagnitudeScale =
                 findOr(o.f64, CHD_OPT_NN_INPUT_MAGNITUDE_SCALE, c.nnInputMagnitudeScale);
             break;
-        default:
-            c.dimensions = findOr(o.i32, CHD_OPT_COMB_DIMENSIONS, c.dimensions);
-            break;
+        default: break;
     }
 }
 

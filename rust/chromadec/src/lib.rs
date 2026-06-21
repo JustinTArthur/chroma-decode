@@ -48,11 +48,9 @@ pub mod options {
     pub const PADDING_MULTIPLE: &str = "padding_multiple"; // i32
     pub const REVERSE_FIELD_ORDER: &str = "reverse_field_order"; // bool
     pub const PHASE_COMPENSATION: &str = "phase_compensation"; // bool
-    pub const COMB_DIMENSIONS: &str = "comb_dimensions"; // i32
-    pub const COMB_ADAPTIVE: &str = "comb_adaptive"; // bool
-    pub const COMB_ADAPT_THRESHOLD: &str = "comb_adapt_threshold"; // f64
-    pub const COMB_CHROMA_WEIGHT: &str = "comb_chroma_weight"; // f64
-    pub const COMB_SHOW_MAP: &str = "comb_show_map"; // bool
+    pub const COMB_ADAPT_THRESHOLD: &str = "comb_adapt_threshold"; // f64, NTSC 3D
+    pub const COMB_CHROMA_WEIGHT: &str = "comb_chroma_weight"; // f64, NTSC 3D
+    pub const COMB_SHOW_MAP: &str = "comb_show_map"; // bool, NTSC 3D
     pub const TRANSFORM_THRESHOLD: &str = "transform_threshold"; // f64
     pub const TRANSFORM_THRESHOLDS_FILE: &str = "transform_thresholds_file"; // str
     pub const FIRST_ACTIVE_FIELD_LINE: &str = "first_active_field_line"; // i32

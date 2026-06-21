@@ -219,7 +219,7 @@ typedef struct chd_cancel   chd_cancel_t;
 ### chd_video_params_t
 
 Caller-supplied parameters used to override or supply metadata when opening a
-CVBS source (see [`chd_video_open_composite`](#chd_video_open_composite)).
+source (see [`chd_video_open_composite`](#chd_video_open_composite)).
 
 ```c
 typedef struct chd_video_params {
@@ -312,45 +312,43 @@ metadata; it is the argument you pass to [`chd_decoder_create`](#chd_decoder_cre
 ### chd_video_open_composite
 
 ```c
-chd_status_t chd_video_open_composite(const char *tbc_path,
-                                const char *sidecar_path_or_null,
-                                chd_video_t **out);
+chd_status_t chd_video_open_composite(const char *path,
+                                      const char *sidecar_path_or_null,
+                                      const chd_video_params_t *override_or_null,
+                                      chd_video_t **out);
 ```
 
-Open an ld-decode `.tbc` file. `sidecar_path_or_null`:
+Open a single-file composite capture: an ld-decode `.tbc` or a CVBS
+`.composite`. The sidecar flavour is detected automatically.
 
-- `NULL`: auto-locate `<tbc_path>.db` (SQLite) or `<tbc_path>.json` next to
-  the data file.
-- `const char *`: an explicit path to either a `.db` or `.json` sidecar.
-
-### chd_video_open_composite
-
-```c
-chd_status_t chd_video_open_composite(const char *composite_path,
-                                           const char *meta_path_or_null,
-                                           const chd_video_params_t *override_or_null,
-                                           chd_video_t **out);
-```
-
-Open a single-file CVBS composite capture (`<basename>.composite`).
-
-- `meta_path_or_null`: `NULL` auto-locates `<basename>.meta`; otherwise the
-  explicit path.
-- `override_or_null`: `NULL` means all parameters come from metadata; a
-  non-null struct supplies values when metadata is absent, or overrides them.
+- `sidecar_path_or_null`: `NULL` auto-locates the sidecar next to the data
+  file: an ld-decode `<path>.db` (SQLite) / `<path>.json`, else a CVBS
+  `<basename>.meta`. A `const char *` is an explicit path to a `.db`, `.json`,
+  or `.meta` sidecar.
+- `override_or_null`: `NULL` means all parameters come from the sidecar; a
+  non-null struct supplies values when no sidecar is found, or overrides them.
 
 ### chd_video_open_yc
 
 ```c
-chd_status_t chd_video_open_yc(const char *y_path,
-                                    const char *c_path,
-                                    const char *meta_path_or_null,
-                                    const chd_video_params_t *override_or_null,
-                                    chd_video_t **out);
+chd_status_t chd_video_open_yc(const char *luma_path,
+                               const char *chroma_path,
+                               const char *sidecar_path_or_null,
+                               const chd_video_params_t *override_or_null,
+                               chd_video_t **out);
 ```
 
-Open a dual-file CVBS Y/C pair. Metadata and override semantics match
-[`chd_video_open_composite`](#chd_video_open_composite).
+Open a dual-file Y/C capture: a CVBS `.y` + `.c` pair, or a vhs-decode luma
+`.tbc` + chroma `.tbc` pair. Sidecar resolution and flavour detection follow
+[`chd_video_open_composite`](#chd_video_open_composite); the
+`sidecar_path_or_null` applies to the luma plane, and the chroma plane uses its
+own sidecar if present, else falls back to the luma sidecar (vhs-decode writes a
+single shared `<base>.tbc.json` for the pair).
+
+For a vhs-decode pair the two planes are decoded separately and merged: the
+luma plane is decoded with the Mono kind for Y and the chroma plane with the
+configured colour kind for Cb/Cr. A CVBS `.y`/`.c` pair instead reconstructs a
+composite from the centred-chroma `.c` and decodes it in one pass.
 
 ### chd_video_get_info
 
@@ -366,14 +364,13 @@ decoder's `reverse_field_order` option can change the decodable frame count
 ### Extra sources for multi-source dropout
 
 ```c
-chd_status_t chd_video_add_extra_source_composite(chd_video_t *v, const char *tbc_path);
 chd_status_t chd_video_add_extra_source_composite(chd_video_t *v,
-                                                       const char *path,
-                                                       const char *meta_path_or_null);
+                                                  const char *path,
+                                                  const char *sidecar_path_or_null);
 chd_status_t chd_video_add_extra_source_yc(chd_video_t *v,
-                                                const char *y_path,
-                                                const char *c_path,
-                                                const char *meta_path_or_null);
+                                           const char *luma_path,
+                                           const char *chroma_path,
+                                           const char *sidecar_path_or_null);
 ```
 
 Register additional captures of the same content as replacement candidates for
@@ -493,11 +490,9 @@ and any decoder-kind restriction.
 | `CHD_OPT_PADDING_MULTIPLE`          | i32  | Output padding multiple (default `1` = no padding).                                                                          |
 | `CHD_OPT_REVERSE_FIELD_ORDER`       | bool | Swap field order (matches `ld-chroma-decoder -r`).                                                                           |
 | `CHD_OPT_PHASE_COMPENSATION`        | bool | NTSC phase compensation.                                                                                                     |
-| `CHD_OPT_COMB_DIMENSIONS`           | i32  | Comb dimensionality, in `{1,2,3}`.                                                                                           |
-| `CHD_OPT_COMB_ADAPTIVE`             | bool | Adaptive comb.                                                                                                               |
-| `CHD_OPT_COMB_ADAPT_THRESHOLD`      | f64  | Adaptive threshold.                                                                                                          |
-| `CHD_OPT_COMB_CHROMA_WEIGHT`        | f64  | Chroma weighting.                                                                                                            |
-| `CHD_OPT_COMB_SHOW_MAP`             | bool | Visualise the comb decision map.                                                                                             |
+| `CHD_OPT_COMB_ADAPT_THRESHOLD`      | f64  | Adaptive 3D candidate threshold; `CHD_DEC_NTSC_3D` only.                                                                     |
+| `CHD_OPT_COMB_CHROMA_WEIGHT`        | f64  | Adaptive 3D chroma penalty weight; `CHD_DEC_NTSC_3D` only.                                                                   |
+| `CHD_OPT_COMB_SHOW_MAP`             | bool | Overlay the adaptive 3D decision map; `CHD_DEC_NTSC_3D` only.                                                                |
 | `CHD_OPT_CHROMA_FILTER`             | str  | `"compat"` (default), `"equiband_wide"` (NTSC), `"equiband"`, `"color_under"`, `"wideband_i_ssb"` (NTSC), `"equiband_vsb"` (PAL). See [Chroma filter](#chroma-filter).      |
 | `CHD_OPT_CHROMA_UPPER_SIDEBAND_HZ`  | f64  | Upper-sideband room +X above fSC; `"equiband_vsb"` only. See [Chroma filter](#chroma-filter).                                |
 | `CHD_OPT_TRANSFORM_THRESHOLD`       | f64  | Transform-decoder threshold.                                                                                                 |

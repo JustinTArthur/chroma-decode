@@ -252,7 +252,7 @@ int testSyncDecodeBlackMono(const fs::path &dir) {
     REQUIRE(writeTbcSidecar(sidecar, numFields));
 
     chd_video_t *video = nullptr;
-    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) == CHD_OK);
 
     chd_video_info_t info;
     REQUIRE(chd_video_get_info(video, &info) == CHD_OK);
@@ -262,10 +262,27 @@ int testSyncDecodeBlackMono(const fs::path &dir) {
     REQUIRE(chd_decoder_create(video, CHD_DEC_MONO, &dec) == CHD_OK);
 
     REQUIRE(chd_decoder_has_option(dec, CHD_OPT_LUMA_NR_LEVEL) == CHD_OK);
-    REQUIRE(chd_decoder_has_option(dec, CHD_OPT_COMB_DIMENSIONS) == CHD_E_INVALID_ARG);
+    REQUIRE(chd_decoder_has_option(dec, CHD_OPT_CHROMA_NR_LEVEL) == CHD_E_INVALID_ARG);
     REQUIRE(chd_decoder_set_option_f64(dec, CHD_OPT_LUMA_NR_LEVEL, 0.0) == CHD_OK);
-    REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_COMB_DIMENSIONS, 2) == CHD_E_INVALID_ARG);
+    REQUIRE(chd_decoder_set_option_f64(dec, CHD_OPT_CHROMA_NR_LEVEL, 0.0) == CHD_E_INVALID_ARG);
     REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_PADDING_MULTIPLE, 1) == CHD_OK);
+
+    // Adaptive-3D knobs apply only to the adaptive 3D kind; on the other comb
+    // kinds they are rejected, not silently ignored.
+    {
+        chd_decoder_t *ntsc2d = nullptr;
+        chd_decoder_t *ntsc3d = nullptr;
+        REQUIRE(chd_decoder_create(video, CHD_DEC_NTSC_2D, &ntsc2d) == CHD_OK);
+        REQUIRE(chd_decoder_create(video, CHD_DEC_NTSC_3D, &ntsc3d) == CHD_OK);
+        for (const char *opt : {CHD_OPT_COMB_ADAPT_THRESHOLD,
+                                CHD_OPT_COMB_CHROMA_WEIGHT,
+                                CHD_OPT_COMB_SHOW_MAP}) {
+            REQUIRE(chd_decoder_has_option(ntsc3d, opt) == CHD_OK);
+            REQUIRE(chd_decoder_has_option(ntsc2d, opt) == CHD_E_INVALID_ARG);
+        }
+        chd_decoder_free(ntsc2d);
+        chd_decoder_free(ntsc3d);
+    }
 
     chd_frame_t *bad = nullptr;
     REQUIRE(chd_decode_frame(dec, 0, &bad) == CHD_E_INVALID_ARG);
@@ -347,7 +364,7 @@ int testSyncDecodeBlackMono(const fs::path &dir) {
 
 // ─── Test 2 (hardening): CVBS primary + TBC extra source. ──────────────────
 //
-// Previously, chd_video_add_extra_source_composite rejected this
+// Previously, the TBC extra-source path rejected this
 // case with "primary source has no TBC metadata" because CVBS opens left
 // v->metadata == nullptr. Hardening synthesizes metadata at open time and
 // drops the check.
@@ -379,14 +396,12 @@ int testCvbsPrimaryWithTbcExtra(const fs::path &dir) {
 
     chd_video_info_t info{};
     REQUIRE(chd_video_get_info(video, &info) == CHD_OK);
-    // The CVBS discriminator path — should report the actual encoding, not
-    // CHD_ENC_CVBS_U16_4FSC (which was the pre-hardening behaviour for any
-    // video that had metadata).
+    // A CVBS source reports the actual sample encoding it was opened with.
     REQUIRE(info.encoding == CHD_ENC_CVBS_U10_4FSC);
     REQUIRE(info.num_frames == 2);  // 4 fields / 2
 
     // This used to fail with "primary source has no TBC metadata".
-    REQUIRE(chd_video_add_extra_source_composite(video, extraTbc.c_str()) == CHD_OK);
+    REQUIRE(chd_video_add_extra_source_composite(video, extraTbc.c_str(), nullptr) == CHD_OK);
 
     chd_video_free(video);
 
@@ -422,8 +437,8 @@ int testMultiSourceDropoutAbi(const fs::path &dir) {
     REQUIRE(writeTbcSidecar(primDb, numFields, {drop}));
 
     chd_video_t *video = nullptr;
-    REQUIRE(chd_video_open_composite(primTbc.c_str(), primDb.c_str(), &video) == CHD_OK);
-    REQUIRE(chd_video_add_extra_source_composite(video, exTbc.c_str()) == CHD_OK);
+    REQUIRE(chd_video_open_composite(primTbc.c_str(), primDb.c_str(), nullptr, &video) == CHD_OK);
+    REQUIRE(chd_video_add_extra_source_composite(video, exTbc.c_str(), nullptr) == CHD_OK);
 
     chd_decoder_t *dec = nullptr;
     REQUIRE(chd_decoder_create(video, CHD_DEC_MONO, &dec) == CHD_OK);
@@ -479,7 +494,7 @@ int testParallelAsyncDispatch(const fs::path &dir) {
     REQUIRE(writeTbcSidecar(sidecar, numFields));
 
     chd_video_t *video = nullptr;
-    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) == CHD_OK);
 
     chd_decoder_t *dec = nullptr;
     REQUIRE(chd_decoder_create(video, CHD_DEC_MONO, &dec) == CHD_OK);
@@ -725,7 +740,7 @@ int testActiveLineSidecarOverride(const fs::path &dir) {
         }
 
         chd_video_t *video = nullptr;
-        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) == CHD_OK);
         const int32_t h = probeFrameHeight(video, /*padding=*/1, i32Options);
         REQUIRE(h == expectedHeight);
         chd_video_free(video);
@@ -784,7 +799,7 @@ int testReverseFieldOrder(const fs::path &dir) {
     REQUIRE(writeTbcSidecar(sidecar, numFields));
 
     chd_video_t *video = nullptr;
-    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) == CHD_OK);
 
     chd_video_info_t info;
     REQUIRE(chd_video_get_info(video, &info) == CHD_OK);
@@ -841,7 +856,7 @@ int testFloatOutputFormats(const fs::path &dir) {
     // ── yuv444ps: three normalized E' planes ──
     {
         chd_video_t *video = nullptr;
-        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) == CHD_OK);
         chd_decoder_t *dec = nullptr;
         REQUIRE(chd_decoder_create(video, CHD_DEC_NTSC_2D, &dec) == CHD_OK);
         REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_PADDING_MULTIPLE, 1) == CHD_OK);
@@ -886,7 +901,7 @@ int testFloatOutputFormats(const fs::path &dir) {
     // ── grays: single normalized E'Y plane ──
     {
         chd_video_t *video = nullptr;
-        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) == CHD_OK);
         chd_decoder_t *dec = nullptr;
         REQUIRE(chd_decoder_create(video, CHD_DEC_MONO, &dec) == CHD_OK);
         REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_PADDING_MULTIPLE, 1) == CHD_OK);
@@ -939,7 +954,7 @@ int testRgbsOutputFormat(const fs::path &dir) {
     REQUIRE(writeTbcSidecar(sidecar, numFields));
 
     chd_video_t *video = nullptr;
-    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) == CHD_OK);
     chd_decoder_t *dec = nullptr;
     REQUIRE(chd_decoder_create(video, CHD_DEC_NTSC_2D, &dec) == CHD_OK);
     REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_PADDING_MULTIPLE, 1) == CHD_OK);
@@ -1002,7 +1017,7 @@ int testOutputClampOption(const fs::path &dir) {
                                         "legal_ycbcr_bt601"};
     for (const char *token : validTokens) {
         chd_video_t *video = nullptr;
-        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) == CHD_OK);
         chd_decoder_t *dec = nullptr;
         REQUIRE(chd_decoder_create(video, CHD_DEC_NTSC_2D, &dec) == CHD_OK);
         REQUIRE(chd_decoder_set_option_str(dec, CHD_OPT_OUTPUT_CLAMP, token) == CHD_OK);
@@ -1014,7 +1029,7 @@ int testOutputClampOption(const fs::path &dir) {
     // Unknown clamp token must be rejected at commit time.
     {
         chd_video_t *video = nullptr;
-        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) == CHD_OK);
         chd_decoder_t *dec = nullptr;
         REQUIRE(chd_decoder_create(video, CHD_DEC_NTSC_2D, &dec) == CHD_OK);
         REQUIRE(chd_decoder_set_option_str(dec, CHD_OPT_OUTPUT_CLAMP, "garbage") == CHD_OK);
@@ -1025,6 +1040,77 @@ int testOutputClampOption(const fs::path &dir) {
 
     fs::remove(tbc);
     fs::remove(sidecar);
+    return 0;
+}
+
+// ─── Test: decode-level Y/C merge from a luma.tbc + chroma.tbc pair. ───────
+//
+// chd_video_open_yc on an ld-decode luma + chroma .tbc pair takes the
+// decode-merge path: the luma plane is Mono-decoded for Y and the chroma plane
+// colour-decoded for U/V, then merged. (That open even succeeding proves the
+// path engaged: a .tbc.db sidecar is ld-decode schema, so the CVBS YC path
+// would fail to parse it.) Both planes are black NTSC here, so the result is
+// black luma + neutral chroma — the point is to exercise the dual-source,
+// dual-decoder wiring end to end.
+int testYcMergeDualTbc(const fs::path &dir) {
+    const std::string lumaTbc   = (dir / "luma.tbc").string();
+    const std::string lumaDb    = (dir / "luma.tbc.db").string();
+    const std::string chromaTbc = (dir / "chroma.tbc").string();
+    const std::string chromaDb  = (dir / "chroma.tbc.db").string();
+    constexpr int32_t fieldWidth  = 910;
+    constexpr int32_t fieldHeight = 263;
+    constexpr int32_t numFields   = 6;
+
+    REQUIRE(writeBlackTbc(lumaTbc, fieldWidth, fieldHeight, numFields));
+    REQUIRE(writeTbcSidecar(lumaDb, numFields));
+    REQUIRE(writeBlackTbc(chromaTbc, fieldWidth, fieldHeight, numFields));
+    REQUIRE(writeTbcSidecar(chromaDb, numFields));
+
+    chd_video_t *video = nullptr;
+    // Luma sidecar passed explicitly; the chroma sidecar auto-locates next to
+    // chroma.tbc. A .db (ld-decode) sidecar selects the decode-merge path.
+    REQUIRE(chd_video_open_yc(lumaTbc.c_str(), chromaTbc.c_str(), lumaDb.c_str(),
+                              nullptr, &video) == CHD_OK);
+
+    chd_video_info_t info;
+    REQUIRE(chd_video_get_info(video, &info) == CHD_OK);
+    REQUIRE(info.num_frames == 3);
+    REQUIRE(info.encoding == CHD_ENC_CVBS_U16_4FSC);
+
+    // The configured colour kind decodes the chroma plane; luma is forced Mono.
+    chd_decoder_t *dec = nullptr;
+    REQUIRE(chd_decoder_create(video, CHD_DEC_NTSC_2D, &dec) == CHD_OK);
+    REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_PADDING_MULTIPLE, 1) == CHD_OK);
+    REQUIRE(chd_decoder_commit(dec) == CHD_OK);
+
+    chd_frame_t *frame = nullptr;
+    REQUIRE(chd_decode_frame(dec, 0, &frame) == CHD_OK);
+    REQUIRE(frame != nullptr);
+
+    chd_frame_info_t finfo;
+    REQUIRE(chd_frame_get_info(frame, &finfo) == CHD_OK);
+    REQUIRE(finfo.num_planes == 3);
+
+    const void *yData = nullptr;
+    ptrdiff_t yStride = 0;
+    REQUIRE(chd_frame_get_plane(frame, CHD_PLANE_Y, &yData, &yStride) == CHD_OK);
+    REQUIRE(static_cast<const uint16_t *>(yData)[0] == 4096);  // black luma
+
+    const void *cbData = nullptr;
+    ptrdiff_t cbStride = 0;
+    REQUIRE(chd_frame_get_plane(frame, CHD_PLANE_CB, &cbData, &cbStride) == CHD_OK);
+    // Constant black chroma plane → neutral Cb (allow a tiny filter epsilon).
+    const int cb0 = static_cast<const uint16_t *>(cbData)[0];
+    REQUIRE(cb0 >= 32768 - 256 && cb0 <= 32768 + 256);
+
+    chd_frame_free(frame);
+    chd_decoder_free(dec);
+    chd_video_free(video);
+
+    fs::remove(lumaTbc);
+    fs::remove(lumaDb);
+    fs::remove(chromaTbc);
+    fs::remove(chromaDb);
     return 0;
 }
 
@@ -1041,6 +1127,7 @@ int main() {
     if (int rc = testFloatOutputFormats(dir);         rc != 0) return rc;
     if (int rc = testRgbsOutputFormat(dir);           rc != 0) return rc;
     if (int rc = testOutputClampOption(dir);          rc != 0) return rc;
+    if (int rc = testYcMergeDualTbc(dir);             rc != 0) return rc;
 
     fs::remove(dir);
     std::cout << "test_decode_frame_abi: PASS\n";

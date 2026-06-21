@@ -61,11 +61,9 @@ chd_status_t chd_decoder_get_output_info(const chd_decoder_t *d, chd_output_info
 #define CHD_OPT_PADDING_MULTIPLE            "padding_multiple"          /* i32, default 1 (no padding) */
 #define CHD_OPT_REVERSE_FIELD_ORDER         "reverse_field_order"       /* bool */
 #define CHD_OPT_PHASE_COMPENSATION          "phase_compensation"        /* bool, NTSC */
-#define CHD_OPT_COMB_DIMENSIONS             "comb_dimensions"           /* i32 in {1,2,3} */
-#define CHD_OPT_COMB_ADAPTIVE               "comb_adaptive"             /* bool */
-#define CHD_OPT_COMB_ADAPT_THRESHOLD        "comb_adapt_threshold"      /* f64 */
-#define CHD_OPT_COMB_CHROMA_WEIGHT          "comb_chroma_weight"        /* f64 */
-#define CHD_OPT_COMB_SHOW_MAP               "comb_show_map"             /* bool */
+#define CHD_OPT_COMB_ADAPT_THRESHOLD        "comb_adapt_threshold"      /* f64, NTSC 3D */
+#define CHD_OPT_COMB_CHROMA_WEIGHT          "comb_chroma_weight"        /* f64, NTSC 3D */
+#define CHD_OPT_COMB_SHOW_MAP               "comb_show_map"             /* bool, NTSC 3D */
 #define CHD_OPT_CHROMA_FILTER               "chroma_filter"             /* str: "compat"|"equiband_wide"|"equiband"|"color_under"|"wideband_i_ssb"|"equiband_vsb" */
 #define CHD_OPT_CHROMA_UPPER_SIDEBAND_HZ    "chroma_upper_sideband_hz"  /* f64, equiband_vsb only: upper-sideband room +X above fSC */
 #define CHD_OPT_TRANSFORM_THRESHOLD         "transform_threshold"       /* f64 */

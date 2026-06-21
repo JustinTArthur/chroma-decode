@@ -218,7 +218,7 @@ int testDropoutSpansAndMask(const fs::path &dir) {
     REQUIRE(writeTbcSidecar(sidecar, numFields, {dropA, dropB}));
 
     chd_video_t *video = nullptr;
-    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), &video) == CHD_OK);
+    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) == CHD_OK);
 
     // The active region is the source of truth for the expected mapping; read it
     // back rather than hard-coding it so the test survives changes to the
@@ -232,7 +232,7 @@ int testDropoutSpansAndMask(const fs::path &dir) {
     REQUIRE(chd_decoder_create(video, CHD_DEC_NONE, &dec) == CHD_OK);
     REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_PADDING_MULTIPLE, 1) == CHD_OK);
     // A chroma-algorithm option must still be rejected on a NONE decoder.
-    REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_COMB_DIMENSIONS, 2) == CHD_E_INVALID_ARG);
+    REQUIRE(chd_decoder_set_option_f64(dec, CHD_OPT_CHROMA_NR_LEVEL, 0.0) == CHD_E_INVALID_ARG);
 
     // Geometry queries require a committed decoder.
     chd_output_info_t early{};
