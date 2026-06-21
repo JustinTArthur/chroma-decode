@@ -13,14 +13,17 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
 #include "../common/error_state.h"
+#include "../decoders/chroma_filter.h"
 #include "../decoders/registry.h"
 #include "../decoders/source_field.h"
 #include "../dropout/dropout_corrector.h"
@@ -116,67 +119,66 @@ chd_status_t setOpt(chd_decoder_t *d, const char *name,
     return CHD_OK;
 }
 
-// Decode one frame using the worker-`workerIdx` decoder. Caller MUST hold
-// d->decoderMutexes[workerIdx] for the entire call — Decoder subclasses
-// keep mutable per-call scratch that isn't reentrant. The shared
-// OutputWriter is read-only after commit so workers don't need to
-// serialise on it. lastDropoutStats is published under d->statsMutex.
-chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
-                               int64_t frame_index, chd_frame_t **out) {
-    chd::metadata::LdDecodeMetaData *meta = d->video->metadata.get();
-    if (meta == nullptr) {
-        chd::detail::set_last_error("chd_decode_frame: missing metadata");
-        return CHD_E_METADATA_MISSING;
-    }
-    const int32_t numFrames = meta->getNumberOfFrames();
+// Decode one source's frame into `outCF`, applying dropout correction using
+// that source's own metadata and extra sources. Used once for a plain
+// composite decode, and twice (luma + chroma) for a decode-level Y/C merge.
+// The passed `decoder` is the caller's worker instance; the caller holds its
+// mutex for the whole call (Decoder subclasses keep non-reentrant scratch).
+chd_status_t decodeSourceFrame(
+    chd_decoder_t *d,
+    chd::reader::ISource &source, chd::metadata::LdDecodeMetaData &meta,
+    chd::decoders::Decoder &decoder, int32_t lookBehind, int32_t lookAhead,
+    std::vector<chd_video_extra> &extraSources,
+    std::unique_ptr<chd::dropout::MultiSourceAlignment> &alignment,
+    std::once_flag &alignmentOnce,
+    int64_t frame_index, chd::output::ComponentFrame &outCF,
+    chd::dropout::DropoutCorrectionStats &stats) {
+    const int32_t numFrames = meta.getNumberOfFrames();
     if (frame_index < 0 || frame_index >= numFrames) {
         chd::detail::set_last_error("chd_decode_frame: frame_index out of range");
         return CHD_E_OUT_OF_RANGE;
     }
 
-    // Load the field window (lookbehind + this frame + lookahead) from the
-    // primary source. frame_index is 0-based at the C ABI; SourceField is
-    // 1-based internally.
+    // Load the field window (lookbehind + this frame + lookahead). frame_index
+    // is 0-based at the C ABI; SourceField is 1-based internally.
     std::vector<chd::decoders::SourceField> fields;
     int32_t startIndex = 0;
     int32_t endIndex   = 0;
     const int32_t firstFrameNumber = static_cast<int32_t>(frame_index) + 1;
     chd::decoders::SourceField::loadFields(
-        *d->video->source, *meta,
-        firstFrameNumber, /*numFrames=*/1, d->lookBehind, d->lookAhead,
+        source, meta, firstFrameNumber, /*numFrames=*/1, lookBehind, lookAhead,
         fields, startIndex, endIndex);
 
     // Apply dropout correction if requested. Single-source if no extras
     // are attached; otherwise build a vector<ExtraSourceFrame> from each
     // chd_video_extra and use the multi-source DropoutCorrector overload.
-    chd::dropout::DropoutCorrectionStats stats;
     if (d->dropoutOptsSet && d->dropoutOpts.enabled != 0) {
         chd::dropout::DropoutCorrector corrector(d->videoParameters);
 
         // Build the multi-source VBI alignment once. Its constructor scans
         // every source's field VBI, so it is cached on the decoder and shared
         // (read-only) across workers.
-        if (!d->video->extraSources.empty()) {
-            std::call_once(d->multiSourceAlignmentOnce, [&] {
+        if (!extraSources.empty()) {
+            std::call_once(alignmentOnce, [&] {
                 std::vector<chd::metadata::LdDecodeMetaData *> sources;
-                sources.reserve(d->video->extraSources.size() + 1);
-                sources.push_back(meta);  // primary capture is source 0
-                for (auto &ex : d->video->extraSources) sources.push_back(ex.metadata.get());
-                d->multiSourceAlignment =
+                sources.reserve(extraSources.size() + 1);
+                sources.push_back(&meta);  // this plane's capture is source 0
+                for (auto &ex : extraSources) sources.push_back(ex.metadata.get());
+                alignment =
                     std::make_unique<chd::dropout::MultiSourceAlignment>(std::move(sources));
             });
         }
 
         std::vector<chd::dropout::ExtraSourceFrame> extras;
-        extras.reserve(d->video->extraSources.size());
-        for (size_t i = 0; i < d->video->extraSources.size(); ++i) {
-            auto &ex = d->video->extraSources[i];
+        extras.reserve(extraSources.size());
+        for (size_t i = 0; i < extraSources.size(); ++i) {
+            auto &ex = extraSources[i];
             if (ex.metadata == nullptr || ex.source == nullptr) continue;
             const int32_t exFrames = ex.metadata->getNumberOfFrames();
 
             // Map the primary frame to the matching disc frame in this source
             // (by VBI CAV/CLV number where available, positionally otherwise).
-            const int32_t exFrame = d->multiSourceAlignment->sourceFrameForPrimaryFrame(
+            const int32_t exFrame = alignment->sourceFrameForPrimaryFrame(
                 firstFrameNumber, static_cast<int32_t>(i) + 1);
             if (exFrame < 1 || exFrame > exFrames) {
                 // This source does not cover the primary's frame — skip it for
@@ -217,10 +219,52 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
 
     std::vector<chd::output::ComponentFrame> componentFrames(1);
     try {
-        d->decoders[workerIdx]->decodeFrames(fields, startIndex, endIndex, componentFrames);
+        decoder.decodeFrames(fields, startIndex, endIndex, componentFrames);
     } catch (const std::exception &e) {
         chd::detail::set_last_error(std::string("chd_decode_frame: decoder threw: ") + e.what());
         return CHD_E_INTERNAL;
+    }
+    outCF = std::move(componentFrames[0]);
+    return CHD_OK;
+}
+
+chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
+                               int64_t frame_index, chd_frame_t **out) {
+    chd::metadata::LdDecodeMetaData *meta = d->video->metadata.get();
+    if (meta == nullptr) {
+        chd::detail::set_last_error("chd_decode_frame: missing metadata");
+        return CHD_E_METADATA_MISSING;
+    }
+
+    // Decode the primary source (the whole composite, or the luma plane of a
+    // Y/C merge). Its dropout stats are the ones published below.
+    chd::output::ComponentFrame primaryCF;
+    chd::dropout::DropoutCorrectionStats stats;
+    if (const chd_status_t rc = decodeSourceFrame(
+            d, *d->video->source, *meta, *d->decoders[workerIdx],
+            d->lookBehind, d->lookAhead, d->video->extraSources,
+            d->multiSourceAlignment, d->multiSourceAlignmentOnce,
+            frame_index, primaryCF, stats);
+        rc != CHD_OK) {
+        return rc;
+    }
+
+    // Decode-level Y/C merge: decode the chroma plane with the colour kind and
+    // graft its U/V onto the Mono-decoded luma frame.
+    if (d->video->chromaSource != nullptr) {
+        chd::output::ComponentFrame chromaCF;
+        chd::dropout::DropoutCorrectionStats chromaStats;
+        if (const chd_status_t rc = decodeSourceFrame(
+                d, *d->video->chromaSource, *d->video->chromaMetadata,
+                *d->chromaDecoders[workerIdx], d->chromaLookBehind, d->chromaLookAhead,
+                d->video->chromaExtraSources,
+                d->chromaMultiSourceAlignment, d->chromaMultiSourceAlignmentOnce,
+                frame_index, chromaCF, chromaStats);
+            rc != CHD_OK) {
+            return rc;
+        }
+        primaryCF.setU(*chromaCF.getU());
+        primaryCF.setV(*chromaCF.getV());
     }
 
     auto frame = std::make_unique<chd_frame>();
@@ -235,7 +279,7 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
         // GRAYS emits only the E'Y plane; YUV444PS also emits E'Cb/E'Cr.
         const bool includeChroma = (frame->format == CHD_PIXEL_YUV444PS);
         const int32_t outputHeight = d->outputWriter.getOutputHeight();
-        d->outputWriter.convertToFloat(componentFrames[0], frame->floatPlane, includeChroma);
+        d->outputWriter.convertToFloat(primaryCF, frame->floatPlane, includeChroma);
         frame->activeWidth = activeWidth;
         frame->outputHeight = outputHeight;
         frame->info.format = frame->format;
@@ -246,7 +290,7 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
         // Direct ComponentFrame → R'G'B' float planes; no Y'CbCr integer
         // intermediate. Same geometry as the integer convert() path.
         const int32_t outputHeight = d->outputWriter.getOutputHeight();
-        d->outputWriter.convertToFloatRGB(componentFrames[0], frame->floatPlane);
+        d->outputWriter.convertToFloatRGB(primaryCF, frame->floatPlane);
         frame->activeWidth = activeWidth;
         frame->outputHeight = outputHeight;
         frame->info.format = frame->format;
@@ -254,7 +298,7 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
         frame->info.height = outputHeight;
         frame->info.num_planes = 3;
     } else {
-        d->outputWriter.convert(componentFrames[0], frame->u16Plane);
+        d->outputWriter.convert(primaryCF, frame->u16Plane);
         const int32_t planes =
             (d->outputConfig.pixelFormat == chd::output::OutputWriter::GRAY16) ? 1 : 3;
         const int32_t outputHeight = static_cast<int32_t>(
@@ -409,6 +453,72 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
             outCfg.clampMode = static_cast<chd::output::OutputWriter::ClampMode>(cm);
         }
     }
+    {
+        // Resolve the chroma-filter intent against the source system and reject
+        // invalid (mode, system) cells here, where the system is known. The
+        // registry's per-decoder config build trusts this gate.
+        auto it = d->optionMaps.str.find(CHD_OPT_CHROMA_FILTER);
+        std::optional<chd::decoders::ChromaFilter> intent;
+        if (it != d->optionMaps.str.end()) {
+            intent = chd::decoders::parseChromaFilter(it->second);
+            if (!intent) {
+                chd::detail::set_last_error(
+                    "chd_decoder_commit: unknown chroma_filter \"" + it->second + "\"");
+                return CHD_E_INVALID_ARG;
+            }
+            const auto res = chd::decoders::resolveChromaFilter(*intent, system);
+            if (!res.valid) {
+                chd::detail::set_last_error(
+                    std::string("chd_decoder_commit: chroma_filter=\"") + it->second
+                    + "\": " + res.invalidReason);
+                return CHD_E_INVALID_ARG;
+            }
+        }
+        const bool isVsb = intent && *intent == chd::decoders::ChromaFilter::EquibandVsb;
+        const bool isSsb = intent && *intent == chd::decoders::ChromaFilter::WidebandISSB;
+
+        // The upper-sideband cutoff (+X) is consumed only by the PAL vestige
+        // recovery. Reject it elsewhere rather than silently ignoring it. (The
+        // NTSC wideband_i_ssb geometry is fixed by its built-in reconstruction
+        // filters; any asymmetry shaping comes from the sideband calibration
+        // profile, not this cutoff.)
+        auto xit = d->optionMaps.f64.find(CHD_OPT_CHROMA_UPPER_SIDEBAND_HZ);
+        const bool haveX = (xit != d->optionMaps.f64.end());
+        if (haveX && !isVsb) {
+            chd::detail::set_last_error(
+                "chd_decoder_commit: chroma_upper_sideband_hz is consumed only by "
+                "chroma_filter=\"equiband_vsb\"");
+            return CHD_E_INVALID_ARG;
+        }
+        if (haveX && (!std::isfinite(xit->second) || xit->second <= 0.0
+                      || xit->second >= chd::decoders::kEquibandCeilingHz)) {
+            chd::detail::set_last_error(
+                "chd_decoder_commit: chroma_upper_sideband_hz must be in (0, 1.3 MHz), "
+                "the upper-sideband room +X above the subcarrier");
+            return CHD_E_INVALID_ARG;
+        }
+        // equiband_vsb has no blind PAL β estimator and no single baked default,
+        // so the geometry must be supplied explicitly.
+        if (isVsb && !haveX) {
+            chd::detail::set_last_error(
+                "chd_decoder_commit: chroma_filter=\"equiband_vsb\" requires "
+                "chroma_upper_sideband_hz (the upper-sideband room +X above fSC, "
+                "e.g. 1066000 for System-I PAL)");
+            return CHD_E_INVALID_ARG;
+        }
+
+        // An ACTIVE β profile only has meaning in the NTSC SSB reconstruction;
+        // catching the mismatch here beats silently ignoring the profile.
+        // Inactive profiles (is_wideband_i == 0 or plateau == 0) are inert
+        // and allowed under any mode.
+        const auto &calib = d->optionMaps.sidebandCalib;
+        if (calib && calib->is_wideband_i != 0 && calib->beta_plateau > 0.0 && !isSsb) {
+            chd::detail::set_last_error(
+                "chd_decoder_commit: an active chroma sideband profile requires "
+                "chroma_filter=\"wideband_i_ssb\"");
+            return CHD_E_INVALID_ARG;
+        }
+    }
 
     chd::metadata::LdDecodeMetaData *meta = d->video->metadata.get();
     if (meta == nullptr) {
@@ -474,31 +584,61 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
     }
 #endif
 
-    std::vector<std::unique_ptr<chd::decoders::Decoder>> built;
-    std::vector<std::unique_ptr<std::mutex>>             builtMutexes;
-    built.reserve(threadCount);
-    builtMutexes.reserve(threadCount);
-    for (int32_t w = 0; w < threadCount; w++) {
-        auto inst = chd::decoders::registry::build(resolved, d->optionMaps);
-        if (!inst) {
-            chd::detail::set_last_error("chd_decoder_commit: unknown or unsupported decoder kind");
-            return CHD_E_DECODER_UNKNOWN;
-        }
+    // Build `threadCount` instances of one decoder kind, configured against
+    // the post-padding vp. `applyNn` binds the pending NN session (only the
+    // colour kind ever needs it; the luma Mono pass never does).
+    auto buildDecoders =
+        [&](chd_decoder_kind_t kind, bool applyNn,
+            std::vector<std::unique_ptr<chd::decoders::Decoder>> &outDecs) -> chd_status_t {
+        outDecs.clear();
+        outDecs.reserve(threadCount);
+        for (int32_t w = 0; w < threadCount; w++) {
+            auto inst = chd::decoders::registry::build(kind, d->optionMaps);
+            if (!inst) {
+                chd::detail::set_last_error("chd_decoder_commit: unknown or unsupported decoder kind");
+                return CHD_E_DECODER_UNKNOWN;
+            }
 #if defined(CHD_WITH_NN)
-        if (d->nnModelPending) {
-            if (!chd::decoders::registry::applyNnModel(resolved, *inst, d->nnModelPending)) {
+            if (applyNn && d->nnModelPending) {
+                if (!chd::decoders::registry::applyNnModel(kind, *inst, d->nnModelPending)) {
+                    chd::detail::set_last_error(
+                        "chd_decoder_commit: NN model bound to a non-NN decoder kind");
+                    return CHD_E_DECODER_INCOMPATIBLE;
+                }
+            }
+#else
+            (void)applyNn;
+#endif
+            if (!inst->configure(vp)) {
                 chd::detail::set_last_error(
-                    "chd_decoder_commit: NN model bound to a non-NN decoder kind");
+                    "chd_decoder_commit: decoder rejected input (incompatible video standard?)");
                 return CHD_E_DECODER_INCOMPATIBLE;
             }
+            outDecs.push_back(std::move(inst));
         }
-#endif
-        if (!inst->configure(vp)) {
-            chd::detail::set_last_error(
-                "chd_decoder_commit: decoder rejected input (incompatible video standard?)");
-            return CHD_E_DECODER_INCOMPATIBLE;
-        }
-        built.push_back(std::move(inst));
+        return CHD_OK;
+    };
+
+    // For a decode-level Y/C merge the configured (resolved) kind decodes the
+    // chroma plane; the luma plane is decoded with Mono. Otherwise the resolved
+    // kind decodes the single composite source.
+    const bool ycMerge = (d->video->chromaSource != nullptr);
+
+    std::vector<std::unique_ptr<chd::decoders::Decoder>> built;
+    std::vector<std::unique_ptr<chd::decoders::Decoder>> builtChroma;
+    if (ycMerge) {
+        if (const chd_status_t rc = buildDecoders(resolved, /*applyNn=*/true, builtChroma);
+            rc != CHD_OK) return rc;
+        if (const chd_status_t rc = buildDecoders(CHD_DEC_MONO, /*applyNn=*/false, built);
+            rc != CHD_OK) return rc;
+    } else {
+        if (const chd_status_t rc = buildDecoders(resolved, /*applyNn=*/true, built);
+            rc != CHD_OK) return rc;
+    }
+
+    std::vector<std::unique_ptr<std::mutex>> builtMutexes;
+    builtMutexes.reserve(threadCount);
+    for (int32_t w = 0; w < threadCount; w++) {
         builtMutexes.push_back(std::make_unique<std::mutex>());
     }
 
@@ -512,11 +652,16 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
     d->resolvedKind = resolved;
     d->decoders = std::move(built);
     d->decoderMutexes = std::move(builtMutexes);
+    d->chromaDecoders = std::move(builtChroma);
     d->videoParameters = vp;
     d->outputConfig = outCfg;
     d->outputPixelFormat = abiFormat;
     d->lookBehind = d->decoders.front()->getLookBehind();
     d->lookAhead  = d->decoders.front()->getLookAhead();
+    if (ycMerge) {
+        d->chromaLookBehind = d->chromaDecoders.front()->getLookBehind();
+        d->chromaLookAhead  = d->chromaDecoders.front()->getLookAhead();
+    }
     d->threadCount = threadCount;
 
     d->committed = true;

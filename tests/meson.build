@@ -33,6 +33,34 @@ test_encode_orc_color_bars = executable('test_encode_orc_color_bars',
   dependencies: [sqlite3_dep, threads_dep, fftw3_dep])
 test('encode_orc_color_bars', test_encode_orc_color_bars)
 
+# NTSC-1953 SSB wideband-I reconstruction. Synthesizes burst-locked
+# composite fields with single- and double-sideband chroma tones, decodes
+# them through the comb decoder's ChromaFilterMode variants, and asserts
+# amplitude recovery / axis separation. Links the static lib because Comb
+# and ComponentFrame are internal. CHD_WITH_NN must match the library
+# build: the test constructs a Comb in its own translation unit, and the
+# NN-gated members change the object's layout.
+test_ntsc_chroma_ssb = executable('test_ntsc_chroma_ssb',
+  'unit/test_ntsc_chroma_ssb.cpp',
+  include_directories: [public_inc, version_inc],
+  cpp_args: has_nn ? ['-DCHD_WITH_NN=1'] : [],
+  link_with: libchromadec.get_static_lib(),
+  dependencies: [sqlite3_dep, threads_dep])
+test('ntsc_chroma_ssb', test_ntsc_chroma_ssb)
+
+# NTSC-1953 sideband-asymmetry calibration (BetaAccumulator, β fit, and
+# the chd_chroma_sideband_calibrate argument validation). Synthesizes fields with
+# a known vestige profile and checks the recovered β/coherence/
+# classification. Static lib for internal access; CHD_WITH_NN must match
+# the library build (Comb layout — see test_ntsc_chroma_ssb).
+test_ntsc1953_calibration = executable('test_ntsc1953_calibration',
+  'unit/test_ntsc1953_calibration.cpp',
+  include_directories: [public_inc, version_inc],
+  cpp_args: has_nn ? ['-DCHD_WITH_NN=1'] : [],
+  link_with: libchromadec.get_static_lib(),
+  dependencies: [sqlite3_dep, threads_dep])
+test('ntsc1953_calibration', test_ntsc1953_calibration)
+
 # format/ DATA-table sanity tests (preset lookup, sample
 # conversion, signal-state mappings). Links the static lib because the
 # format/ symbols are internal — the C ABI only exposes chd_* names.
@@ -42,8 +70,17 @@ test_format_presets = executable('test_format_presets',
   link_with: libchromadec.get_static_lib())
 test('format_presets', test_format_presets)
 
+# Cross-system chroma-filter table (intent×system validity + standards cutoffs)
+# and the equiband_vsb EQ synthesis (frequency-response checks). Links the
+# static lib because chd::decoders::chroma_filter is internal.
+test_chroma_filter = executable('test_chroma_filter',
+  'unit/test_chroma_filter.cpp',
+  include_directories: [public_inc, version_inc],
+  link_with: libchromadec.get_static_lib())
+test('chroma_filter', test_chroma_filter)
+
 # CVBS reader end-to-end smoke tests. Uses the C ABI's
-# chd_video_open_cvbs_* entry points + reaches into the internal
+# chd_video_open_composite / chd_video_open_yc entry points + reaches into the internal
 # CvbsCompositeSource / CvbsYcSource for sample-level assertions.
 test_cvbs_reader = executable('test_cvbs_reader',
   'unit/test_cvbs_reader.cpp',

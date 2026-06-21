@@ -1,4 +1,5 @@
 public_headers = files(
+  'chromadec/calibration.h',
   'chromadec/chromadec.h',
   'chromadec/decoder.h',
   'chromadec/dropout.h',

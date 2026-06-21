@@ -15,7 +15,7 @@ research projects:
 
 !!! warning "These models are for 525-line NTSC, not PAL"
     Every model below was trained and designed for **525-line NTSC**
-    (NTSC-1953 / SMPTE 170M and close relatives). They are **not** applicable to
+    (NTSC-1953 / SMPTE ST 170 and close relatives). They are **not** applicable to
     PAL, and that includes 525-line **PAL-M**. They exist precisely because NTSC
     never had a frequency-domain ("transform") decoder the way PAL has Transform
     PAL; the neural decoders fill that gap for NTSC.

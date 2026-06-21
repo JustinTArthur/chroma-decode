@@ -36,6 +36,7 @@
 #include "transform_pal_2d.h"
 #include "transform_pal_3d.h"
 
+#include "../chroma_filter.h"
 #include "../filter/firfilter.h"
 #include "../filter/deemp.h"
 
@@ -87,9 +88,9 @@ PalColour::PalColour()
 
 int32_t PalColour::Configuration::getThresholdsSize() const
 {
-    if (chromaFilter == transform2DFilter) {
+    if (separation == transform2DFilter) {
         return TransformPal2D::getThresholdsSize();
-    } else if (chromaFilter == transform3DFilter) {
+    } else if (separation == transform3DFilter) {
         return TransformPal3D::getThresholdsSize();
     } else {
         return 0;
@@ -98,7 +99,7 @@ int32_t PalColour::Configuration::getThresholdsSize() const
 
 int32_t PalColour::Configuration::getLookBehind() const
 {
-    if (chromaFilter == transform3DFilter) {
+    if (separation == transform3DFilter) {
         return TransformPal3D::getLookBehind();
     } else {
         return 0;
@@ -107,7 +108,7 @@ int32_t PalColour::Configuration::getLookBehind() const
 
 int32_t PalColour::Configuration::getLookAhead() const
 {
-    if (chromaFilter == transform3DFilter) {
+    if (separation == transform3DFilter) {
         return TransformPal3D::getLookAhead();
     } else {
         return 0;
@@ -129,9 +130,9 @@ void PalColour::updateConfiguration(const chd::metadata::LdDecodeMetaData::Video
     // Build the look-up tables
     buildLookUpTables();
 
-    if (configuration.chromaFilter == transform2DFilter || configuration.chromaFilter == transform3DFilter) {
+    if (configuration.separation == transform2DFilter || configuration.separation == transform3DFilter) {
         // Create the Transform PAL filter
-        if (configuration.chromaFilter == transform2DFilter) {
+        if (configuration.separation == transform2DFilter) {
             transformPal = std::make_unique<TransformPal2D>();
         } else {
             transformPal = std::make_unique<TransformPal3D>();
@@ -191,17 +192,27 @@ void PalColour::buildLookUpTables()
     // similar enough for the filters to be the same size) allows them to be
     // computed together later.
     //
-    // The 0.93 is a bit empirical for the 4Fsc sampled LaserDisc scans.
-    const double chromaBandwidthHz = 1100000.0 / 0.93;
+    // The cutoff comes from the resolved chroma_filter mode; the default
+    // (compat) is the 1.1/0.93 dot-pattern-tuned value the 0.93 empirical
+    // fudge for the 4Fsc sampled LaserDisc scans always was.
+    const double chromaBandwidthHz = configuration.chromaBandwidthHz;
 
     // Compute filter widths based on chroma bandwidth.
-    // FILTER_SIZE must be wide enough to hold both filters (and ideally no
-    // wider, else we're doing more computation than we need to).
-    // XXX where does the 0.5* come from?
+    // ca is the kernel's half-width in samples; the symmetric kernel is 2*ca
+    // wide, so the 0.5 makes that full width span one period of the chroma
+    // bandwidth (placing raised cosine's -6 dB corner at chromaBandwidthHz).
     const double ca = 0.5 * videoParameters.sampleRate / chromaBandwidthHz;
     const double ya = 0.5 * videoParameters.sampleRate / chromaBandwidthHz;
-    assert(FILTER_SIZE >= static_cast<int32_t>(ca));
-    assert(FILTER_SIZE >= static_cast<int32_t>(ya));
+
+    // Size the coefficient tables to the nonzero kernel: the raised cosine is
+    // exactly zero at and beyond ca, so floor(ca) is the highest tap that
+    // carries any weight. Sizing from (ca, ya) rather than a fixed ceiling is
+    // what lets narrow chroma bandwidths (color_under) and non-LD sample rates
+    // work, and it is byte-identical at the legacy cutoff, where floor(ca) is
+    // the value the old fixed table size was hand-tuned to.
+    filterSize = std::max({1, static_cast<int32_t>(ca), static_cast<int32_t>(ya)});
+    cfilt.assign(filterSize + 1, {0.0, 0.0, 0.0, 0.0});
+    yfilt.assign(filterSize + 1, {0.0, 0.0});
 
     // Note that we choose to make the y-filter *much* less selective in the
     // vertical direction: this is to prevent castellation on horizontal colour
@@ -211,7 +222,7 @@ void PalColour::buildLookUpTables()
     // pass one- or two-line colour bars - underlines/graphics etc.
 
     double cdiv = 0, ydiv = 0;
-    for (int32_t f = 0; f <= FILTER_SIZE; f++) {
+    for (int32_t f = 0; f <= filterSize; f++) {
         // 0-2-4-6 sequence here because we're only processing one field.
         const double fc   = qMin(ca, static_cast<double>(f));
         const double ff   = qMin(ca, sqrt(f * f + 2 * 2));
@@ -256,13 +267,25 @@ void PalColour::buildLookUpTables()
     }
 
     // Normalise the filter coefficients.
-    for (int32_t f = 0; f <= FILTER_SIZE; f++) {
+    for (int32_t f = 0; f <= filterSize; f++) {
         for (int32_t i = 0; i < 4; i++) {
             cfilt[f][i] /= cdiv;
         }
         for (int32_t i = 0; i < 2; i++) {
             yfilt[f][i] /= ydiv;
         }
+    }
+
+    // equiband_vsb: synthesize the vestige-recovery EQ. The ceiling is the
+    // raised-cosine cutoff itself (the equiband baseband ceiling), so the EQ
+    // lifts exactly the band the bandwidth filter passes above +X. Empty
+    // otherwise (a plain symmetric raised-cosine filter, no EQ).
+    vsbEqTaps.clear();
+    if (configuration.chromaVsbRecovery
+        && configuration.chromaUpperSidebandHz > 0.0
+        && configuration.chromaUpperSidebandHz < chromaBandwidthHz) {
+        vsbEqTaps = chd::decoders::synthesizeVsbEq(configuration.chromaUpperSidebandHz,
+                                                   chromaBandwidthHz, videoParameters.sampleRate);
     }
 }
 
@@ -273,7 +296,7 @@ void PalColour::decodeFrames(const std::vector<chd::decoders::SourceField> &inpu
     assert((componentFrames.size() * 2) == (endIndex - startIndex));
 
     std::vector<const double *> chromaData(endIndex - startIndex);
-    if (configuration.chromaFilter != palColourFilter) {
+    if (configuration.separation != palColourFilter) {
         // Use Transform PAL filter to extract chroma
         transformPal->filterFields(inputFields, startIndex, endIndex, chromaData);
     }
@@ -286,7 +309,7 @@ void PalColour::decodeFrames(const std::vector<chd::decoders::SourceField> &inpu
         decodeField(inputFields[i + 1], chromaData[j + 1], componentFrames[k]);
     }
 
-    if (configuration.showFFTs && configuration.chromaFilter != palColourFilter) {
+    if (configuration.showFFTs && configuration.separation != palColourFilter) {
         // Overlay the FFT visualisation
         transformPal->overlayFFT(configuration.showPositionX, configuration.showPositionY,
                                  inputFields, startIndex, endIndex, componentFrames);
@@ -301,6 +324,13 @@ void PalColour::decodeField(const chd::decoders::SourceField &inputField, const 
 
     const int32_t firstLine = inputField.getFirstActiveLine(videoParameters);
     const int32_t lastLine = inputField.getLastActiveLine(videoParameters);
+
+    // equiband_vsb vestige-recovery EQ, applied to the recovered U/V per line.
+    const bool doVsb = !vsbEqTaps.empty();
+    const int32_t eqStart = videoParameters.activeVideoStart;
+    const int32_t eqWidth = videoParameters.activeVideoEnd - eqStart;
+    std::vector<double> eqScratch(doVsb ? eqWidth : 0);
+
     for (int32_t fieldLine = firstLine; fieldLine < lastLine; fieldLine++) {
         LineInfo line(fieldLine);
 
@@ -313,12 +343,25 @@ void PalColour::decodeField(const chd::decoders::SourceField &inputField, const 
         line.bp = (oldBp * cos(theta) - oldBq * sin(theta)) * configuration.chromaGain;
         line.bq = (oldBp * sin(theta) + oldBq * cos(theta)) * configuration.chromaGain;
 
-        if (configuration.chromaFilter == palColourFilter) {
+        if (configuration.separation == palColourFilter) {
             // Decode chroma and luma from the composite signal
             decodeLine<uint16_t, false>(inputField, compPtr, line, componentFrame);
         } else {
             // Decode chroma and luma from the Transform PAL output
             decodeLine<double, true>(inputField, chromaData, line, componentFrame);
+        }
+
+        if (doVsb) {
+            // The V-switch already separated U/V and cancelled the vestige's
+            // quadrature crosstalk; lift its half-amplitude droop back to full.
+            const int32_t lineNumber = (line.number * 2) + inputField.getOffset();
+            const auto eq = chd::decoders::filter::makeFIRFilter(vsbEqTaps);
+            double *U = componentFrame.u(lineNumber) + eqStart;
+            double *V = componentFrame.v(lineNumber) + eqStart;
+            eq.apply(U, eqScratch.data(), eqWidth);
+            std::copy(eqScratch.begin(), eqScratch.end(), U);
+            eq.apply(V, eqScratch.data(), eqWidth);
+            std::copy(eqScratch.begin(), eqScratch.end(), V);
         }
     }
 }
@@ -533,8 +576,17 @@ void PalColour::decodeLine(const chd::decoders::SourceField &inputField, const C
         // Vertical taps 1 and 2 are swapped in the array to save one addition
         // in the filter loop, as U and V use the same sign for taps 0 and 2.
         double m[4][MAX_WIDTH], n[4][MAX_WIDTH];
-        const auto endPos2 = std::min(videoParameters.activeVideoEnd + FILTER_SIZE + 1, MAX_WIDTH);
-        for (int32_t i = videoParameters.activeVideoStart - FILTER_SIZE; i < endPos2; i++) {
+        // The 2D filter reads filterSize samples either side of each active
+        // sample, so the quadrature scratch is populated over that halo.
+        // filterSize tracks the chroma bandwidth and sample rate, so a narrow
+        // mode (color_under) or a high sample rate can push the halo past the
+        // line edges; clamp both ends into [0, MAX_WIDTH) so the fill here and
+        // the convolution below stay in bounds. At the usual 4fSC geometry
+        // the halo sits well inside the line, the clamps never bind, and the
+        // result is unchanged.
+        const int32_t fillStart = std::max(0, videoParameters.activeVideoStart - filterSize);
+        const int32_t fillEnd = std::min(videoParameters.activeVideoEnd + filterSize + 1, MAX_WIDTH);
+        for (int32_t i = fillStart; i < fillEnd; i++) {
             m[0][i] =  in0[i] * sine[i];
             m[2][i] =  in1[i] * sine[i] - in2[i] * sine[i];
             m[1][i] = -in3[i] * sine[i] - in4[i] * sine[i];
@@ -560,9 +612,12 @@ void PalColour::decodeLine(const chd::decoders::SourceField &inputField, const C
             // differ in sign for n+/-1 ([2]), n+/-3 ([3]) owing to the
             // forward/backward axis slant.
 
-            for (int32_t b = 0; b <= FILTER_SIZE; b++) {
-                const int32_t l = i - b;
-                const int32_t r = i + b;
+            for (int32_t b = 0; b <= filterSize; b++) {
+                // Reads stay inside the populated halo [fillStart, fillEnd);
+                // clamps only bind in the edge case the fill window was clamped
+                // for, and are a no-op at usual geometry.
+                const int32_t l = std::max(fillStart, i - b);
+                const int32_t r = std::min(fillEnd - 1, i + b);
 
                 PY += (m[0][r] + m[0][l]) * yfilt[b][0] + (m[1][r] + m[1][l]) * yfilt[b][1];
                 QY += (n[0][r] + n[0][l]) * yfilt[b][0] + (n[1][r] + n[1][l]) * yfilt[b][1];

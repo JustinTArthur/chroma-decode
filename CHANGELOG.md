@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file. Format:
 ## [Unreleased]
 
 ### Added
+- **Dual-file Y/C `.tbc` input via decode-level merge.** `chd_video_open_yc`
+  accepts an ld-decode luma `.tbc` + chroma `.tbc` pair (e.g. S-Video /
+  colour-under captures), in addition to CVBS `.y`/`.c`. The luma plane is
+  decoded with the Mono kind and the chroma plane with the configured colour
+  kind; their Y and Cb/Cr are then merged, with no composite reconstruction or
+  re-combing. Each plane takes its own extra sources for dropout correction via
+  `chd_video_add_extra_source_yc`.
 - First-party **Rust bindings**, a two-crate workspace under `rust/`:
   `chromadec-sys` (raw bindgen-generated FFI over the C headers) and
   `chromadec` (a safe wrapper — owning handle types with `Drop`, `Result`-based
@@ -27,6 +34,54 @@ All notable changes to this project will be documented in this file. Format:
   extensions disabled), so a wrapped build needs nothing installed for it. A
   system libsqlite3, when present, is still linked as-is. Documented in the
   integration guide's new "Consuming as a Meson subproject" section.
+- Cross-system chroma-filter option: string option `CHD_OPT_CHROMA_FILTER`
+  (`chroma_filter`), spanning the NTSC comb and PAL/PAL-M PalColour decoders. The
+  mode picks what to do with the chroma band. `"compat"` (default) is the
+  system-resolved legacy width (~2.2 MHz on NTSC, identical to the explicit
+  `"equiband_wide"`; the 1.1/0.93 dot-pattern-tuned ~1.18 MHz on PAL), so a
+  no-option / `compat` decode stays byte-identical to the previous behaviour on
+  either system. `"equiband"` (1.3 MHz, SMPTE ST 170 Annex A.4 / ITU-R BT.1700)
+  and `"color_under"` (~0.5 MHz, VHS/S-VHS per IEC 60774-1 §6.2) are valid on
+  both. Two single-sideband recovery modes split by system: `"wideband_i_ssb"`
+  (NTSC, the 1953 wideband-I plus Hilbert reconstruction, backed by the sideband
+  calibration API below) and `"equiband_vsb"` (PAL). `equiband_vsb` recovers a PAL
+  channel that sent U/V equiband (DSB to ~1.3 MHz) then clipped the upper sideband
+  at the video-band edge, leaving the vestige lower-sideband-only at half
+  amplitude; line-alternating V already cancels the U/V quadrature crosstalk, so
+  recovery is a pure linear-phase amplitude shelf (unity below the cutoff, +6 dB
+  at the 1.3 MHz ceiling) that boosts vestige noise and so suits clean LD/studio
+  sources. The upper-sideband cutoff `CHD_OPT_CHROMA_UPPER_SIDEBAND_HZ`
+  (`chroma_upper_sideband_hz`), the frequency +X above the subcarrier where the
+  channel clipped, is read only by `equiband_vsb`, where it is required (PAL has no
+  blind estimator; e.g. 1066000 for System-I PAL). Invalid `(mode, system)`
+  combinations, a +X on any other mode, and an `equiband_vsb` without +X are all
+  rejected at `chd_decoder_commit`. To make the narrow modes fit, PalColour's 2D
+  filter coefficient tables are now sized dynamically from the resolved cutoff and
+  sample rate (was a fixed 7-tap ceiling tuned for the 4·fSC LaserDisc rate;
+  byte-identical at the legacy cutoff).
+- NTSC-1953 wideband-I sideband calibration (new header `<chromadec/calibration.h>`),
+  the advanced path behind `chroma_filter="wideband_i_ssb"`. NTSC-1953 transmitted
+  wideband I above ~0.6 MHz lower-sideband-only; whether a capture preserved that,
+  and the shape of its vestigial rolloff, is a property of the provenance chain,
+  not the standard. `chd_chroma_sideband_calibrate` measures it: it demodulates a
+  frame range with a burst-locked 2D comb, accumulates the quadrature
+  (imaginary-part) I·Q cross-spectrum per frequency bin over every active line, and
+  fits a raised-cosine asymmetry profile β(f) (plateau, edge center, edge width).
+  Reading the imaginary part rejects the dominant estimator biases structurally
+  (lower-sideband crosstalk is a Hilbert 90° relationship, while scene-driven I/Q
+  correlation and burst-phase error are in-phase), and I/Q coherence over
+  0.70–1.00 MHz gates an `is_wideband_i` source classification (NTSC 4fSC sources
+  only). `chd_decoder_set_chroma_sideband_calib` attaches a measured (or preset)
+  profile; commit then synthesizes two corrections from it (frequency-sampling
+  design): a transition-strip I equalizer with gain `1 + β(f)·(1 − W(f))` that
+  restores full-amplitude I through the vestigial 0.4–0.7 MHz band and blends into
+  the Hilbert skirt's vestige-blind region, and a Q crosstalk nuller that subtracts
+  `β·ĥ(I)` ahead of Q's low-pass, removing the hue-transient edge ghost that period
+  receivers displayed. A NULL, unclassified, or zero-plateau profile is inert
+  (output bit-identical to no profile); an active profile with any other filter
+  mode is rejected at commit. On a synthetic vestige fixture the corrections take a
+  transition-strip tone from 73% to 97% recovered amplitude and null its Q ghost
+  from −16 dB to −37 dB.
 - Native CoreML is now a standalone inference backend, buildable **without**
   ONNX Runtime. A macOS build with `-Dwith_onnxruntime=false -Dwith_coreml=enabled`
   ships the ldzeug and nnTransform3D decoders running entirely on CoreML, with no
