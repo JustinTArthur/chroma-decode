@@ -17,7 +17,11 @@ CvbsCompositeSource::~CvbsCompositeSource()
 bool CvbsCompositeSource::open(const std::string &compositePath,
                                const chd::format::VideoStandardPreset &videoStandard,
                                chd::format::SampleEncoding sampleEncoding,
-                               chd::format::SignalState signalState)
+                               chd::format::SignalState signalState,
+                               std::optional<int32_t> blackLevelOverride,
+                               chd::format::FrameLayout layoutOverride,
+                               std::optional<int64_t> declaredFrames,
+                               std::optional<bool> subcarrierLockedOverride)
 {
     if (isOpen) {
         chd::log::warn() << "CvbsCompositeSource::open(): source already open";
@@ -25,15 +29,10 @@ bool CvbsCompositeSource::open(const std::string &compositePath,
     }
 
     standardEnum = videoStandard.standard;
+    preset       = &videoStandard;
     encoding     = sampleEncoding;
     state        = signalState;
-    videoParameters = chd::format::makeVideoParameters(
-        videoStandard,
-        /*isSubcarrierLocked*/ chd::format::getSignalState(state).burstLocked);
-    fieldWidth   = videoParameters.fieldWidth;
-    fieldHeight  = videoParameters.fieldHeight;
-    fieldSamples = fieldWidth * fieldHeight;
-    fieldByteSize = fieldSamples * chd::format::getSampleEncoding(encoding).bytesPerSample;
+    bytesPerSample = chd::format::getSampleEncoding(encoding).bytesPerSample;
 
     inputFile.open(compositePath, std::ios::binary);
     if (!inputFile.is_open()) {
@@ -43,16 +42,56 @@ bool CvbsCompositeSource::open(const std::string &compositePath,
     inputFile.seekg(0, std::ios::end);
     fileSize = inputFile.tellg();
     inputFile.seekg(0, std::ios::beg);
+
+    layout = chd::format::resolveFrameLayout(layoutOverride, videoStandard, signalState,
+                                             bytesPerSample, fileSize, declaredFrames);
+
+    videoParameters = chd::format::makeCvbsVideoParameters(
+        videoStandard, sampleEncoding, blackLevelOverride, layout,
+        subcarrierLockedOverride);
+    fieldWidth   = videoParameters.fieldWidth;
+    fieldHeight  = videoParameters.fieldHeight;
+    fieldSamples = fieldWidth * fieldHeight;
+    fieldByteSize = fieldSamples * bytesPerSample;
+
     if (fileSize <= 0 || fieldByteSize <= 0) {
         chd::log::warn() << "CvbsCompositeSource::open(): invalid file or field size";
         inputFile.close();
         return false;
     }
-    numFields = static_cast<int32_t>(fileSize / fieldByteSize);
+    if (layout == chd::format::FrameLayout::FRAME_NATIVE) {
+        const int64_t frameByteSize =
+            static_cast<int64_t>(videoStandard.samplesPerFrame) * bytesPerSample;
+        numFields = static_cast<int32_t>(fileSize / frameByteSize) * 2;
+    } else {
+        numFields = static_cast<int32_t>(fileSize / fieldByteSize);
+    }
+    if (layout == chd::format::FrameLayout::FRAME_NATIVE) {
+        // Resolve the horizontal alignment from the signal: measure 0H from
+        // the sync edges of 50 post-VBI first-field rows, then rebuild the
+        // burst/active windows for the cut the capture actually uses.
+        std::optional<double> measured;
+        if (numFields >= 2 &&
+            chd::format::getSampleEncoding(encoding).hasStandardAmplitudeMapping) {
+            const auto plan = chd::format::planFrameNativeFieldRead(
+                videoStandard, 0, 40, 89, bytesPerSample);
+            const Data rows = readAndConvert(plan.startByte, plan.numBytes);
+            measured = chd::format::measureRowZeroH(rows.data(), 50, fieldWidth,
+                                                    videoStandard.levels);
+        }
+        const auto alignment = chd::format::resolveFrameNativeAlignment(
+            videoStandard, measured, "CvbsCompositeSource");
+        videoParameters = chd::format::makeCvbsVideoParameters(
+            videoStandard, sampleEncoding, blackLevelOverride, layout,
+            subcarrierLockedOverride, alignment);
+    }
+
     isOpen = true;
     chd::log::debug().nospace()
         << "CvbsCompositeSource::open(): " << compositePath << " has " << numFields
-        << " fields (" << fieldWidth << "x" << fieldHeight << " samples/field)";
+        << " fields (" << fieldWidth << "x" << fieldHeight << " samples/field, "
+        << (layout == chd::format::FrameLayout::FRAME_NATIVE ? "frame-native" : "field-raster")
+        << ")";
     return true;
 }
 
@@ -77,6 +116,11 @@ chd::format::SignalState CvbsCompositeSource::signalState() const
 chd::format::SampleEncoding CvbsCompositeSource::sampleEncoding() const
 {
     return encoding;
+}
+
+chd::format::FrameLayout CvbsCompositeSource::frameLayout() const
+{
+    return layout;
 }
 
 bool CvbsCompositeSource::isSourceValid() const
@@ -109,27 +153,34 @@ CvbsCompositeSource::Data CvbsCompositeSource::getVideoField(int32_t fieldNumber
 
     std::lock_guard<std::mutex> lock(ioMutex);
 
-    int64_t startByte;
-    int64_t numBytes;
     const bool wholeField = (startFieldLine == -1 && endFieldLine == -1);
     if (wholeField) {
         auto it = fieldCache.find(fieldIndex);
         if (it != fieldCache.end()) return it->second;
-        startByte = static_cast<int64_t>(fieldByteSize) * fieldIndex;
-        numBytes  = fieldByteSize;
-    } else {
-        // Lines are 1-based. Convert to 0-based and validate.
-        const int32_t first0 = startFieldLine - 1;
-        const int32_t last0  = endFieldLine - 1;
-        if (first0 < 0 || last0 < first0 || last0 >= fieldHeight) {
-            throw std::runtime_error("CvbsCompositeSource::getVideoField(): line range out of bounds");
-        }
-        const int64_t lineByteSize = static_cast<int64_t>(fieldWidth) * 2;
-        startByte = static_cast<int64_t>(fieldByteSize) * fieldIndex + lineByteSize * first0;
-        numBytes  = lineByteSize * (last0 - first0 + 1);
+    }
+    // Lines are 1-based. Convert to 0-based and validate.
+    const int32_t first0 = wholeField ? 0 : startFieldLine - 1;
+    const int32_t last0  = wholeField ? fieldHeight - 1 : endFieldLine - 1;
+    if (first0 < 0 || last0 < first0 || last0 >= fieldHeight) {
+        throw std::runtime_error("CvbsCompositeSource::getVideoField(): line range out of bounds");
     }
 
-    Data data = readAndConvert(startByte, numBytes);
+    Data data;
+    if (layout == chd::format::FrameLayout::FRAME_NATIVE) {
+        // Conform from the frame-addressed native stream: pure line
+        // re-blocking on the same sample grid, plus the dummy padding line.
+        const auto plan = chd::format::planFrameNativeFieldRead(
+            *preset, fieldIndex, first0, last0, bytesPerSample);
+        if (plan.numBytes > 0) data = readAndConvert(plan.startByte, plan.numBytes);
+        data.resize(data.size() + plan.padSamples,
+                    static_cast<uint16_t>(videoParameters.blanking16bIre));
+    } else {
+        const int64_t lineByteSize = static_cast<int64_t>(fieldWidth) * 2;
+        const int64_t startByte =
+            static_cast<int64_t>(fieldByteSize) * fieldIndex + lineByteSize * first0;
+        const int64_t numBytes = lineByteSize * (last0 - first0 + 1);
+        data = readAndConvert(startByte, numBytes);
+    }
 
     if (wholeField) {
         fieldCache.emplace(fieldIndex, data);
@@ -156,8 +207,9 @@ CvbsCompositeSource::Data CvbsCompositeSource::readAndConvert(int64_t startByte,
     }
 
     Data out(static_cast<size_t>(numSamples));
+    const int32_t blanking10 = videoParameters.blanking16bIre / 64;
     for (size_t i = 0; i < raw.size(); ++i) {
-        out[i] = chd::format::convertCompositeSampleToCanonical(encoding, raw[i]);
+        out[i] = chd::format::convertCompositeSampleToCanonical(encoding, raw[i], blanking10);
     }
     return out;
 }

@@ -23,8 +23,8 @@ impl Video {
     /// Opens a single-file composite capture (`chd_video_open_composite`): an
     /// ld-decode `.tbc` or a CVBS `.composite`. With no sidecar path the
     /// library auto-locates an ld-decode `<path>.db`/`<path>.json` or a CVBS
-    /// `<basename>.meta`, detecting the flavour automatically. `params`
-    /// overrides metadata values (or supplies them when no sidecar is found).
+    /// `<basename>.meta`, detecting the flavour automatically. See
+    /// [`VideoParams`] for how `params` interacts with sidecar metadata.
     pub fn open_composite(
         path: impl AsRef<Path>,
         sidecar_path: Option<&Path>,

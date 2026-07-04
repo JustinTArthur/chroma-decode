@@ -42,9 +42,11 @@ int testVideoStandardLookup() {
 
     // Sample level tables (in the 10-bit domain).
     REQUIRE(getVideoStandard(VideoStandard::PAL).levels.blanking == 256);
-    REQUIRE(getVideoStandard(VideoStandard::PAL).levels.black == 282);
+    REQUIRE(getVideoStandard(VideoStandard::PAL).levels.black == 256);   // PAL: no setup, black = blanking
     REQUIRE(getVideoStandard(VideoStandard::NTSC).levels.blanking == 240);
-    REQUIRE(getVideoStandard(VideoStandard::NTSC).levels.black == 252);
+    REQUIRE(getVideoStandard(VideoStandard::NTSC).levels.black == 282);  // NTSC: +7.5 IRE setup
+    REQUIRE(getVideoStandard(VideoStandard::PAL).levels.peak == 1019);
+    REQUIRE(getVideoStandard(VideoStandard::NTSC).levels.peak == 1019);
     return 0;
 }
 
@@ -64,27 +66,45 @@ int testSampleEncodingLookup() {
 
 int testSampleConversion() {
     using namespace chd::format;
+    // Only CVBS_S16_FSC consumes the blanking argument; pass the PAL value
+    // (256) for the others to prove it is ignored.
     // CVBS_U10_4FSC: raw is 10-bit value; × 64 to get canonical TBC domain.
-    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_U10_4FSC, 256) == 16384);
-    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_U10_4FSC, 0) == 0);
-    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_U10_4FSC, 1019) == 65216);
+    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_U10_4FSC, 256, 256) == 16384);
+    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_U10_4FSC, 0, 256) == 0);
+    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_U10_4FSC, 1019, 256) == 65216);
 
     // CVBS_U16_4FSC: raw is already the 10-bit × 64 value in unsigned 16-bit.
-    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_U16_4FSC, static_cast<int16_t>(16384)) == 16384);
-    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_U16_4FSC, static_cast<int16_t>(-32768)) == 32768);
+    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_U16_4FSC, static_cast<int16_t>(16384), 256) == 16384);
+    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_U16_4FSC, static_cast<int16_t>(-32768), 256) == 32768);
 
     // CVBS_TPG21_4FSC: int16 = (val10 - 508) × 64; blanking 256 → int16 = -16128.
-    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_TPG21_4FSC, -16128) == 16384);
-    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_TPG21_4FSC, 0) == 32512);  // val10 = 508
+    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_TPG21_4FSC, -16128, 256) == 16384);
+    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_TPG21_4FSC, 0, 256) == 32512);  // val10 = 508
+
+    // CVBS_S16_FSC: int16 = (val10 - blanking10) × 32; the offset follows the
+    // standard's blanking (spec encoded-level examples).
+    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_S16_FSC, 0, 256) == 16384);
+    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_S16_FSC, -8064, 256) == 4 * 64);
+    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_S16_FSC, 18816, 256) == 844 * 64);
+    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_S16_FSC, 0, 240) == 15360);
+    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_S16_FSC, 1344, 240) == 282 * 64);
+    REQUIRE(convertCompositeSampleToCanonical(SampleEncoding::CVBS_S16_FSC, 17920, 240) == 800 * 64);
 
     // Chroma centred at 512 → centred excursion × 64.
-    REQUIRE(convertChromaSampleToCenteredCanonical(SampleEncoding::CVBS_U10_4FSC, 512) == 0);
-    REQUIRE(convertChromaSampleToCenteredCanonical(SampleEncoding::CVBS_U10_4FSC, 600) == (600 - 512) * 64);
-    REQUIRE(convertChromaSampleToCenteredCanonical(SampleEncoding::CVBS_U10_4FSC, 400) == (400 - 512) * 64);
+    REQUIRE(convertChromaSampleToCenteredCanonical(SampleEncoding::CVBS_U10_4FSC, 512, 256) == 0);
+    REQUIRE(convertChromaSampleToCenteredCanonical(SampleEncoding::CVBS_U10_4FSC, 600, 256) == (600 - 512) * 64);
+    REQUIRE(convertChromaSampleToCenteredCanonical(SampleEncoding::CVBS_U10_4FSC, 400, 256) == (400 - 512) * 64);
 
     // CVBS_U16_4FSC chroma: 32768 in u16 is chroma zero.
     REQUIRE(convertChromaSampleToCenteredCanonical(SampleEncoding::CVBS_U16_4FSC,
-                                                   static_cast<int16_t>(32768)) == 0);
+                                                   static_cast<int16_t>(32768), 256) == 0);
+
+    // CVBS_S16_FSC chroma: zero maps to (512 - blanking10) × 32 in int16
+    // (8192 for PAL, 8704 for NTSC/PAL_M, per the spec examples).
+    REQUIRE(convertChromaSampleToCenteredCanonical(SampleEncoding::CVBS_S16_FSC, 8192, 256) == 0);
+    REQUIRE(convertChromaSampleToCenteredCanonical(SampleEncoding::CVBS_S16_FSC, 8704, 240) == 0);
+    REQUIRE(convertChromaSampleToCenteredCanonical(SampleEncoding::CVBS_S16_FSC,
+                                                   8192 + 88 * 32, 256) == 88 * 64);
     return 0;
 }
 
@@ -111,7 +131,7 @@ int testMakeVideoParameters() {
     REQUIRE(vp.fieldWidth == 910);
     REQUIRE(vp.fieldHeight == 263);
     REQUIRE(vp.blanking16bIre == 15360);
-    REQUIRE(vp.black16bIre == 16128);
+    REQUIRE(vp.black16bIre == 18048);   // 282 (blanking + 7.5 IRE setup) × 64
     REQUIRE(vp.white16bIre == 51200);
     REQUIRE(vp.isSubcarrierLocked == true);
     REQUIRE(vp.system == chd::metadata::NTSC);

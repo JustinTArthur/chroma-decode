@@ -4,7 +4,7 @@
 //
 // Reads the single-table `cvbs_file` schema defined in the CVBS file format
 // specification (cvbs-file-format-specification/docs/index.md, user_version
-// = 7). The reader validates the preset triple against the format/ DATA
+// = 7 or 8). The reader validates the preset triple against the format/ DATA
 // tables and returns the resolved presets along with file-level fields like
 // `number_of_sequential_frames` and `black_level`.
 

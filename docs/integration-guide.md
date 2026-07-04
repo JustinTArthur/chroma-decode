@@ -236,6 +236,37 @@ pair (luma + chroma `.tbc`, or CVBS `.y` + `.c`). Both accept an optional
 [`chd_video_params_t`](api-reference.md#chd_video_params_t) override for when
 metadata is absent or you need to force parameters.
 
+### Which fields to set
+
+Per input variant, the override fields that matter (every variant also wants
+the matching open function and sidecar from the
+[reader matrix](file-formats.md#reader-matrix)):
+
+| Input                                                       | Sidecar                              | `chd_video_params_t` fields to set                                                                      |
+|-------------------------------------------------------------|--------------------------------------|---------------------------------------------------------------------------------------------------------|
+| ld-decode / vhs-decode / encode-orc composite `.tbc`        | `.tbc.db` / `.tbc.json`              | none (pass `NULL`)                                                                                      |
+| vhs-decode luma + chroma `.tbc` pair                        | shared `.tbc.json`, or one per plane | none (pass `NULL`)                                                                                      |
+| ld-chroma-encoder `.tbc` (line-locked or `--sc-locked` PAL) | `.tbc.db` / `.tbc.json`              | none (the sidecar carries the subcarrier lock)                                                          |
+| CVBS field raster with `.meta` (`.composite` or `.y`/`.c`)  | `.meta`                              | none, or `is_subcarrier_locked = 1` for an encoder-style subcarrier-locked raster                       |
+| CVBS frame native with `.meta` (`.composite` or `.y`/`.c`)  | `.meta`                              | none, or `layout = CHD_FRAME_LAYOUT_FRAME_NATIVE` at the ambiguous sizes noted below                    |
+| CVBS without `.meta` (any layout)                           | none                                 | `standard`, `encoding`, `signal_state` (all required), plus `layout` / `is_subcarrier_locked` as needed |
+
+Two rules govern the table. With a sidecar present, only `layout`,
+`is_subcarrier_locked`, and `is_second_field_first` are read from the
+override (the `.meta` schema carries none of them); the preset triple comes
+from the sidecar. With no sidecar, the override is mandatory and must set
+`standard`, `encoding`, and `signal_state`, or the open fails.
+`is_second_field_first` applies to any CVBS row of the table: set it when the
+capture's temporally-first field of each stored pair is not the interlace
+first field.
+
+Container layout is normally auto-detected, so the `layout` override is only
+needed where detection cannot decide: NTSC/PAL-M files whose size is an exact
+multiple of the 526-native = 525-field-raster collision length, and truncated
+files (both fall back to field raster with a warning). See
+[container layouts](file-formats.md#container-layouts) for the detection
+order and the byte totals.
+
 ## Configuring the decode
 
 Options are set by name through the typed setters and take effect at the next

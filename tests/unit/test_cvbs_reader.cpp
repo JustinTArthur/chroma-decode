@@ -13,12 +13,22 @@
 //
 //   3. Synthesise a meta sidecar with an unknown preset; verify the open
 //      fails with CHD_E_METADATA_CORRUPT and a descriptive error.
+//
+//   4. Frame-layout coverage: resolveFrameLayout decision table (including
+//      the 526-native = 525-packed size collision), the NTSC/PAL_M
+//      frame-native conform (row mapping + dummy padding line), PAL
+//      frame-native rejection, the subcarrier-lock derivation, and the
+//      field-wise layout / is_subcarrier_locked override merge.
 
+#include <chromadec/decoder.h>
+#include <chromadec/frame.h>
 #include <chromadec/video.h>
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -28,6 +38,7 @@
 
 // Internal-only headers — pulled in via the static lib link in meson.build
 // (matches the test_encode_orc_color_bars pattern).
+#include "../../src/common/log.h"
 #include "../../src/reader/cvbs_composite_source.h"
 #include "../../src/reader/cvbs_yc_source.h"
 #include "../../src/format/video_standards.h"
@@ -63,14 +74,37 @@ CREATE TABLE cvbs_file (
 );
 )";
 
+// The spec's current revision: user_version 8 adds CVBS_S16_FSC and the
+// audio_locked column. Both versions must open.
+const char *kCvbsSchemaV8 = R"(
+PRAGMA user_version = 8;
+
+CREATE TABLE cvbs_file (
+    cvbs_file_id                INTEGER PRIMARY KEY,
+    preset                      TEXT    NOT NULL,
+    sample_encoding_preset      TEXT    NOT NULL,
+    signal_state_preset         TEXT    NOT NULL,
+    signal_type                 TEXT    NOT NULL,
+    decoder                     TEXT    NOT NULL,
+    git_branch                  TEXT,
+    git_commit                  TEXT,
+    number_of_sequential_frames INTEGER,
+    black_level                 INTEGER,
+    has_nonstandard_values      BOOLEAN,
+    audio_locked                BOOLEAN,
+    capture_notes               TEXT
+);
+)";
+
 bool writeMetaSidecar(const std::string &metaPath, const std::string &preset,
                       const std::string &encoding, const std::string &state,
-                      const std::string &signalType) {
+                      const std::string &signalType,
+                      const char *schema = kCvbsSchema) {
     if (fs::exists(metaPath)) fs::remove(metaPath);
     sqlite3 *db = nullptr;
     if (sqlite3_open(metaPath.c_str(), &db) != SQLITE_OK) return false;
     char *err = nullptr;
-    if (sqlite3_exec(db, kCvbsSchema, nullptr, nullptr, &err) != SQLITE_OK) {
+    if (sqlite3_exec(db, schema, nullptr, nullptr, &err) != SQLITE_OK) {
         std::cerr << "schema error: " << err << "\n";
         sqlite3_free(err);
         sqlite3_close(db);
@@ -232,6 +266,572 @@ int testYcSynthesis() {
     return 0;
 }
 
+// Write frameCount native frames where every sample of frame line L (0-based)
+// holds the value L + frameIndex, so the conform's row mapping is observable.
+// extraSamplesPerFrame appends PAL's 4 leftover samples after the uniform
+// lines, valued linesPerFrame + frameIndex (continuing the numbering).
+bool writeNativeFrames(const std::string &path, int32_t samplesPerLine,
+                       int32_t linesPerFrame, int32_t frameCount,
+                       int32_t extraSamplesPerFrame = 0) {
+    std::ofstream out(path, std::ios::binary);
+    if (!out.is_open()) return false;
+    std::vector<int16_t> line(static_cast<size_t>(samplesPerLine));
+    for (int32_t frame = 0; frame < frameCount; ++frame) {
+        for (int32_t l = 0; l < linesPerFrame; ++l) {
+            std::fill(line.begin(), line.end(), static_cast<int16_t>(l + frame));
+            out.write(reinterpret_cast<const char *>(line.data()),
+                      static_cast<std::streamsize>(line.size() * sizeof(int16_t)));
+        }
+        std::vector<int16_t> extras(static_cast<size_t>(extraSamplesPerFrame),
+                                    static_cast<int16_t>(linesPerFrame + frame));
+        out.write(reinterpret_cast<const char *>(extras.data()),
+                  static_cast<std::streamsize>(extras.size() * sizeof(int16_t)));
+    }
+    return out.good();
+}
+
+int testResolveFrameLayout() {
+    using namespace chd::format;
+    const auto &ntsc = getVideoStandard(VideoStandard::NTSC);
+    const auto &palm = getVideoStandard(VideoStandard::PAL_M);
+    const int64_t nativeBytes = ntsc.samplesPerFrame * 2;                  // 955,500
+    const int64_t packedBytes = fieldPackedSamplesPerFrame(ntsc) * 2;      // 957,320
+
+    // Unambiguous sizes resolve by modulo alone.
+    REQUIRE(resolveFrameLayout(FrameLayout::UNKNOWN, ntsc, SignalState::STANDARD_TBC_LOCKED,
+                               2, nativeBytes * 3) == FrameLayout::FRAME_NATIVE);
+    REQUIRE(resolveFrameLayout(FrameLayout::UNKNOWN, ntsc, SignalState::STANDARD_TBC_LOCKED,
+                               2, packedBytes * 3) == FrameLayout::FIELD_RASTER);
+    REQUIRE(resolveFrameLayout(FrameLayout::UNKNOWN, palm, SignalState::STANDARD_TBC_LOCKED,
+                               2, palm.samplesPerFrame * 2LL * 3) == FrameLayout::FRAME_NATIVE);
+
+    // 526 native frames and 525 field-packed frames are the same byte count;
+    // the sidecar frame count disambiguates, a tie falls back to FIELD_RASTER.
+    const int64_t collision = nativeBytes * 526;
+    REQUIRE(collision == packedBytes * 525);
+    REQUIRE(resolveFrameLayout(FrameLayout::UNKNOWN, ntsc, SignalState::STANDARD_TBC_LOCKED,
+                               2, collision) == FrameLayout::FIELD_RASTER);
+    REQUIRE(resolveFrameLayout(FrameLayout::UNKNOWN, ntsc, SignalState::STANDARD_TBC_LOCKED,
+                               2, collision, 526) == FrameLayout::FRAME_NATIVE);
+    REQUIRE(resolveFrameLayout(FrameLayout::UNKNOWN, ntsc, SignalState::STANDARD_TBC_LOCKED,
+                               2, collision, 525) == FrameLayout::FIELD_RASTER);
+
+    // Truncated files match neither total: fall back to FIELD_RASTER.
+    REQUIRE(resolveFrameLayout(FrameLayout::UNKNOWN, ntsc, SignalState::STANDARD_TBC_LOCKED,
+                               2, nativeBytes + 128) == FrameLayout::FIELD_RASTER);
+
+    // Frame totals are not normative without TBC at the standard rate.
+    REQUIRE(resolveFrameLayout(FrameLayout::UNKNOWN, ntsc, SignalState::STANDARD_RAW,
+                               2, nativeBytes) == FrameLayout::FIELD_RASTER);
+    REQUIRE(resolveFrameLayout(FrameLayout::UNKNOWN, ntsc, SignalState::NONSTANDARD_TBC_LOCKED,
+                               2, nativeBytes) == FrameLayout::FIELD_RASTER);
+
+    // An explicit override always wins.
+    REQUIRE(resolveFrameLayout(FrameLayout::FRAME_NATIVE, ntsc, SignalState::STANDARD_RAW,
+                               2, packedBytes) == FrameLayout::FRAME_NATIVE);
+    return 0;
+}
+
+int testFrameNativeNtscConform() {
+    using namespace chd::format;
+    fs::path tmpDir = fs::temp_directory_path() / "chd_phase_d_test";
+    fs::create_directories(tmpDir);
+    const std::string composite = (tmpDir / "native_ntsc.composite").string();
+    REQUIRE(writeNativeFrames(composite, 910, 525, 2));
+
+    chd::reader::CvbsCompositeSource src;
+    REQUIRE(src.open(composite, getVideoStandard(VideoStandard::NTSC),
+                     SampleEncoding::CVBS_U10_4FSC, SignalState::STANDARD_TBC_LOCKED));
+    REQUIRE(src.frameLayout() == FrameLayout::FRAME_NATIVE);
+    REQUIRE(src.getNumberOfAvailableFields() == 4);
+    REQUIRE(src.getFieldLength() == 910 * 263);
+
+    // Flat cut: the first field buffer is temporal lines 0..262, the second
+    // is lines 263..524 with its final row entirely padding (NTSC blanking =
+    // 240 x 64 canonical), matching ld-chroma-encoder's field layout.
+    const auto f1 = src.getVideoField(1);
+    REQUIRE(f1.size() == static_cast<size_t>(910 * 263));
+    REQUIRE(f1[0] == 0);
+    REQUIRE(f1[261 * 910] == 261 * 64);
+    REQUIRE(f1[262 * 910] == 262 * 64);
+    REQUIRE(f1[263 * 910 - 1] == 262 * 64);
+
+    const auto f2 = src.getVideoField(2);
+    REQUIRE(f2[0] == 263 * 64);
+    REQUIRE(f2[261 * 910] == 524 * 64);
+    REQUIRE(f2[262 * 910] == 240 * 64);
+    REQUIRE(f2[263 * 910 - 1] == 240 * 64);
+
+    // Synthetic data has no sync to measure, so the alignment falls back to
+    // sync-start and the windows are the ld-decode convention values.
+    REQUIRE(src.parameters().colourBurstStart == 75);
+    REQUIRE(src.parameters().colourBurstEnd   == 95);
+    REQUIRE(src.parameters().activeVideoStart == 134);
+    REQUIRE(src.parameters().activeVideoEnd   == 894);
+
+    // Second frame's fields carry the +1 frame offset.
+    REQUIRE(src.getVideoField(3)[0] == 1 * 64);
+    REQUIRE(src.getVideoField(4)[0] == 264 * 64);
+
+    // Line-range requests (1-based): the pad row alone, and a range
+    // straddling real data + pad.
+    const auto padOnly = src.getVideoField(2, 263, 263);
+    REQUIRE(padOnly.size() == 910);
+    REQUIRE(padOnly[0] == 240 * 64);
+    const auto straddle = src.getVideoField(2, 262, 263);
+    REQUIRE(straddle.size() == 2 * 910);
+    REQUIRE(straddle[0] == 524 * 64);
+    REQUIRE(straddle[910] == 240 * 64);
+    const auto f1last = src.getVideoField(1, 263, 263);
+    REQUIRE(f1last.size() == 910);
+    REQUIRE(f1last[0] == 262 * 64);
+    return 0;
+}
+
+int testFrameNativePalConform() {
+    using namespace chd::format;
+    fs::path tmpDir = fs::temp_directory_path() / "chd_phase_d_test";
+    fs::create_directories(tmpDir);
+    const std::string composite = (tmpDir / "native_pal.composite").string();
+    // 625 uniform 1135-sample lines plus the 4 leftover samples per frame
+    // (valued 625 + frameIndex): exactly 709,379 samples/frame.
+    REQUIRE(writeNativeFrames(composite, 1135, 625, 2, 4));
+
+    chd::reader::CvbsCompositeSource src;
+    REQUIRE(src.open(composite, getVideoStandard(VideoStandard::PAL),
+                     SampleEncoding::CVBS_U10_4FSC, SignalState::STANDARD_TBC_LOCKED));
+    REQUIRE(src.frameLayout() == FrameLayout::FRAME_NATIVE);
+    REQUIRE(src.parameters().isSubcarrierLocked == true);
+    REQUIRE(src.getNumberOfAvailableFields() == 4);
+    REQUIRE(src.getFieldLength() == 1135 * 313);
+
+    // Synthetic data has no sync to measure: sync-start fallback windows.
+    REQUIRE(src.parameters().colourBurstStart == 98);
+    REQUIRE(src.parameters().colourBurstEnd   == 138);
+    REQUIRE(src.parameters().activeVideoStart == 185);
+    REQUIRE(src.parameters().activeVideoEnd   == 1107);
+
+    // Flat cut: first field = temporal lines 0..312; second field = lines
+    // 313..624, then the 4 leftover samples at the start of its final row
+    // with 1131 blanking samples (PAL blanking = 256 x 64) behind them.
+    const auto f1 = src.getVideoField(1);
+    REQUIRE(f1.size() == static_cast<size_t>(1135 * 313));
+    REQUIRE(f1[0] == 0);
+    REQUIRE(f1[312 * 1135] == 312 * 64);
+    REQUIRE(f1[313 * 1135 - 1] == 312 * 64);
+
+    const auto f2 = src.getVideoField(2);
+    REQUIRE(f2[0] == 313 * 64);
+    REQUIRE(f2[311 * 1135] == 624 * 64);
+    REQUIRE(f2[312 * 1135 + 0] == 625 * 64);
+    REQUIRE(f2[312 * 1135 + 3] == 625 * 64);
+    REQUIRE(f2[312 * 1135 + 4] == 256 * 64);
+    REQUIRE(f2[313 * 1135 - 1] == 256 * 64);
+
+    // Second frame indexing across the odd 709,379-sample stride.
+    REQUIRE(src.getVideoField(3)[0] == 1 * 64);
+    REQUIRE(src.getVideoField(4)[312 * 1135] == 626 * 64);
+
+    // The leftover row alone, via a line-range request.
+    const auto tail = src.getVideoField(2, 313, 313);
+    REQUIRE(tail.size() == 1135);
+    REQUIRE(tail[3] == 625 * 64);
+    REQUIRE(tail[4] == 256 * 64);
+    return 0;
+}
+
+// Bit-exact validation of the PAL frame-native conform against a real
+// ld-chroma-encoder subcarrier-locked TBC (tbc-tools). Point
+// CHD_TEST_PAL_SCLOCKED_TBC at the .tbc; skipped when unset. The TBC pair
+// concatenation IS the native stream plus 1131 dummy samples, so flattening
+// each 710,510-sample pair to its first 709,379 samples and conforming back
+// must reproduce the encoder's buffers exactly over the native extent. The
+// dummy tail is excluded: the encoder synthesises a blanking line there,
+// while the conform pads with the blanking level; neither is signal.
+int testEncoderScLockedValidation() {
+    using namespace chd::format;
+    const char *tbcPath = std::getenv("CHD_TEST_PAL_SCLOCKED_TBC");
+    if (tbcPath == nullptr) {
+        std::cout << "  (encoder scLocked validation skipped: "
+                     "CHD_TEST_PAL_SCLOCKED_TBC not set)\n";
+        return 0;
+    }
+
+    constexpr int64_t kPairSamples   = 710510;
+    constexpr int64_t kNativeSamples = 709379;
+    constexpr int64_t kFieldSamples  = 1135 * 313;   // 355,255
+    constexpr int64_t kOddFieldReal  = kNativeSamples - kFieldSamples;  // 354,124
+
+    std::ifstream tbc(tbcPath, std::ios::binary);
+    REQUIRE(tbc.is_open());
+    tbc.seekg(0, std::ios::end);
+    const int64_t tbcBytes = tbc.tellg();
+    tbc.seekg(0, std::ios::beg);
+    REQUIRE(tbcBytes % (kPairSamples * 2) == 0);
+    const int64_t numFrames = tbcBytes / (kPairSamples * 2);
+    std::vector<uint16_t> tbcData(static_cast<size_t>(tbcBytes / 2));
+    tbc.read(reinterpret_cast<char *>(tbcData.data()), tbcBytes);
+    REQUIRE(tbc.gcount() == tbcBytes);
+
+    // Flatten: native stream = the first 709,379 samples of each field pair.
+    fs::path tmpDir = fs::temp_directory_path() / "chd_phase_d_test";
+    fs::create_directories(tmpDir);
+    const std::string native = (tmpDir / "flattened_sclocked.composite").string();
+    {
+        std::ofstream out(native, std::ios::binary);
+        REQUIRE(out.is_open());
+        for (int64_t frame = 0; frame < numFrames; ++frame) {
+            out.write(reinterpret_cast<const char *>(tbcData.data() + frame * kPairSamples),
+                      kNativeSamples * 2);
+        }
+        REQUIRE(out.good());
+    }
+
+    chd::reader::CvbsCompositeSource src;
+    // Surface the horizontal-alignment measurement in the validation output.
+    chd::log::setDebugEnabled(true);
+    const bool opened = src.open(native, getVideoStandard(VideoStandard::PAL),
+                                 SampleEncoding::CVBS_U16_4FSC,
+                                 SignalState::STANDARD_TBC_LOCKED);
+    chd::log::setDebugEnabled(false);
+    REQUIRE(opened);
+    REQUIRE(src.frameLayout() == FrameLayout::FRAME_NATIVE);
+    REQUIRE(src.getNumberOfAvailableFields() == numFrames * 2);
+    REQUIRE(src.parameters().isSubcarrierLocked == true);
+    // Derived windows must equal what the encoder wrote into its own
+    // sidecar for this very capture (verified: capture table has 109/149,
+    // 200/1122).
+    REQUIRE(src.parameters().colourBurstStart == 109);
+    REQUIRE(src.parameters().colourBurstEnd   == 149);
+    REQUIRE(src.parameters().activeVideoStart == 200);
+    REQUIRE(src.parameters().activeVideoEnd   == 1122);
+
+    int64_t compared = 0;
+    for (int64_t f = 0; f < numFrames * 2; ++f) {
+        const auto data = src.getVideoField(static_cast<int32_t>(f + 1));
+        REQUIRE(data.size() == static_cast<size_t>(kFieldSamples));
+        const uint16_t *ref = tbcData.data() + (f / 2) * kPairSamples + (f % 2) * kFieldSamples;
+        const int64_t realExtent = (f % 2 == 0) ? kFieldSamples : kOddFieldReal;
+        REQUIRE(std::memcmp(data.data(), ref, static_cast<size_t>(realExtent) * 2) == 0);
+        for (int64_t i = realExtent; i < kFieldSamples; ++i) {
+            REQUIRE(data[static_cast<size_t>(i)] == 0x4000);  // PAL blanking pad
+        }
+        compared += realExtent;
+    }
+
+    // Decode smoke through the ABI: the conformed fields must survive the
+    // FIR and Transform PAL pipelines (including the gated 2-sample
+    // inter-field shift that runs before the transform's filterFields).
+    chd_video_params_t params{};
+    params.standard     = CHD_STD_PAL;
+    params.encoding     = CHD_ENC_CVBS_U16_4FSC;
+    params.signal_state = CHD_SIG_STANDARD_TBC_LOCKED;
+    chd_video_t *v = nullptr;
+    REQUIRE(chd_video_open_composite(native.c_str(), nullptr, &params, &v) == CHD_OK);
+    chd_video_info_t info{};
+    REQUIRE(chd_video_get_info(v, &info) == CHD_OK);
+    REQUIRE(info.layout == CHD_FRAME_LAYOUT_FRAME_NATIVE);
+    REQUIRE(info.is_subcarrier_locked == 1);
+    const chd_decoder_kind_t kinds[] = {CHD_DEC_PAL_2D, CHD_DEC_TRANSFORM_2D,
+                                        CHD_DEC_TRANSFORM_3D};
+    for (const auto kind : kinds) {
+        chd_decoder_t *dec = nullptr;
+        REQUIRE(chd_decoder_create(v, kind, &dec) == CHD_OK);
+        REQUIRE(chd_decoder_commit(dec) == CHD_OK);
+        chd_frame_t *frame = nullptr;
+        REQUIRE(chd_decode_frame(dec, 1, &frame) == CHD_OK);
+        chd_frame_free(frame);
+        chd_decoder_free(dec);
+    }
+    chd_video_free(v);
+
+    std::cout << "  encoder scLocked validation: " << numFrames << " frames, "
+              << compared << " samples bit-exact + decode smoke (FIR + Transform)\n";
+    return 0;
+}
+
+int testFrameNativePalMAbi() {
+    fs::path tmpDir = fs::temp_directory_path() / "chd_phase_d_test";
+    fs::create_directories(tmpDir);
+    const std::string composite = (tmpDir / "native_palm.composite").string();
+    const std::string meta      = (tmpDir / "native_palm.meta").string();
+    REQUIRE(writeNativeFrames(composite, 909, 525, 1));
+    REQUIRE(writeMetaSidecar(meta, "PAL_M", "CVBS_U10_4FSC", "STANDARD_TBC_LOCKED", "composite"));
+
+    chd_video_t *v = nullptr;
+    REQUIRE(chd_video_open_composite(composite.c_str(), meta.c_str(), nullptr, &v) == CHD_OK);
+    chd_video_info_t info{};
+    REQUIRE(chd_video_get_info(v, &info) == CHD_OK);
+    REQUIRE(info.standard          == CHD_STD_PAL_M);
+    REQUIRE(info.layout            == CHD_FRAME_LAYOUT_FRAME_NATIVE);
+    REQUIRE(info.samples_per_frame == 477225);
+    REQUIRE(info.field_width       == 909);
+    REQUIRE(info.field_height      == 263);
+    REQUIRE(info.num_frames        == 1);
+    REQUIRE(info.is_subcarrier_locked == 0);
+    chd_video_free(v);
+    return 0;
+}
+
+int testPalFrameNativeAbi() {
+    fs::path tmpDir = fs::temp_directory_path() / "chd_phase_d_test";
+    fs::create_directories(tmpDir);
+    const std::string composite = (tmpDir / "native_pal_abi.composite").string();
+    const std::string meta      = (tmpDir / "native_pal_abi.meta").string();
+    REQUIRE(writeUniformSamples(composite, 709379, 256));
+    REQUIRE(writeMetaSidecar(meta, "PAL", "CVBS_U10_4FSC", "STANDARD_TBC_LOCKED", "composite"));
+
+    chd_video_t *v = nullptr;
+    REQUIRE(chd_video_open_composite(composite.c_str(), meta.c_str(), nullptr, &v) == CHD_OK);
+    chd_video_info_t info{};
+    REQUIRE(chd_video_get_info(v, &info) == CHD_OK);
+    REQUIRE(info.standard             == CHD_STD_PAL);
+    REQUIRE(info.layout               == CHD_FRAME_LAYOUT_FRAME_NATIVE);
+    REQUIRE(info.samples_per_frame    == 709379);
+    REQUIRE(info.field_width          == 1135);
+    REQUIRE(info.field_height         == 313);
+    REQUIRE(info.num_frames           == 1);
+    REQUIRE(info.is_subcarrier_locked == 1);
+    chd_video_free(v);
+    return 0;
+}
+
+int testSubcarrierLockDerivationAndMerge() {
+    // A field-raster PAL .composite in STANDARD_TBC_LOCKED state is
+    // line-locked by default (burst lock is not lattice lock); the caller
+    // override marks the encoder-style subcarrier-locked raster, and merges
+    // even though a sidecar is present.
+    fs::path tmpDir = fs::temp_directory_path() / "chd_phase_d_test";
+    fs::create_directories(tmpDir);
+    const std::string composite = (tmpDir / "raster_pal.composite").string();
+    const std::string meta      = (tmpDir / "raster_pal.meta").string();
+    REQUIRE(writeUniformSamples(composite, 1135 * 313 * 2, 256));
+    REQUIRE(writeMetaSidecar(meta, "PAL", "CVBS_U10_4FSC", "STANDARD_TBC_LOCKED", "composite"));
+
+    chd_video_t *v = nullptr;
+    REQUIRE(chd_video_open_composite(composite.c_str(), meta.c_str(), nullptr, &v) == CHD_OK);
+    chd_video_info_t info{};
+    REQUIRE(chd_video_get_info(v, &info) == CHD_OK);
+    REQUIRE(info.layout               == CHD_FRAME_LAYOUT_FIELD_RASTER);
+    REQUIRE(info.is_subcarrier_locked == 0);
+    REQUIRE(info.samples_per_frame    == 709379);
+    // Line-locked raster keeps the ld-decode sync-start windows.
+    REQUIRE(info.active_video_start   == 185);
+    REQUIRE(info.active_video_end     == 1107);
+    REQUIRE(info.is_first_field_first == 1);
+    chd_video_free(v);
+
+    chd_video_params_t params{};
+    params.is_subcarrier_locked = 1;
+    v = nullptr;
+    REQUIRE(chd_video_open_composite(composite.c_str(), meta.c_str(), &params, &v) == CHD_OK);
+    REQUIRE(chd_video_get_info(v, &info) == CHD_OK);
+    REQUIRE(info.layout               == CHD_FRAME_LAYOUT_FIELD_RASTER);
+    REQUIRE(info.is_subcarrier_locked == 1);
+    // An encoder-style scLocked raster switches to blanking-start windows.
+    REQUIRE(info.active_video_start   == 200);
+    REQUIRE(info.active_video_end     == 1122);
+    chd_video_free(v);
+
+    // Field order merges from the override too (no `.meta` column exists).
+    chd_video_params_t swapped{};
+    swapped.is_second_field_first = 1;
+    v = nullptr;
+    REQUIRE(chd_video_open_composite(composite.c_str(), meta.c_str(), &swapped, &v) == CHD_OK);
+    REQUIRE(chd_video_get_info(v, &info) == CHD_OK);
+    REQUIRE(info.is_first_field_first == 0);
+    chd_video_free(v);
+    return 0;
+}
+
+int testS16FscAndSchemaV8() {
+    using namespace chd::format;
+    fs::path tmpDir = fs::temp_directory_path() / "chd_phase_d_test";
+    fs::create_directories(tmpDir);
+    const std::string composite = (tmpDir / "s16fsc.composite").string();
+    const std::string meta      = (tmpDir / "s16fsc.meta").string();
+
+    // NTSC white in CVBS_S16_FSC: (800 - 240) x 32 = 17920 on disk.
+    REQUIRE(writeUniformSamples(composite, 910 * 263 * 2, 17920));
+    REQUIRE(writeMetaSidecar(meta, "NTSC", "CVBS_S16_FSC", "STANDARD_TBC_LOCKED",
+                             "composite", kCvbsSchemaV8));
+
+    chd_video_t *v = nullptr;
+    REQUIRE(chd_video_open_composite(composite.c_str(), meta.c_str(), nullptr, &v) == CHD_OK);
+    chd_video_info_t info{};
+    REQUIRE(chd_video_get_info(v, &info) == CHD_OK);
+    REQUIRE(info.encoding == CHD_ENC_CVBS_S16_FSC);
+    REQUIRE(info.num_frames == 1);
+    chd_video_free(v);
+
+    // The blanking-offset conversion runs with the standard's own blanking.
+    chd::reader::CvbsCompositeSource src;
+    REQUIRE(src.open(composite, getVideoStandard(VideoStandard::NTSC),
+                     SampleEncoding::CVBS_S16_FSC, SignalState::STANDARD_TBC_LOCKED));
+    REQUIRE(src.getVideoField(1)[0] == 800 * 64);
+    return 0;
+}
+
+int testResolveFrameNativeAlignment() {
+    using namespace chd::format;
+    const auto &pal  = getVideoStandard(VideoStandard::PAL);
+    const auto &ntsc = getVideoStandard(VideoStandard::NTSC);
+    // Encoder-flattened data: 0H near the blanking-start position.
+    REQUIRE(resolveFrameNativeAlignment(pal, 9.9, "t") == HorizontalAlignment::BLANKING_START);
+    REQUIRE(resolveFrameNativeAlignment(ntsc, 16.4, "t") == HorizontalAlignment::BLANKING_START);
+    // Real TPG21 captures: 0H at the row start, wrapping just below rowWidth.
+    REQUIRE(resolveFrameNativeAlignment(pal, 1134.85, "t") == HorizontalAlignment::SYNC_START);
+    REQUIRE(resolveFrameNativeAlignment(ntsc, 909.4, "t") == HorizontalAlignment::SYNC_START);
+    REQUIRE(resolveFrameNativeAlignment(ntsc, 0.6, "t") == HorizontalAlignment::SYNC_START);
+    // Active-start and unclassifiable cuts warn and serve sync-start.
+    REQUIRE(resolveFrameNativeAlignment(pal, 957.5, "t") == HorizontalAlignment::SYNC_START);
+    REQUIRE(resolveFrameNativeAlignment(ntsc, 500.0, "t") == HorizontalAlignment::SYNC_START);
+    REQUIRE(resolveFrameNativeAlignment(pal, std::nullopt, "t") == HorizontalAlignment::SYNC_START);
+    return 0;
+}
+
+// Frame-native file whose rows carry a real sync pulse at the row start,
+// like the TPG21 reference captures: the measurement must select sync-start
+// windows end to end.
+int testFrameNativeSyncStartWindows() {
+    using namespace chd::format;
+    fs::path tmpDir = fs::temp_directory_path() / "chd_phase_d_test";
+    fs::create_directories(tmpDir);
+    const std::string composite = (tmpDir / "syncstart_ntsc.composite").string();
+    {
+        std::ofstream out(composite, std::ios::binary);
+        REQUIRE(out.is_open());
+        std::vector<int16_t> row(910, 240);          // blanking
+        std::fill(row.begin(), row.begin() + 84, 16);  // sync pulse at row start
+        for (int32_t l = 0; l < 525 * 2; ++l) {
+            out.write(reinterpret_cast<const char *>(row.data()),
+                      static_cast<std::streamsize>(row.size() * sizeof(int16_t)));
+        }
+        REQUIRE(out.good());
+    }
+
+    chd::reader::CvbsCompositeSource src;
+    REQUIRE(src.open(composite, getVideoStandard(VideoStandard::NTSC),
+                     SampleEncoding::CVBS_U10_4FSC, SignalState::STANDARD_TBC_LOCKED));
+    REQUIRE(src.frameLayout() == FrameLayout::FRAME_NATIVE);
+    REQUIRE(src.parameters().colourBurstStart == 75);
+    REQUIRE(src.parameters().activeVideoStart == 134);
+    REQUIRE(src.parameters().activeVideoEnd   == 894);
+    return 0;
+}
+
+int testMeasureRowZeroH() {
+    using namespace chd::format;
+    const auto &pal = getVideoStandard(VideoStandard::PAL);
+    // Synthesize 1135-sample rows: blanking everywhere, a 84-sample sync
+    // pulse whose falling edge sits at the requested position.
+    auto makeRows = [](int32_t width, int32_t nRows, int32_t syncAt) {
+        std::vector<uint16_t> rows(static_cast<size_t>(width) * nRows, 256 * 64);
+        for (int32_t r = 0; r < nRows; ++r) {
+            for (int32_t i = 0; i < 84 && syncAt + i < width; ++i) {
+                rows[static_cast<size_t>(r) * width + syncAt + i] = 4 * 64;
+            }
+        }
+        return rows;
+    };
+
+    const auto atTen = makeRows(1135, 50, 10);
+    auto measured = measureRowZeroH(atTen.data(), 50, 1135, pal.levels);
+    REQUIRE(measured.has_value());
+    REQUIRE(*measured > 9.0 && *measured < 10.5);
+
+    const auto atSpecOrigin = makeRows(1135, 50, 957);
+    measured = measureRowZeroH(atSpecOrigin.data(), 50, 1135, pal.levels);
+    REQUIRE(measured.has_value());
+    REQUIRE(*measured > 956.0 && *measured < 957.5);
+
+    // No sync structure at all (uniform data): unmeasurable, not a guess.
+    const std::vector<uint16_t> flat(1135 * 50, 256 * 64);
+    REQUIRE(!measureRowZeroH(flat.data(), 50, 1135, pal.levels).has_value());
+    return 0;
+}
+
+int testLayoutOverrideMerge() {
+    // Force FIELD_RASTER onto a native-sized NTSC file through the override,
+    // with the sidecar still supplying the preset triple.
+    fs::path tmpDir = fs::temp_directory_path() / "chd_phase_d_test";
+    fs::create_directories(tmpDir);
+    const std::string composite = (tmpDir / "forced_raster.composite").string();
+    const std::string meta      = (tmpDir / "forced_raster.meta").string();
+    REQUIRE(writeNativeFrames(composite, 910, 525, 2));
+    REQUIRE(writeMetaSidecar(meta, "NTSC", "CVBS_U10_4FSC", "STANDARD_TBC_LOCKED", "composite"));
+
+    chd_video_params_t params{};
+    params.layout = CHD_FRAME_LAYOUT_FIELD_RASTER;
+    chd_video_t *v = nullptr;
+    REQUIRE(chd_video_open_composite(composite.c_str(), meta.c_str(), &params, &v) == CHD_OK);
+    chd_video_info_t info{};
+    REQUIRE(chd_video_get_info(v, &info) == CHD_OK);
+    REQUIRE(info.layout == CHD_FRAME_LAYOUT_FIELD_RASTER);
+    // 955,500 samples/frame x 2 frames sliced as fixed 910 x 263 fields.
+    REQUIRE(info.num_frames == (477750LL * 2) / (910 * 263) / 2);
+    chd_video_free(v);
+    return 0;
+}
+
+int testFrameNativeYc() {
+    using namespace chd::format;
+    fs::path tmpDir = fs::temp_directory_path() / "chd_phase_d_test";
+    fs::create_directories(tmpDir);
+    const std::string yPath = (tmpDir / "native.y").string();
+    const std::string cPath = (tmpDir / "native.c").string();
+    // Luma carries the line index, chroma is centred (512 = no excursion), so
+    // the synthesized composite reproduces the conform mapping directly.
+    REQUIRE(writeNativeFrames(yPath, 910, 525, 1));
+    REQUIRE(writeUniformSamples(cPath, 477750, 512));
+
+    chd::reader::CvbsYcSource src;
+    REQUIRE(src.open(yPath, cPath, getVideoStandard(VideoStandard::NTSC),
+                     SampleEncoding::CVBS_U10_4FSC, SignalState::STANDARD_TBC_LOCKED));
+    REQUIRE(src.frameLayout() == FrameLayout::FRAME_NATIVE);
+    REQUIRE(src.getNumberOfAvailableFields() == 2);
+    const auto f1 = src.getVideoField(1);
+    REQUIRE(f1[261 * 910] == 261 * 64);
+    REQUIRE(f1[262 * 910] == 262 * 64);
+    const auto f2 = src.getVideoField(2);
+    REQUIRE(f2[0] == 263 * 64);
+    REQUIRE(f2[262 * 910] == 240 * 64);
+    return 0;
+}
+
+// Diagnostic hook: point CHD_TEST_CVBS_COMPOSITE at a real `.composite`
+// (with its `.meta` alongside) to surface the layout resolution and the
+// horizontal-alignment measurement for that capture.
+int testRealCompositeDiagnostics() {
+    const char *path = std::getenv("CHD_TEST_CVBS_COMPOSITE");
+    if (path == nullptr) return 0;
+
+    chd_video_t *v = nullptr;
+    chd::log::setDebugEnabled(true);
+    const chd_status_t rc = chd_video_open_composite(path, nullptr, nullptr, &v);
+    chd::log::setDebugEnabled(false);
+    REQUIRE(rc == CHD_OK);
+    chd_video_info_t info{};
+    REQUIRE(chd_video_get_info(v, &info) == CHD_OK);
+    std::cout << "  real composite: layout=" << info.layout
+              << " encoding=" << info.encoding
+              << " frames=" << info.num_frames
+              << " subcarrier_locked=" << info.is_subcarrier_locked
+              << " active=" << info.active_video_start << ".." << info.active_video_end
+              << "\n";
+
+    // Decode smoke: the capture must survive its system's default pipeline.
+    chd_decoder_t *dec = nullptr;
+    REQUIRE(chd_decoder_create(v, CHD_DEC_AUTO, &dec) == CHD_OK);
+    REQUIRE(chd_decoder_commit(dec) == CHD_OK);
+    chd_frame_t *frame = nullptr;
+    REQUIRE(chd_decode_frame(dec, 0, &frame) == CHD_OK);
+    chd_frame_free(frame);
+    chd_decoder_free(dec);
+    chd_video_free(v);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -242,6 +842,20 @@ int main() {
     rc |= testCompositeOverride();
     rc |= testCompositeSampleConversion();
     rc |= testYcSynthesis();
+    rc |= testResolveFrameLayout();
+    rc |= testFrameNativeNtscConform();
+    rc |= testFrameNativePalConform();
+    rc |= testFrameNativePalMAbi();
+    rc |= testPalFrameNativeAbi();
+    rc |= testSubcarrierLockDerivationAndMerge();
+    rc |= testS16FscAndSchemaV8();
+    rc |= testMeasureRowZeroH();
+    rc |= testResolveFrameNativeAlignment();
+    rc |= testFrameNativeSyncStartWindows();
+    rc |= testLayoutOverrideMerge();
+    rc |= testFrameNativeYc();
+    rc |= testEncoderScLockedValidation();
+    rc |= testRealCompositeDiagnostics();
     if (rc == 0) std::cout << "All CVBS reader tests passed.\n";
     return rc;
 }

@@ -19,7 +19,9 @@ void         chd_shutdown(void);
  *   - explicit path to a `.db`, `.json`, or `.meta` sidecar
  * override_or_null:
  *   - NULL  → all parameters come from the sidecar
- *   - explicit override values used when no sidecar is found, or to override
+ *   - standard/encoding/signal_state are required when no sidecar is found;
+ *     layout, is_subcarrier_locked, and is_second_field_first merge
+ *     field-wise over sidecar metadata
  * The sidecar flavour (ld-decode vs CVBS) is detected automatically. */
 chd_status_t chd_video_open_composite(const char *path,
                                       const char *sidecar_path_or_null,

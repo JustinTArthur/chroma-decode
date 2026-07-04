@@ -87,9 +87,10 @@ pub enum SampleEncoding {
     Unknown,
     CvbsU10_4fsc,
     CvbsU16_4fsc,
+    CvbsTpg21_4fsc,
+    CvbsS16Fsc,
     RawS16_28m,
     RawS16_40m,
-    CvbsTpg21_4fsc,
 }
 
 impl SampleEncoding {
@@ -98,9 +99,10 @@ impl SampleEncoding {
             SampleEncoding::Unknown => sys::chd_sample_encoding::CHD_ENC_UNKNOWN,
             SampleEncoding::CvbsU10_4fsc => sys::chd_sample_encoding::CHD_ENC_CVBS_U10_4FSC,
             SampleEncoding::CvbsU16_4fsc => sys::chd_sample_encoding::CHD_ENC_CVBS_U16_4FSC,
+            SampleEncoding::CvbsTpg21_4fsc => sys::chd_sample_encoding::CHD_ENC_CVBS_TPG21_4FSC,
+            SampleEncoding::CvbsS16Fsc => sys::chd_sample_encoding::CHD_ENC_CVBS_S16_FSC,
             SampleEncoding::RawS16_28m => sys::chd_sample_encoding::CHD_ENC_RAW_S16_28M,
             SampleEncoding::RawS16_40m => sys::chd_sample_encoding::CHD_ENC_RAW_S16_40M,
-            SampleEncoding::CvbsTpg21_4fsc => sys::chd_sample_encoding::CHD_ENC_CVBS_TPG21_4FSC,
         }
     }
 
@@ -108,9 +110,10 @@ impl SampleEncoding {
         match raw {
             sys::chd_sample_encoding::CHD_ENC_CVBS_U10_4FSC => SampleEncoding::CvbsU10_4fsc,
             sys::chd_sample_encoding::CHD_ENC_CVBS_U16_4FSC => SampleEncoding::CvbsU16_4fsc,
+            sys::chd_sample_encoding::CHD_ENC_CVBS_TPG21_4FSC => SampleEncoding::CvbsTpg21_4fsc,
+            sys::chd_sample_encoding::CHD_ENC_CVBS_S16_FSC => SampleEncoding::CvbsS16Fsc,
             sys::chd_sample_encoding::CHD_ENC_RAW_S16_28M => SampleEncoding::RawS16_28m,
             sys::chd_sample_encoding::CHD_ENC_RAW_S16_40M => SampleEncoding::RawS16_40m,
-            sys::chd_sample_encoding::CHD_ENC_CVBS_TPG21_4FSC => SampleEncoding::CvbsTpg21_4fsc,
             _ => SampleEncoding::Unknown,
         }
     }
@@ -164,6 +167,34 @@ impl SignalState {
             }
             sys::chd_signal_state::CHD_SIG_NONSTANDARD_RAW => SignalState::NonstandardRaw,
             _ => SignalState::Unknown,
+        }
+    }
+}
+
+/// Container addressing (`chd_frame_layout_t`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FrameLayout {
+    #[default]
+    Unknown,
+    FieldRaster,
+    FrameNative,
+}
+
+impl FrameLayout {
+    pub(crate) fn raw(self) -> sys::chd_frame_layout {
+        match self {
+            FrameLayout::Unknown => sys::chd_frame_layout::CHD_FRAME_LAYOUT_UNKNOWN,
+            FrameLayout::FieldRaster => sys::chd_frame_layout::CHD_FRAME_LAYOUT_FIELD_RASTER,
+            FrameLayout::FrameNative => sys::chd_frame_layout::CHD_FRAME_LAYOUT_FRAME_NATIVE,
+        }
+    }
+
+    pub(crate) fn from_raw(raw: sys::chd_frame_layout) -> FrameLayout {
+        match raw {
+            sys::chd_frame_layout::CHD_FRAME_LAYOUT_FIELD_RASTER => FrameLayout::FieldRaster,
+            sys::chd_frame_layout::CHD_FRAME_LAYOUT_FRAME_NATIVE => FrameLayout::FrameNative,
+            _ => FrameLayout::Unknown,
         }
     }
 }
@@ -233,25 +264,17 @@ impl PixelFormat {
 }
 
 /// Source parameter overrides for the CVBS open functions
-/// (`chd_video_params_t`). Zero/`Unknown` fields defer to metadata.
+/// (`chd_video_params_t`). `standard`, `encoding`, and `signal_state` are
+/// required when no sidecar is found; `layout`, `is_subcarrier_locked`, and
+/// `is_second_field_first` merge field-wise over sidecar metadata.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VideoParams {
     pub standard: VideoStandard,
     pub encoding: SampleEncoding,
     pub signal_state: SignalState,
-    pub field_width: i32,
-    pub field_height: i32,
-    pub sample_rate_hz: f64,
-    pub active_video_start: i32,
-    pub active_video_end: i32,
-    pub first_active_frame_line: i32,
-    pub last_active_frame_line: i32,
-    pub black_16b_ire: i32,
-    pub white_16b_ire: i32,
-    pub blanking_16b_ire: i32,
-    pub is_widescreen: bool,
+    pub layout: FrameLayout,
     pub is_subcarrier_locked: bool,
-    pub is_first_field_first: bool,
+    pub is_second_field_first: bool,
 }
 
 impl VideoParams {
@@ -260,19 +283,9 @@ impl VideoParams {
             standard: self.standard.raw(),
             encoding: self.encoding.raw(),
             signal_state: self.signal_state.raw(),
-            field_width: self.field_width,
-            field_height: self.field_height,
-            sample_rate_hz: self.sample_rate_hz,
-            active_video_start: self.active_video_start,
-            active_video_end: self.active_video_end,
-            first_active_frame_line: self.first_active_frame_line,
-            last_active_frame_line: self.last_active_frame_line,
-            black_16b_ire: self.black_16b_ire,
-            white_16b_ire: self.white_16b_ire,
-            blanking_16b_ire: self.blanking_16b_ire,
-            is_widescreen: self.is_widescreen as _,
+            layout: self.layout.raw(),
             is_subcarrier_locked: self.is_subcarrier_locked as _,
-            is_first_field_first: self.is_first_field_first as _,
+            is_second_field_first: self.is_second_field_first as _,
         }
     }
 }
@@ -284,8 +297,10 @@ pub struct VideoInfo {
     pub standard: VideoStandard,
     pub encoding: SampleEncoding,
     pub signal_state: SignalState,
+    pub layout: FrameLayout,
     pub field_width: i32,
     pub field_height: i32,
+    pub samples_per_frame: i32,
     pub sample_rate_hz: f64,
     pub fsc_hz: f64,
     pub active_video_start: i32,
@@ -307,8 +322,10 @@ impl VideoInfo {
             standard: VideoStandard::from_raw(raw.standard),
             encoding: SampleEncoding::from_raw(raw.encoding),
             signal_state: SignalState::from_raw(raw.signal_state),
+            layout: FrameLayout::from_raw(raw.layout),
             field_width: raw.field_width,
             field_height: raw.field_height,
+            samples_per_frame: raw.samples_per_frame,
             sample_rate_hz: raw.sample_rate_hz,
             fsc_hz: raw.fsc_hz,
             active_video_start: raw.active_video_start,

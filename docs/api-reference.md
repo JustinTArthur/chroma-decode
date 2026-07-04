@@ -210,35 +210,40 @@ typedef struct chd_cancel   chd_cancel_t;
 | Enum | Values |
 |---|---|
 | `chd_video_standard_t` | `CHD_STD_UNKNOWN`, `CHD_STD_NTSC`, `CHD_STD_PAL`, `CHD_STD_PAL_M` |
-| `chd_sample_encoding_t` | `CHD_ENC_UNKNOWN`, `CHD_ENC_CVBS_U10_4FSC`, `CHD_ENC_CVBS_U16_4FSC`, `CHD_ENC_RAW_S16_28M`, `CHD_ENC_RAW_S16_40M`, `CHD_ENC_CVBS_TPG21_4FSC` |
+| `chd_sample_encoding_t` | `CHD_ENC_UNKNOWN`, `CHD_ENC_CVBS_U10_4FSC`, `CHD_ENC_CVBS_U16_4FSC`, `CHD_ENC_CVBS_TPG21_4FSC`, `CHD_ENC_CVBS_S16_FSC`, `CHD_ENC_RAW_S16_28M`, `CHD_ENC_RAW_S16_40M` |
 | `chd_signal_state_t` | `CHD_SIG_UNKNOWN`, `CHD_SIG_STANDARD_TBC_LOCKED`, `CHD_SIG_STANDARD_TBC_UNLOCKED`, `CHD_SIG_STANDARD_RAW`, `CHD_SIG_NONSTANDARD_TBC_LOCKED`, `CHD_SIG_NONSTANDARD_TBC_UNLOCKED`, `CHD_SIG_NONSTANDARD_RAW` |
+| `chd_frame_layout_t` | `CHD_FRAME_LAYOUT_UNKNOWN`, `CHD_FRAME_LAYOUT_FIELD_RASTER`, `CHD_FRAME_LAYOUT_FRAME_NATIVE` |
 | `chd_plane_t` | `CHD_PLANE_Y`, `CHD_PLANE_CB`, `CHD_PLANE_CR`, `CHD_PLANE_R`, `CHD_PLANE_G`, `CHD_PLANE_B` |
 | `chd_pixel_format_t` | `CHD_PIXEL_YUV444P16`, `CHD_PIXEL_YUV444PS`, `CHD_PIXEL_RGB48`, `CHD_PIXEL_RGBS`, `CHD_PIXEL_GRAY16`, `CHD_PIXEL_GRAYS` |
 | `chd_clamp_t` | `CHD_CLAMP_NONE`, `CHD_CLAMP_LEGAL_RGB_SDR`, `CHD_CLAMP_LEGAL_RGB_HDR`, `CHD_CLAMP_LEGAL_YCBCR_BT601` |
 
+`chd_frame_layout_t` is the container addressing of a CVBS data file:
+`FIELD_RASTER` for the fixed padded `field_width x field_height` blocks every
+`.tbc` uses, `FRAME_NATIVE` for the CVBS specification's exact frame-addressed
+totals. See [file formats](file-formats.md#container-layouts) for what each
+layout means and how it is detected.
+
 ### chd_video_params_t
 
 Caller-supplied parameters used to override or supply metadata when opening a
-source (see [`chd_video_open_composite`](#chd_video_open_composite)).
+source (see [`chd_video_open_composite`](#chd_video_open_composite)). The
+first three identify the capture when no sidecar is found: `standard`,
+`encoding`, and `signal_state` are required there and ignored when a sidecar
+is present. The remaining three merge over sidecar metadata, because the CVBS
+`.meta` schema does not carry them: `layout` (`CHD_FRAME_LAYOUT_UNKNOWN`
+means auto-detect), `is_subcarrier_locked` (set to mark an encoder-style
+subcarrier-locked field raster; field rasters default to line-locked), and
+`is_second_field_first` (set to declare a field-swapped capture, where the
+temporally-first field of each stored pair is not the interlace first field).
 
 ```c
 typedef struct chd_video_params {
     chd_video_standard_t  standard;
     chd_sample_encoding_t encoding;
     chd_signal_state_t    signal_state;
-    int32_t  field_width;
-    int32_t  field_height;
-    double   sample_rate_hz;
-    int32_t  active_video_start;
-    int32_t  active_video_end;
-    int32_t  first_active_frame_line;
-    int32_t  last_active_frame_line;
-    int32_t  black_16b_ire;
-    int32_t  white_16b_ire;
-    int32_t  blanking_16b_ire;
-    int      is_widescreen;
+    chd_frame_layout_t    layout;
     int      is_subcarrier_locked;
-    int      is_first_field_first;
+    int      is_second_field_first;
 } chd_video_params_t;
 ```
 
@@ -246,16 +251,24 @@ typedef struct chd_video_params {
 
 Read-back description of an opened video, filled by
 [`chd_video_get_info`](#chd_video_get_info). Superset of the params struct:
-adds the derived `fsc_hz` subcarrier frequency and the decodable `num_frames`
-count.
+adds the derived `fsc_hz` subcarrier frequency, the decodable `num_frames`
+count, and `samples_per_frame`, the standard's native frame total (PAL
+709,379; NTSC 477,750; PAL-M 477,225) regardless of container layout, while
+`field_width` and `field_height` describe the served field raster. `layout`
+is always the resolved value, never `CHD_FRAME_LAYOUT_UNKNOWN`. For
+frame-native sources, `active_video_start` / `active_video_end` follow the
+[horizontal alignment](file-formats.md#container-layouts) measured from the
+capture's own sync at open time.
 
 ```c
 typedef struct chd_video_info {
     chd_video_standard_t  standard;
     chd_sample_encoding_t encoding;
     chd_signal_state_t    signal_state;
+    chd_frame_layout_t    layout;
     int32_t  field_width;
     int32_t  field_height;
+    int32_t  samples_per_frame;
     double   sample_rate_hz;
     double   fsc_hz;
     int32_t  active_video_start;
@@ -325,8 +338,12 @@ Open a single-file composite capture: an ld-decode `.tbc` or a CVBS
   file: an ld-decode `<path>.db` (SQLite) / `<path>.json`, else a CVBS
   `<basename>.meta`. A `const char *` is an explicit path to a `.db`, `.json`,
   or `.meta` sidecar.
-- `override_or_null`: `NULL` means all parameters come from the sidecar; a
-  non-null struct supplies values when no sidecar is found, or overrides them.
+- `override_or_null`: `NULL` means all parameters come from the sidecar. When
+  no sidecar is found, the override is mandatory and must set `standard`,
+  `encoding`, and `signal_state`; the open fails otherwise. When a sidecar is
+  present, only `layout`, `is_subcarrier_locked`, and `is_second_field_first`
+  are read from the override. See the
+  [which-fields-to-set matrix](integration-guide.md#which-fields-to-set).
 
 ### chd_video_open_yc
 

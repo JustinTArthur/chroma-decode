@@ -11,11 +11,13 @@
 #ifndef CHD_FORMAT_VIDEO_STANDARDS_H
 #define CHD_FORMAT_VIDEO_STANDARDS_H
 
-#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 #include "../metadata/core.h"
+#include "sample_encoding.h"
+#include "signal_state.h"
 
 namespace chd::format {
 
@@ -25,6 +27,27 @@ enum class VideoStandard {
     PAL = 0,
     NTSC,
     PAL_M,
+};
+
+// Container addressing: how samples are blocked in the file. Independent of
+// the sampling lattice (isSubcarrierLocked); CVBS-native NTSC is
+// orthogonal-sampled yet frame-addressed.
+enum class FrameLayout {
+    UNKNOWN = 0,     // resolve from override / sidecar frame count / file size
+    FIELD_RASTER,    // fixed fieldWidth x fieldHeight, field-addressed
+    FRAME_NATIVE,    // the CVBS spec's exact frame totals, frame-addressed
+};
+
+// Horizontal alignment of the stored rows: where 0H sits within a row (the
+// phase of the line cut relative to the signal). Named by what the row starts
+// with. The burst gate and active-video windows are only meaningful relative to this.
+enum class HorizontalAlignment {
+    SYNC_START = 0,   // rows begin at the sync leading edge (line-locked TBC)
+    BLANKING_START,   // rows begin at the first digital blanking sample
+                      // (ld-chroma-encoder scLocked; frame-native conform)
+    ACTIVE_START,     // rows begin at the first digital active sample (the
+                      // EBU/SMPTE line-numbering origin; recognised by the
+                      // open-time measurement but not yet a served layout)
 };
 
 // Per-preset sample level table in the 10-bit domain (0..1023).
@@ -77,6 +100,22 @@ struct VideoStandardPreset {
     // frames; NTSC repeats over 2.
     int32_t colourFrameSequenceLength;
 
+    // Row-local 0H position, in samples, when rows begin at the first digital
+    // blanking sample (EBU 3280 / SMPTE 244M numbering: PAL 957.5 - 948, NTSC
+    // 784 + 33/90 - 768; PAL_M carries the NTSC timing to its 909-sample line).
+    double zeroHBlankingStartRow;
+
+    // Burst gate relative to 0H, in samples: gate opens burstStartFromZeroH
+    // after 0H and stays open for burstLengthSamples (PAL: 5.6 us + 10 cycles;
+    // NTSC/PAL_M: 19 cycles + 9 cycles).
+    double  burstStartFromZeroH;
+    int32_t burstLengthSamples;
+
+    // Digital active samples per line and the picture width centred in them
+    // (PAL 922 in 948; NTSC/PAL_M 758 in 768).
+    int32_t digitalActiveSamples;
+    int32_t pictureWidthSamples;
+
     // Sample level table in the 10-bit domain.
     SampleLevels10b levels;
 };
@@ -101,7 +140,79 @@ const VideoStandardPreset &getVideoStandard(VideoStandard standard);
 // nominal values but the decoder layer is responsible for refusing them.
 chd::metadata::LdDecodeMetaData::VideoParameters
 makeVideoParameters(const VideoStandardPreset &preset,
-                    bool isSubcarrierLocked);
+                    bool isSubcarrierLocked,
+                    HorizontalAlignment alignment = HorizontalAlignment::SYNC_START);
+
+// As makeVideoParameters, but for a CVBS source: derives isSubcarrierLocked
+// from the container layout (frame-native PAL is the only subcarrier-locked
+// lattice; a caller override can mark a subcarrier-locked field raster) and
+// applies an optional `.meta` black_level override (in the Sample Encoding's
+// integer domain) over the preset default.
+// alignmentOverride replaces the derived horizontal alignment (field rasters
+// are sync-start unless the subcarrier-locked override marks an encoder-style
+// raster); frame-native sources pass the value resolved from the open-time 0H
+// measurement (resolveFrameNativeAlignment).
+chd::metadata::LdDecodeMetaData::VideoParameters
+makeCvbsVideoParameters(const VideoStandardPreset &preset,
+                        SampleEncoding encoding,
+                        std::optional<int32_t> blackLevelOverride = std::nullopt,
+                        FrameLayout layout = FrameLayout::FIELD_RASTER,
+                        std::optional<bool> subcarrierLockedOverride = std::nullopt,
+                        std::optional<HorizontalAlignment> alignmentOverride = std::nullopt);
+
+// Samples per frame when each field is padded to the fixed
+// fieldWidth x fieldHeight raster (2 x 1135 x 313 for PAL, etc.).
+int32_t fieldPackedSamplesPerFrame(const VideoStandardPreset &preset);
+
+// Resolve the container layout for a CVBS data file. Order: an explicit
+// override wins; frame totals are only normative for TBC-applied
+// standard-rate states, so anything else is FIELD_RASTER; a sidecar-declared
+// frame count divides the file size exactly and unambiguously; otherwise a
+// file-size modulo test against the two candidate totals, falling back to
+// FIELD_RASTER (with a warning) on ties, truncation, or no match.
+FrameLayout resolveFrameLayout(FrameLayout overrideLayout,
+                               const VideoStandardPreset &preset,
+                               SignalState signalState,
+                               int32_t bytesPerSample,
+                               int64_t fileSize,
+                               std::optional<int64_t> declaredFrames = std::nullopt);
+
+// Contiguous read covering field-raster rows [firstRow0, lastRow0] of one
+// field within a frame-native file, plus the count of blanking samples to
+// append after it (the second field's tail past the native frame total).
+// The mapping is a flat cut of the native frame into the two field buffers,
+// bit-identical to ld-chroma-encoder's layout.
+struct FrameNativeFieldRead {
+    int64_t startByte;
+    int64_t numBytes;
+    int32_t padSamples;
+};
+FrameNativeFieldRead planFrameNativeFieldRead(const VideoStandardPreset &preset,
+                                              int32_t fieldIndex,
+                                              int32_t firstRow0,
+                                              int32_t lastRow0,
+                                              int32_t bytesPerSample);
+
+// Measure the row-local 0H position from canonical-domain samples: per row,
+// locate the half-amplitude falling sync edge (sustained high before,
+// sustained low after) and return the median position across rows. Returns
+// nullopt when fewer than half the rows yield a clean edge (e.g. synthetic
+// data with no sync structure). Levels are the preset's 10-bit values.
+std::optional<double> measureRowZeroH(const uint16_t *samples,
+                                      int32_t numRows,
+                                      int32_t rowWidth,
+                                      const SampleLevels10b &levels);
+
+// Choose a frame-native source's horizontal alignment from the measured
+// row-local 0H: within tolerance of the blanking-start 0H selects
+// BLANKING_START (encoder-flattened data); within tolerance of the row
+// start, SYNC_START (what real hardware captures measure as). Active-start
+// rows warn: they cannot be served correctly without a row re-cut.
+// Unmeasurable or unmatched signals fall back to SYNC_START. Logs the
+// outcome; sourceName prefixes the log lines.
+HorizontalAlignment resolveFrameNativeAlignment(const VideoStandardPreset &preset,
+                                                const std::optional<double> &measuredZeroH,
+                                                const char *sourceName);
 
 }  // namespace chd::format
 

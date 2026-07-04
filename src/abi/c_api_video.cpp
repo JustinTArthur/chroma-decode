@@ -34,10 +34,10 @@ chd_status_t set_error(const std::string &msg) {
 // metadata matching the ld-decode convention so 1-based frame
 // number → field number translation works.
 std::unique_ptr<chd::metadata::LdDecodeMetaData>
-synthesizeMetadata(const chd::reader::ISource &src) {
+synthesizeMetadata(const chd::reader::ISource &src, bool firstFieldFirst) {
     auto meta = std::make_unique<chd::metadata::LdDecodeMetaData>();
     meta->setVideoParameters(src.parameters());
-    meta->setIsFirstFieldFirst(true);
+    meta->setIsFirstFieldFirst(firstFieldFirst);
 
     const int32_t nf = src.getNumberOfAvailableFields();
     if (nf <= 0) return meta;
@@ -45,7 +45,7 @@ synthesizeMetadata(const chd::reader::ISource &src) {
     for (int32_t i = 0; i < nf; i++) {
         chd::metadata::LdDecodeMetaData::Field f;
         f.seqNo = i + 1;
-        f.isFirstField = (i % 2 == 0);
+        f.isFirstField = (i % 2 == 0) == firstFieldFirst;
         meta->appendField(f);
     }
     return meta;
@@ -64,9 +64,10 @@ chd_sample_encoding_t toAbiEncoding(chd::format::SampleEncoding encoding) {
     switch (encoding) {
         case chd::format::SampleEncoding::CVBS_U10_4FSC:   return CHD_ENC_CVBS_U10_4FSC;
         case chd::format::SampleEncoding::CVBS_U16_4FSC:   return CHD_ENC_CVBS_U16_4FSC;
+        case chd::format::SampleEncoding::CVBS_TPG21_4FSC: return CHD_ENC_CVBS_TPG21_4FSC;
+        case chd::format::SampleEncoding::CVBS_S16_FSC:    return CHD_ENC_CVBS_S16_FSC;
         case chd::format::SampleEncoding::RAW_S16_28M:     return CHD_ENC_RAW_S16_28M;
         case chd::format::SampleEncoding::RAW_S16_40M:     return CHD_ENC_RAW_S16_40M;
-        case chd::format::SampleEncoding::CVBS_TPG21_4FSC: return CHD_ENC_CVBS_TPG21_4FSC;
     }
     return CHD_ENC_UNKNOWN;
 }
@@ -81,6 +82,37 @@ chd_signal_state_t toAbiSignalState(chd::format::SignalState state) {
         case chd::format::SignalState::NONSTANDARD_RAW:          return CHD_SIG_NONSTANDARD_RAW;
     }
     return CHD_SIG_UNKNOWN;
+}
+
+chd_frame_layout_t toAbiFrameLayout(chd::format::FrameLayout layout) {
+    switch (layout) {
+        case chd::format::FrameLayout::FIELD_RASTER: return CHD_FRAME_LAYOUT_FIELD_RASTER;
+        case chd::format::FrameLayout::FRAME_NATIVE: return CHD_FRAME_LAYOUT_FRAME_NATIVE;
+        case chd::format::FrameLayout::UNKNOWN:      break;
+    }
+    return CHD_FRAME_LAYOUT_UNKNOWN;
+}
+
+chd::format::FrameLayout fromAbiFrameLayout(chd_frame_layout_t layout) {
+    switch (layout) {
+        case CHD_FRAME_LAYOUT_FIELD_RASTER: return chd::format::FrameLayout::FIELD_RASTER;
+        case CHD_FRAME_LAYOUT_FRAME_NATIVE: return chd::format::FrameLayout::FRAME_NATIVE;
+        default:                            return chd::format::FrameLayout::UNKNOWN;
+    }
+}
+
+// Native frame total for the standard (the spec's exact frame sizes),
+// reported through chd_video_info_t regardless of the container layout.
+int32_t nativeSamplesPerFrame(chd::metadata::VideoSystem system) {
+    switch (system) {
+        case chd::metadata::PAL:
+            return chd::format::getVideoStandard(chd::format::VideoStandard::PAL).samplesPerFrame;
+        case chd::metadata::NTSC:
+            return chd::format::getVideoStandard(chd::format::VideoStandard::NTSC).samplesPerFrame;
+        case chd::metadata::PAL_M:
+            return chd::format::getVideoStandard(chd::format::VideoStandard::PAL_M).samplesPerFrame;
+    }
+    return 0;
 }
 
 // A CVBS-spec sidecar uses the `.meta` extension (cvbs_file table); an
@@ -137,19 +169,32 @@ SidecarResolution resolveSidecarFlavour(const std::string &dataPath,
 //   CHD_E_METADATA_MISSING.
 //
 // The first available source wins. The returned preset triple is what the
-// CvbsCompositeSource / CvbsYcSource constructor needs; blackLevelOverride
-// and other metadata fields are returned alongside for later use.
+// CvbsCompositeSource / CvbsYcSource open path needs; `meta` (when a sidecar
+// was found) also carries the black_level override, applied at open time.
 struct ResolvedCvbsParams {
     const chd::format::VideoStandardPreset *videoStandard;
     chd::format::SampleEncoding             sampleEncoding;
     chd::format::SignalState                signalState;
     std::optional<chd::metadata::CvbsMetadata> meta;  // present when sidecar found
+    // Merged field-wise from the caller override even when a sidecar is
+    // present: the `cvbs_file` schema carries neither the container layout,
+    // the sampling lattice, nor the field order, so these stay overridable.
+    chd::format::FrameLayout                layoutOverride = chd::format::FrameLayout::UNKNOWN;
+    std::optional<bool>                     subcarrierLockedOverride;
+    bool                                    secondFieldFirst = false;
+    std::optional<int64_t>                  declaredFrames;
 };
 
 chd_status_t resolveCvbsParams(const std::string &dataPath,
                                const char *metaPathOrNull,
                                const chd_video_params_t *overrideOrNull,
                                ResolvedCvbsParams *out) {
+    if (overrideOrNull != nullptr) {
+        out->layoutOverride = fromAbiFrameLayout(overrideOrNull->layout);
+        out->subcarrierLockedOverride = overrideOrNull->is_subcarrier_locked != 0;
+        out->secondFieldFirst = overrideOrNull->is_second_field_first != 0;
+    }
+
     // Try explicit or auto-located sidecar first.
     std::string sidecar;
     if (metaPathOrNull != nullptr) {
@@ -170,6 +215,7 @@ chd_status_t resolveCvbsParams(const std::string &dataPath,
         out->videoStandard  = parsed->videoStandard;
         out->sampleEncoding = parsed->sampleEncoding;
         out->signalState    = parsed->signalState;
+        out->declaredFrames = parsed->numberOfSequentialFrames;
         out->meta           = std::move(parsed);
         return CHD_OK;
     }
@@ -196,6 +242,7 @@ chd_status_t resolveCvbsParams(const std::string &dataPath,
         case CHD_ENC_CVBS_U10_4FSC:   encoding = chd::format::SampleEncoding::CVBS_U10_4FSC;   break;
         case CHD_ENC_CVBS_U16_4FSC:   encoding = chd::format::SampleEncoding::CVBS_U16_4FSC;   break;
         case CHD_ENC_CVBS_TPG21_4FSC: encoding = chd::format::SampleEncoding::CVBS_TPG21_4FSC; break;
+        case CHD_ENC_CVBS_S16_FSC:    encoding = chd::format::SampleEncoding::CVBS_S16_FSC;    break;
         case CHD_ENC_RAW_S16_28M:     encoding = chd::format::SampleEncoding::RAW_S16_28M;     break;
         case CHD_ENC_RAW_S16_40M:     encoding = chd::format::SampleEncoding::RAW_S16_40M;     break;
         default:
@@ -270,12 +317,15 @@ chd_status_t openCompositeSource(const std::string &fn, const std::string &path,
         path, sc.found ? sc.path.c_str() : nullptr, overrideOrNull, &resolved);
     if (rc != CHD_OK) return rc;
     auto src = std::make_unique<chd::reader::CvbsCompositeSource>();
+    const std::optional<int32_t> blackOverride =
+        resolved.meta ? resolved.meta->blackLevelOverride : std::nullopt;
     if (!src->open(path, *resolved.videoStandard, resolved.sampleEncoding,
-                   resolved.signalState)) {
+                   resolved.signalState, blackOverride, resolved.layoutOverride,
+                   resolved.declaredFrames, resolved.subcarrierLockedOverride)) {
         return set_error(fn + ": failed to open sample file");
     }
     out->source = std::move(src);
-    out->metadata = synthesizeMetadata(*out->source);
+    out->metadata = synthesizeMetadata(*out->source, !resolved.secondFieldFirst);
     out->metadataSynthesized = true;
     return CHD_OK;
 }
@@ -356,11 +406,15 @@ chd_status_t chd_video_open_yc(const char *luma_path, const char *chroma_path,
             luma_path, sc.found ? sc.path.c_str() : nullptr, override_or_null, &resolved);
         if (rc != CHD_OK) return rc;
         auto src = std::make_unique<chd::reader::CvbsYcSource>();
+        const std::optional<int32_t> blackOverride =
+            resolved.meta ? resolved.meta->blackLevelOverride : std::nullopt;
         if (!src->open(luma_path, chroma_path, *resolved.videoStandard,
-                       resolved.sampleEncoding, resolved.signalState)) {
+                       resolved.sampleEncoding, resolved.signalState, blackOverride,
+                       resolved.layoutOverride, resolved.declaredFrames,
+                       resolved.subcarrierLockedOverride)) {
             return set_error("chd_video_open_yc: failed to open y/c files");
         }
-        handle->metadata = synthesizeMetadata(*src);
+        handle->metadata = synthesizeMetadata(*src, !resolved.secondFieldFirst);
         handle->metadataSynthesized = true;
         handle->source  = std::move(src);
         *out = handle.release();
@@ -419,8 +473,10 @@ chd_status_t chd_video_get_info(const chd_video_t *v, chd_video_info_t *out) {
     // were opened with.
     out->encoding               = toAbiEncoding(v->source->sampleEncoding());
     out->signal_state           = toAbiSignalState(v->source->signalState());
+    out->layout                 = toAbiFrameLayout(v->source->frameLayout());
     out->field_width            = vp.fieldWidth;
     out->field_height           = vp.fieldHeight;
+    out->samples_per_frame      = nativeSamplesPerFrame(vp.system);
     out->sample_rate_hz         = vp.sampleRate;
     out->fsc_hz                 = vp.fSC;
     out->active_video_start     = vp.activeVideoStart;
@@ -482,12 +538,16 @@ chd_status_t chd_video_add_extra_source_yc(chd_video_t *v, const char *luma_path
         luma_path, sc.found ? sc.path.c_str() : nullptr, nullptr, &resolved);
     if (rc != CHD_OK) return rc;
     auto src = std::make_unique<chd::reader::CvbsYcSource>();
+    const std::optional<int32_t> blackOverride =
+        resolved.meta ? resolved.meta->blackLevelOverride : std::nullopt;
     if (!src->open(luma_path, chroma_path, *resolved.videoStandard,
-                   resolved.sampleEncoding, resolved.signalState)) {
+                   resolved.sampleEncoding, resolved.signalState, blackOverride,
+                   resolved.layoutOverride, resolved.declaredFrames,
+                   resolved.subcarrierLockedOverride)) {
         return set_error("chd_video_add_extra_source_yc: open failed");
     }
     chd_video_extra extra;
-    extra.metadata = synthesizeMetadata(*src);
+    extra.metadata = synthesizeMetadata(*src, !resolved.secondFieldFirst);
     extra.metadataSynthesized = true;
     extra.source = std::move(src);
     v->extraSources.push_back(std::move(extra));

@@ -30,8 +30,8 @@ pub use stream::{
     decode_frames_stream,
 };
 pub use types::{
-    DecoderKind, FrameInfo, OutputInfo, PixelFormat, Plane, SampleEncoding, SignalState, VideoInfo,
-    VideoParams, VideoStandard,
+    DecoderKind, FrameInfo, FrameLayout, OutputInfo, PixelFormat, Plane, SampleEncoding,
+    SignalState, VideoInfo, VideoParams, VideoStandard,
 };
 pub use video::Video;
 

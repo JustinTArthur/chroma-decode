@@ -66,6 +66,10 @@ public:
     const chd::metadata::LdDecodeMetaData::VideoParameters &parameters() const override;
     chd::format::SignalState     signalState()    const override;
     chd::format::SampleEncoding  sampleEncoding() const override;
+    chd::format::FrameLayout     frameLayout()    const override
+    {
+        return chd::format::FrameLayout::FIELD_RASTER;
+    }
 
     bool isSourceValid() const override;
     int32_t getNumberOfAvailableFields() const override;

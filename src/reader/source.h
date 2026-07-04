@@ -27,6 +27,7 @@
 
 #include "../format/sample_encoding.h"
 #include "../format/signal_state.h"
+#include "../format/video_standards.h"
 #include "../metadata/core.h"
 
 namespace chd::reader {
@@ -48,6 +49,10 @@ public:
     virtual const chd::metadata::LdDecodeMetaData::VideoParameters &parameters() const = 0;
     virtual chd::format::SignalState     signalState()    const = 0;
     virtual chd::format::SampleEncoding  sampleEncoding() const = 0;
+
+    // Container addressing of the backing file(s). Every `.tbc` is a field
+    // raster; CVBS sources report the layout resolved at open time.
+    virtual chd::format::FrameLayout     frameLayout()    const = 0;
 
     // True if the source successfully opened its backing file(s).
     virtual bool isSourceValid() const = 0;

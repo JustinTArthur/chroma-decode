@@ -7,6 +7,58 @@ All notable changes to this project will be documented in this file. Format:
 ## [Unreleased]
 
 ### Added
+- **Measurement-driven CVBS window selection.** The burst-gate and
+  active-video windows are row positions, so they follow the rows'
+  horizontal alignment (where 0H sits within a stored row). Field rasters
+  are declared: plain ones keep the ld-decode sync-start values, and the
+  subcarrier-locked override selects blanking-start values derived from the
+  row-local 0H with the same arithmetic ld-chroma-encoder uses for its own
+  sidecars (PAL: burst 109-149, active 200-1122, asserted equal to
+  encoder-written sidecar values in the fixture validation). Frame-native
+  opens measure 0H from the sync edges of fifty early lines and select the
+  matching cut: real hardware captures (Snell and Wilcox TPG21 references)
+  measure as sync-start, encoder-flattened data as blanking-start, and an
+  unmeasurable signal falls back to sync-start. The spec-literal
+  active-start cut warns and is served with sync-start windows pending
+  upstream clarification of the frame origin (a correct serve needs a row
+  re-cut). No new ABI surface: the selected alignment is visible through
+  the reported `active_video_start` / `active_video_end`.
+- **`CVBS_S16_FSC` sample encoding and `.meta` schema `user_version` 8.**
+  The spec's blanking-centred signed encoding (int16 = (val10 − blanking10)
+  × 32, offset per the standard: 256 PAL, 240 NTSC/PAL-M) decodes for
+  composite and Y/C, and the sidecar reader accepts `user_version` 7 or 8
+  (8 added the encoding and the `audio_locked` column; version-8 sidecars
+  were previously rejected). `chd_sample_encoding_t` is renumbered to keep
+  the CVBS family grouped (`CHD_ENC_CVBS_TPG21_4FSC` = 3,
+  `CHD_ENC_CVBS_S16_FSC` = 4, the raw encodings move to 5 and 6). ABI break
+  (pre-release; no deprecation alias).
+- `chd_video_params_t.is_second_field_first`: declares a field-swapped CVBS
+  capture (the spec guarantees neither field order nor its recording; the
+  `.meta` schema has no column for it). Drives the synthesized per-field
+  parity and the reported `is_first_field_first`, replacing the previous
+  hardcoded first-field-first assumption. Merges over sidecar metadata like
+  `layout` and `is_subcarrier_locked`.
+- **Container layout in the ABI, with frame-native CVBS ingest.** New
+  `chd_frame_layout_t` (`FIELD_RASTER` / `FRAME_NATIVE`) on
+  `chd_video_params_t` and `chd_video_info_t` conveys how a CVBS file blocks
+  its samples: the fixed padded field raster every `.tbc` uses, or the CVBS
+  specification's exact frame-addressed totals (PAL 709,379; NTSC 477,750;
+  PAL-M 477,225 samples/frame). The layout is auto-detected (caller override,
+  then the `.meta` frame count, then a file-size modulo test that falls back
+  to `FIELD_RASTER` on ties or truncation; only TBC-applied standard-rate
+  signal states qualify). Frame-native `.composite` and `.y`/`.c` files are
+  conformed onto the decoder's field raster with no resampling: a flat cut of
+  the continuous frame into the two field buffers, blanking-filled past the
+  native total. For PAL the four leftover samples per frame land at the start
+  of the second field's final row and the fields come out two samples apart,
+  which the existing subcarrier-locked shift removes; the conform is
+  validated bit-exact against tbc-tools ld-chroma-encoder subcarrier-locked
+  output (env-gated test `CHD_TEST_PAL_SCLOCKED_TBC`, plus a decode smoke
+  through the PAL pipeline). `chd_video_info_t` also gains `samples_per_frame`, the native
+  frame total for the standard. `layout`, `is_subcarrier_locked`, and
+  `is_second_field_first` merge over sidecar metadata (the `.meta` schema
+  carries none of them); the rest of the override applies only when no
+  sidecar is found.
 - **Dual-file Y/C `.tbc` input via decode-level merge.** `chd_video_open_yc`
   accepts an ld-decode luma `.tbc` + chroma `.tbc` pair (e.g. S-Video /
   colour-under captures), in addition to CVBS `.y`/`.c`. The luma plane is
@@ -177,7 +229,35 @@ All notable changes to this project will be documented in this file. Format:
   model paths are hardcoded, so real weights are validated by pointing the env
   vars at them locally or in a dedicated CI lane.
 
+### Removed
+- The never-consumed `chd_video_params_t` fields: `field_width`,
+  `field_height`, `sample_rate_hz`, `active_video_start`, `active_video_end`,
+  `first_active_frame_line`, `last_active_frame_line`, `black_16b_ire`,
+  `white_16b_ire`, `blanking_16b_ire`, `is_widescreen`, and
+  `is_first_field_first`. None was ever read by an open path; sidecars and
+  the preset-derived defaults supply all of them, and `.meta` `black_level`
+  covers the level override. Field order is now expressed by the new
+  `is_second_field_first` (zero default = first field first, so a
+  zero-initialised struct keeps the common case). ABI break (pre-release; no
+  deprecation alias).
+
 ### Changed
+- CVBS sources no longer derive `is_subcarrier_locked` from the signal
+  state's burst lock. Burst-phase stability is not a sampling-lattice
+  property: a line-locked PAL capture opened as `STANDARD_TBC_LOCKED` was
+  marked subcarrier-locked and got the 2-sample inter-field shift it must not
+  receive. Field rasters now default to line-locked; the
+  `chd_video_params_t.is_subcarrier_locked` override marks the encoder-style
+  subcarrier-locked raster, and frame-native PAL implies locked.
+- CVBS sample levels now follow the CVBS file format specification v1.1.0,
+  verified against SMPTE ST 244, SMPTE ST 170, and EBU Tech 3280-E. PAL black
+  sits at blanking (no setup pedestal); NTSC and PAL-M carry the +7.5 IRE setup
+  (black = 282 in the 10-bit domain); the maximum legal sample value is 1019.
+  This shifts decoded Y levels for CVBS inputs toward spec-correct values; TBC
+  inputs are unaffected (they read levels from their own sidecar). A non-null
+  `black_level` in the `.meta` sidecar (for example NTSC-J captures with no
+  setup) now overrides the preset black, applied in the declared Sample
+  Encoding's integer domain; it was previously parsed but never applied.
 - Default output clamp is now `CHD_CLAMP_NONE`, dropping a behaviour
   inherited from the upstream ld-chroma-decoder: the integer Y′CbCr / RGB
   output codes were previously clamped to the BT.601 §2.5.3 video-allowed

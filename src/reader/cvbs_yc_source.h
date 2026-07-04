@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -47,12 +48,17 @@ public:
     ~CvbsYcSource() override;
 
     // Open a YC pair. Both files must have identical size and follow the
-    // same preset triple.
+    // same preset triple. Layout resolution matches CvbsCompositeSource:
+    // layoutOverride wins, else declaredFrames + file size decide.
     bool open(const std::string &yPath,
               const std::string &cPath,
               const chd::format::VideoStandardPreset &videoStandard,
               chd::format::SampleEncoding sampleEncoding,
-              chd::format::SignalState signalState);
+              chd::format::SignalState signalState,
+              std::optional<int32_t> blackLevelOverride = std::nullopt,
+              chd::format::FrameLayout layoutOverride = chd::format::FrameLayout::UNKNOWN,
+              std::optional<int64_t> declaredFrames = std::nullopt,
+              std::optional<bool> subcarrierLockedOverride = std::nullopt);
 
     void close();
 
@@ -60,6 +66,7 @@ public:
     const chd::metadata::LdDecodeMetaData::VideoParameters &parameters() const override;
     chd::format::SignalState     signalState()    const override;
     chd::format::SampleEncoding  sampleEncoding() const override;
+    chd::format::FrameLayout     frameLayout()    const override;
 
     bool isSourceValid() const override;
     int32_t getNumberOfAvailableFields() const override;
@@ -82,6 +89,10 @@ private:
     int32_t fieldSamples = 0;
     int32_t fieldByteSize = 0;
     int32_t numFields = 0;
+
+    chd::format::FrameLayout layout = chd::format::FrameLayout::FIELD_RASTER;
+    const chd::format::VideoStandardPreset *preset = nullptr;
+    int32_t bytesPerSample = 2;
 
     chd::format::VideoStandard          standardEnum;
     chd::format::SampleEncoding         encoding;

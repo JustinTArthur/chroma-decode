@@ -26,9 +26,10 @@ typedef enum chd_sample_encoding {
     CHD_ENC_UNKNOWN = 0,
     CHD_ENC_CVBS_U10_4FSC,
     CHD_ENC_CVBS_U16_4FSC,
+    CHD_ENC_CVBS_TPG21_4FSC,
+    CHD_ENC_CVBS_S16_FSC,
     CHD_ENC_RAW_S16_28M,
-    CHD_ENC_RAW_S16_40M,
-    CHD_ENC_CVBS_TPG21_4FSC
+    CHD_ENC_RAW_S16_40M
 } chd_sample_encoding_t;
 
 typedef enum chd_signal_state {
@@ -40,6 +41,12 @@ typedef enum chd_signal_state {
     CHD_SIG_NONSTANDARD_TBC_UNLOCKED,
     CHD_SIG_NONSTANDARD_RAW
 } chd_signal_state_t;
+
+typedef enum chd_frame_layout {
+    CHD_FRAME_LAYOUT_UNKNOWN = 0,
+    CHD_FRAME_LAYOUT_FIELD_RASTER,
+    CHD_FRAME_LAYOUT_FRAME_NATIVE
+} chd_frame_layout_t;
 
 typedef enum chd_plane {
     CHD_PLANE_Y  = 0,
@@ -70,27 +77,19 @@ typedef struct chd_video_params {
     chd_video_standard_t  standard;
     chd_sample_encoding_t encoding;
     chd_signal_state_t    signal_state;
-    int32_t  field_width;
-    int32_t  field_height;
-    double   sample_rate_hz;
-    int32_t  active_video_start;
-    int32_t  active_video_end;
-    int32_t  first_active_frame_line;
-    int32_t  last_active_frame_line;
-    int32_t  black_16b_ire;
-    int32_t  white_16b_ire;
-    int32_t  blanking_16b_ire;
-    int      is_widescreen;
+    chd_frame_layout_t    layout;
     int      is_subcarrier_locked;
-    int      is_first_field_first;
+    int      is_second_field_first;
 } chd_video_params_t;
 
 typedef struct chd_video_info {
     chd_video_standard_t  standard;
     chd_sample_encoding_t encoding;
     chd_signal_state_t    signal_state;
+    chd_frame_layout_t    layout;
     int32_t  field_width;
     int32_t  field_height;
+    int32_t  samples_per_frame;
     double   sample_rate_hz;
     double   fsc_hz;
     int32_t  active_video_start;

@@ -9,9 +9,10 @@ namespace chd::format {
 static constexpr SampleEncodingPreset PRESETS[] = {
     { SampleEncoding::CVBS_U10_4FSC,    "CVBS_U10_4FSC",    2, true,  true  },
     { SampleEncoding::CVBS_U16_4FSC,    "CVBS_U16_4FSC",    2, false, true  },
+    { SampleEncoding::CVBS_TPG21_4FSC,  "CVBS_TPG21_4FSC",  2, true,  true  },
+    { SampleEncoding::CVBS_S16_FSC,     "CVBS_S16_FSC",     2, true,  true  },
     { SampleEncoding::RAW_S16_28M,      "RAW_S16_28M",      2, true,  false },
     { SampleEncoding::RAW_S16_40M,      "RAW_S16_40M",      2, true,  false },
-    { SampleEncoding::CVBS_TPG21_4FSC,  "CVBS_TPG21_4FSC",  2, true,  true  },
 };
 
 // TPG21 hardware offset (spec sample-encoding-presets.md): int16 = (val10 - 508) × 64.
@@ -30,7 +31,8 @@ const SampleEncodingPreset &getSampleEncoding(SampleEncoding encoding)
     return PRESETS[static_cast<size_t>(encoding)];
 }
 
-uint16_t convertCompositeSampleToCanonical(SampleEncoding encoding, int16_t raw)
+uint16_t convertCompositeSampleToCanonical(SampleEncoding encoding, int16_t raw,
+                                           int32_t blanking10)
 {
     switch (encoding) {
         case SampleEncoding::CVBS_U10_4FSC: {
@@ -54,6 +56,14 @@ uint16_t convertCompositeSampleToCanonical(SampleEncoding encoding, int16_t raw)
             if (centered > 65535) return 65535;
             return static_cast<uint16_t>(centered);
         }
+        case SampleEncoding::CVBS_S16_FSC: {
+            // int16 = (val10 - blanking10) × 32; recover val10 × 64 =
+            // int16 × 2 + blanking10 × 64.
+            const int32_t scaled = static_cast<int32_t>(raw) * 2 + blanking10 * 64;
+            if (scaled < 0) return 0;
+            if (scaled > 65535) return 65535;
+            return static_cast<uint16_t>(scaled);
+        }
         case SampleEncoding::RAW_S16_28M:
         case SampleEncoding::RAW_S16_40M: {
             // Raw captures have no defined amplitude mapping. Pass through as
@@ -65,7 +75,8 @@ uint16_t convertCompositeSampleToCanonical(SampleEncoding encoding, int16_t raw)
     return static_cast<uint16_t>(raw);
 }
 
-int16_t convertChromaSampleToCenteredCanonical(SampleEncoding encoding, int16_t raw)
+int16_t convertChromaSampleToCenteredCanonical(SampleEncoding encoding, int16_t raw,
+                                               int32_t blanking10)
 {
     // Per the spec, chroma is centred at 10-bit value 512. We return the
     // centred 10-bit value × 64 as a signed int16.
@@ -92,6 +103,15 @@ int16_t convertChromaSampleToCenteredCanonical(SampleEncoding encoding, int16_t 
             // int16 = (val10 - 508) × 64. To get centred-at-512 excursion ×
             // 64, subtract (512 - 508) × 64 = 256.
             const int32_t centered = static_cast<int32_t>(raw) - (512 - TPG21_OFFSET_10B) * 64;
+            if (centered < INT16_MIN) return INT16_MIN;
+            if (centered > INT16_MAX) return INT16_MAX;
+            return static_cast<int16_t>(centered);
+        }
+        case SampleEncoding::CVBS_S16_FSC: {
+            // int16 = (val10 - blanking10) × 32 with chroma centred at
+            // val10 = 512; excursion × 64 = int16 × 2 + (blanking10 - 512) × 64.
+            const int32_t centered =
+                static_cast<int32_t>(raw) * 2 + (blanking10 - 512) * 64;
             if (centered < INT16_MIN) return INT16_MIN;
             if (centered > INT16_MAX) return INT16_MAX;
             return static_cast<int16_t>(centered);

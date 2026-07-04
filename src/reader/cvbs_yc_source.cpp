@@ -21,7 +21,11 @@ bool CvbsYcSource::open(const std::string &yPath,
                         const std::string &cPath,
                         const chd::format::VideoStandardPreset &videoStandard,
                         chd::format::SampleEncoding sampleEncoding,
-                        chd::format::SignalState signalState)
+                        chd::format::SignalState signalState,
+                        std::optional<int32_t> blackLevelOverride,
+                        chd::format::FrameLayout layoutOverride,
+                        std::optional<int64_t> declaredFrames,
+                        std::optional<bool> subcarrierLockedOverride)
 {
     if (isOpen) {
         chd::log::warn() << "CvbsYcSource::open(): source already open";
@@ -29,15 +33,10 @@ bool CvbsYcSource::open(const std::string &yPath,
     }
 
     standardEnum = videoStandard.standard;
+    preset       = &videoStandard;
     encoding     = sampleEncoding;
     state        = signalState;
-    videoParameters = chd::format::makeVideoParameters(
-        videoStandard,
-        /*isSubcarrierLocked*/ chd::format::getSignalState(state).burstLocked);
-    fieldWidth   = videoParameters.fieldWidth;
-    fieldHeight  = videoParameters.fieldHeight;
-    fieldSamples = fieldWidth * fieldHeight;
-    fieldByteSize = fieldSamples * chd::format::getSampleEncoding(encoding).bytesPerSample;
+    bytesPerSample = chd::format::getSampleEncoding(encoding).bytesPerSample;
 
     yFile.open(yPath, std::ios::binary);
     cFile.open(cPath, std::ios::binary);
@@ -54,6 +53,18 @@ bool CvbsYcSource::open(const std::string &yPath,
     const int64_t cSize = cFile.tellg();
     yFile.seekg(0, std::ios::beg);
     cFile.seekg(0, std::ios::beg);
+
+    layout = chd::format::resolveFrameLayout(layoutOverride, videoStandard, signalState,
+                                             bytesPerSample, ySize, declaredFrames);
+
+    videoParameters = chd::format::makeCvbsVideoParameters(
+        videoStandard, sampleEncoding, blackLevelOverride, layout,
+        subcarrierLockedOverride);
+    fieldWidth   = videoParameters.fieldWidth;
+    fieldHeight  = videoParameters.fieldHeight;
+    fieldSamples = fieldWidth * fieldHeight;
+    fieldByteSize = fieldSamples * bytesPerSample;
+
     if (ySize != cSize || ySize <= 0 || fieldByteSize <= 0) {
         chd::log::warn().nospace()
             << "CvbsYcSource::open(): file size mismatch (y=" << ySize << ", c=" << cSize << ")";
@@ -62,11 +73,39 @@ bool CvbsYcSource::open(const std::string &yPath,
         return false;
     }
     fileSize = ySize;
-    numFields = static_cast<int32_t>(fileSize / fieldByteSize);
+    if (layout == chd::format::FrameLayout::FRAME_NATIVE) {
+        const int64_t frameByteSize =
+            static_cast<int64_t>(videoStandard.samplesPerFrame) * bytesPerSample;
+        numFields = static_cast<int32_t>(fileSize / frameByteSize) * 2;
+    } else {
+        numFields = static_cast<int32_t>(fileSize / fieldByteSize);
+    }
+    if (layout == chd::format::FrameLayout::FRAME_NATIVE) {
+        // Resolve the horizontal alignment from the signal (sync lives in the
+        // synthesized composite via the luma plane) and rebuild the windows
+        // for the cut the capture actually uses.
+        std::optional<double> measured;
+        if (numFields >= 2 &&
+            chd::format::getSampleEncoding(encoding).hasStandardAmplitudeMapping) {
+            const auto plan = chd::format::planFrameNativeFieldRead(
+                videoStandard, 0, 40, 89, bytesPerSample);
+            const Data rows = readAndSynthesise(plan.startByte, plan.numBytes);
+            measured = chd::format::measureRowZeroH(rows.data(), 50, fieldWidth,
+                                                    videoStandard.levels);
+        }
+        const auto alignment = chd::format::resolveFrameNativeAlignment(
+            videoStandard, measured, "CvbsYcSource");
+        videoParameters = chd::format::makeCvbsVideoParameters(
+            videoStandard, sampleEncoding, blackLevelOverride, layout,
+            subcarrierLockedOverride, alignment);
+    }
+
     isOpen = true;
     chd::log::debug().nospace()
         << "CvbsYcSource::open(): " << yPath << " + " << cPath << " have " << numFields
-        << " fields (" << fieldWidth << "x" << fieldHeight << " samples/field)";
+        << " fields (" << fieldWidth << "x" << fieldHeight << " samples/field, "
+        << (layout == chd::format::FrameLayout::FRAME_NATIVE ? "frame-native" : "field-raster")
+        << ")";
     return true;
 }
 
@@ -92,6 +131,11 @@ chd::format::SignalState CvbsYcSource::signalState() const
 chd::format::SampleEncoding CvbsYcSource::sampleEncoding() const
 {
     return encoding;
+}
+
+chd::format::FrameLayout CvbsYcSource::frameLayout() const
+{
+    return layout;
 }
 
 bool CvbsYcSource::isSourceValid() const
@@ -121,26 +165,34 @@ CvbsYcSource::Data CvbsYcSource::getVideoField(int32_t fieldNumber,
 
     std::lock_guard<std::mutex> lock(ioMutex);
 
-    int64_t startByte;
-    int64_t numBytes;
     const bool wholeField = (startFieldLine == -1 && endFieldLine == -1);
     if (wholeField) {
         auto it = fieldCache.find(fieldIndex);
         if (it != fieldCache.end()) return it->second;
-        startByte = static_cast<int64_t>(fieldByteSize) * fieldIndex;
-        numBytes  = fieldByteSize;
-    } else {
-        const int32_t first0 = startFieldLine - 1;
-        const int32_t last0  = endFieldLine - 1;
-        if (first0 < 0 || last0 < first0 || last0 >= fieldHeight) {
-            throw std::runtime_error("CvbsYcSource::getVideoField(): line range out of bounds");
-        }
-        const int64_t lineByteSize = static_cast<int64_t>(fieldWidth) * 2;
-        startByte = static_cast<int64_t>(fieldByteSize) * fieldIndex + lineByteSize * first0;
-        numBytes  = lineByteSize * (last0 - first0 + 1);
+    }
+    const int32_t first0 = wholeField ? 0 : startFieldLine - 1;
+    const int32_t last0  = wholeField ? fieldHeight - 1 : endFieldLine - 1;
+    if (first0 < 0 || last0 < first0 || last0 >= fieldHeight) {
+        throw std::runtime_error("CvbsYcSource::getVideoField(): line range out of bounds");
     }
 
-    Data data = readAndSynthesise(startByte, numBytes);
+    Data data;
+    if (layout == chd::format::FrameLayout::FRAME_NATIVE) {
+        // Conform from the frame-addressed native stream (both planes share
+        // the same addressing): line re-blocking plus the dummy padding line.
+        const auto plan = chd::format::planFrameNativeFieldRead(
+            *preset, fieldIndex, first0, last0, bytesPerSample);
+        if (plan.numBytes > 0) data = readAndSynthesise(plan.startByte, plan.numBytes);
+        data.resize(data.size() + plan.padSamples,
+                    static_cast<uint16_t>(videoParameters.blanking16bIre));
+    } else {
+        const int64_t lineByteSize = static_cast<int64_t>(fieldWidth) * 2;
+        const int64_t startByte =
+            static_cast<int64_t>(fieldByteSize) * fieldIndex + lineByteSize * first0;
+        const int64_t numBytes = lineByteSize * (last0 - first0 + 1);
+        data = readAndSynthesise(startByte, numBytes);
+    }
+
     if (wholeField) {
         fieldCache.emplace(fieldIndex, data);
     }
@@ -168,9 +220,12 @@ CvbsYcSource::Data CvbsYcSource::readAndSynthesise(int64_t startByte, int64_t nu
     // Synthesise a composite-shaped sample: luma in the canonical TBC
     // domain plus the centred chroma excursion (× 64). Clamp to uint16_t.
     Data out(static_cast<size_t>(numSamples));
+    const int32_t blanking10 = videoParameters.blanking16bIre / 64;
     for (size_t i = 0; i < yRaw.size(); ++i) {
-        const uint16_t luma = chd::format::convertCompositeSampleToCanonical(encoding, yRaw[i]);
-        const int16_t  chroma = chd::format::convertChromaSampleToCenteredCanonical(encoding, cRaw[i]);
+        const uint16_t luma =
+            chd::format::convertCompositeSampleToCanonical(encoding, yRaw[i], blanking10);
+        const int16_t  chroma =
+            chd::format::convertChromaSampleToCenteredCanonical(encoding, cRaw[i], blanking10);
         const int32_t  combined = static_cast<int32_t>(luma) + static_cast<int32_t>(chroma);
         if (combined < 0) out[i] = 0;
         else if (combined > 65535) out[i] = 65535;

@@ -28,7 +28,8 @@ std::optional<CvbsMetadata> readCvbsMetadata(const std::string &metaPath)
         return std::nullopt;
     }
 
-    // Confirm the schema's user_version matches the spec's value (7).
+    // Confirm the schema's user_version is one the reader implements: 7, or
+    // 8 (which added the CVBS_S16_FSC encoding and the audio_locked column).
     int userVersion = -1;
     {
         sqlite3_stmt *vstmt = nullptr;
@@ -38,10 +39,10 @@ std::optional<CvbsMetadata> readCvbsMetadata(const std::string &metaPath)
         }
         if (vstmt != nullptr) sqlite3_finalize(vstmt);
     }
-    if (userVersion != 7) {
+    if (userVersion != 7 && userVersion != 8) {
         chd::detail::set_last_error(
             "CVBS metadata: user_version = " + std::to_string(userVersion) +
-            " (expected 7) in " + metaPath);
+            " (expected 7 or 8) in " + metaPath);
         return std::nullopt;
     }
 

@@ -10,10 +10,14 @@
 // canonical uint16_t samples in the canonical TBC convention (10-bit value × 64,
 // blanking at 16384).
 //
-// For NTSC (910 × 525 orthogonal) and PAL_M (909 × 525 orthogonal) line-major
-// slicing is trivial. For PAL (709,379 samples/frame, non-orthogonal) the
-// reader treats the frame as if orthogonal at 1135 samples/line,
-// matching the existing PALcolour assumption.
+// Files are addressed per the resolved FrameLayout. A field-raster file is
+// blocked like a .tbc (fixed rows of fieldWidth samples, both fields padded
+// to the same height) and slices line-major per field. A frame-native file
+// stores the spec's exact continuous frame totals; reads conform it onto the
+// same field raster by re-blocking lines on the unchanged sample grid and
+// blanking-filling past the native total, and open() measures the rows'
+// horizontal alignment (0H) from early sync edges to select the matching
+// burst/active windows.
 
 #ifndef CHD_READER_CVBS_COMPOSITE_SOURCE_H
 #define CHD_READER_CVBS_COMPOSITE_SOURCE_H
@@ -21,6 +25,7 @@
 #include <cstdint>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -47,11 +52,19 @@ public:
     // normative sample-count constraints apply and is reported back via
     // signalState().
     //
+    // layoutOverride forces the container layout; UNKNOWN resolves it from
+    // declaredFrames (the `.meta` frame count) and the file size.
+    // subcarrierLockedOverride marks a subcarrier-locked field raster.
+    //
     // Returns true on success. On failure, the source is left invalid.
     bool open(const std::string &compositePath,
               const chd::format::VideoStandardPreset &videoStandard,
               chd::format::SampleEncoding sampleEncoding,
-              chd::format::SignalState signalState);
+              chd::format::SignalState signalState,
+              std::optional<int32_t> blackLevelOverride = std::nullopt,
+              chd::format::FrameLayout layoutOverride = chd::format::FrameLayout::UNKNOWN,
+              std::optional<int64_t> declaredFrames = std::nullopt,
+              std::optional<bool> subcarrierLockedOverride = std::nullopt);
 
     void close();
 
@@ -59,6 +72,7 @@ public:
     const chd::metadata::LdDecodeMetaData::VideoParameters &parameters() const override;
     chd::format::SignalState     signalState()    const override;
     chd::format::SampleEncoding  sampleEncoding() const override;
+    chd::format::FrameLayout     frameLayout()    const override;
 
     bool isSourceValid() const override;
     int32_t getNumberOfAvailableFields() const override;
@@ -85,6 +99,12 @@ private:
     int32_t fieldByteSize = 0;       // fieldSamples * 2
 
     int32_t numFields = 0;
+
+    // Container addressing resolved at open time. For FRAME_NATIVE, fields
+    // are conformed onto the field raster from whole native frames.
+    chd::format::FrameLayout layout = chd::format::FrameLayout::FIELD_RASTER;
+    const chd::format::VideoStandardPreset *preset = nullptr;
+    int32_t bytesPerSample = 2;
 
     chd::format::VideoStandard          standardEnum;
     chd::format::SampleEncoding         encoding;

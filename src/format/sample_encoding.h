@@ -26,9 +26,10 @@ namespace chd::format {
 enum class SampleEncoding {
     CVBS_U10_4FSC = 0,   // signed int16, 10-bit values 0..1023 stored directly
     CVBS_U16_4FSC,       // unsigned int16, 10-bit values shifted left 6 bits (×64)
+    CVBS_TPG21_4FSC,     // signed int16 with TPG21 offset: int16 = (val10 - 508) × 64
+    CVBS_S16_FSC,        // signed int16, blanking-centred: int16 = (val10 - blanking10) × 32
     RAW_S16_28M,         // raw ADC at ~28.6 MHz, signed int16 full range
     RAW_S16_40M,         // raw ADC at 40 MHz, signed int16 full range
-    CVBS_TPG21_4FSC,     // signed int16 with TPG21 offset: int16 = (val10 - 508) × 64
 };
 
 struct SampleEncodingPreset {
@@ -61,20 +62,26 @@ const SampleEncodingPreset &getSampleEncoding(SampleEncoding encoding);
 // (RAW_S16_28M, RAW_S16_40M) pass through unchanged — the decoders will
 // reject them via signal-state checking.
 //
+// blanking10 is the Video Standard Preset's 10-bit blanking level; only
+// CVBS_S16_FSC consumes it (its stored offset is standard-derived, 256 for
+// PAL and 240 for NTSC/PAL_M, unlike TPG21's fixed device constant).
+//
 // For luma samples in YC files, the same function is used (luma uses the
 // same level table as composite per the spec).
-uint16_t convertCompositeSampleToCanonical(SampleEncoding encoding, int16_t raw);
+uint16_t convertCompositeSampleToCanonical(SampleEncoding encoding, int16_t raw,
+                                           int32_t blanking10);
 
 // Convert one on-disk chroma sample word (only meaningful for .c files in
-// CVBS_U10_4FSC / CVBS_U16_4FSC / CVBS_TPG21_4FSC encodings) into the
-// canonical decoder-pipeline domain *as a signed excursion around zero,
-// scaled to ×64*.
+// encodings with a defined amplitude mapping) into the canonical
+// decoder-pipeline domain *as a signed excursion around zero, scaled to
+// ×64*. blanking10 as above.
 //
 // Chroma in YC files is centred at 10-bit value 512: the spec says
 // "Chroma excursion is represented as oscillation around this centre point"
 // (sample-encoding-presets.md). The returned int16_t is the centred 10-bit
 // value × 64.
-int16_t convertChromaSampleToCenteredCanonical(SampleEncoding encoding, int16_t raw);
+int16_t convertChromaSampleToCenteredCanonical(SampleEncoding encoding, int16_t raw,
+                                               int32_t blanking10);
 
 }  // namespace chd::format
 
