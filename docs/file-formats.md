@@ -263,6 +263,19 @@ windows, since serving it correctly needs a row re-cut (pending upstream
 clarification of the stored frame's origin). The selected alignment is
 visible through the active window `chd_video_get_info` reports.
 
+NTSC needs one more per-field fact than the sidecar can express: the
+RS-170 four-field sequence position (an ld-decode `.tbc` records it as
+each field's `fieldPhaseID`; the comb decoder derives every line's chroma
+sign from it). CVBS opens measure it from the signal: each field's colour
+burst is demodulated over a dozen post-VBI lines with the decoder's own
+quadrature convention, and the resulting polarity pair positions the
+frame's two fields in the four-field sequence. A field without a
+measurable burst (chroma-free content, raw encodings, a capture whose
+burst is not locked to the sample lattice) keeps an unknown phase, with a
+warning, and NTSC frames built from it may decode with inverted chroma.
+PAL and PAL-M decoders detect burst phase per line and need no field-level
+measurement.
+
 ### Sample encodings libchromadec accepts
 
 The library recognises the CVBS sample encodings below. An ld-decode `.tbc`

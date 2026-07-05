@@ -367,6 +367,58 @@ HorizontalAlignment resolveFrameNativeAlignment(const VideoStandardPreset &prese
     return HorizontalAlignment::SYNC_START;
 }
 
+std::optional<bool> measureNtscFieldBurstPolarity(const uint16_t *rows,
+                                                  int32_t firstRow,
+                                                  int32_t numRows,
+                                                  int32_t rowWidth,
+                                                  int32_t burstStart,
+                                                  int32_t burstEnd,
+                                                  int32_t blanking16bIre,
+                                                  int32_t white16bIre)
+{
+    // Quadrature-sum the burst with the same per-sample sign pattern the NTSC
+    // comb's splitIQ uses (h%4 -> +Q, -I, -Q, +I), giving the burst vector in
+    // the comb's I/Q frame for an un-negated (linePhase == false) line. On a
+    // correctly phased line that vector is the burst's 180-degree vectorscope
+    // angle projected onto the I/Q axes at +123 and +33 degrees.
+    constexpr double kBurstRefI = 0.5446;   // cos(180 - 123 deg)
+    constexpr double kBurstRefQ = -0.8387;  // cos(180 - 33 deg)
+    // Reject lines whose burst vector is shorter than 5 IRE: blank synthetic
+    // data, chroma-free content, or amplitude scales that carry no burst.
+    const double minMagnitude = 5.0 * (white16bIre - blanking16bIre) / 100.0;
+
+    int32_t votesPositive = 0;
+    int32_t votesValid = 0;
+    for (int32_t row = 0; row < numRows; ++row) {
+        const uint16_t *r = rows + static_cast<int64_t>(row) * rowWidth;
+        double sums[4] = {0.0, 0.0, 0.0, 0.0};
+        int32_t counts[4] = {0, 0, 0, 0};
+        for (int32_t h = burstStart; h < burstEnd && h < rowWidth; ++h) {
+            sums[h % 4] += r[h] - blanking16bIre;
+            counts[h % 4]++;
+        }
+        if (counts[0] == 0 || counts[1] == 0 || counts[2] == 0 || counts[3] == 0) {
+            return std::nullopt;
+        }
+        const double i = sums[3] / counts[3] - sums[1] / counts[1];
+        const double q = sums[0] / counts[0] - sums[2] / counts[2];
+        if (std::sqrt(i * i + q * q) < minMagnitude) continue;
+        const bool linePhase = (kBurstRefI * i + kBurstRefQ * q) < 0.0;
+        // Burst flips 180 degrees per line, so translate each line's phase to
+        // the field-level flag via the field-line parity.
+        const bool positiveOnEvenLines =
+            (((firstRow + row) % 2) == 0) ? linePhase : !linePhase;
+        if (positiveOnEvenLines) votesPositive++;
+        votesValid++;
+    }
+    if (votesValid < 4) return std::nullopt;
+    // A lattice-locked burst votes unanimously; anything mixed is not a
+    // signal this measurement can classify.
+    if (votesPositive * 4 >= votesValid * 3) return true;
+    if ((votesValid - votesPositive) * 4 >= votesValid * 3) return false;
+    return std::nullopt;
+}
+
 FrameNativeFieldRead planFrameNativeFieldRead(const VideoStandardPreset &preset,
                                               int32_t fieldIndex,
                                               int32_t firstRow0,

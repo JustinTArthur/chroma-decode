@@ -751,6 +751,51 @@ int testMeasureRowZeroH() {
     return 0;
 }
 
+int testMeasureNtscFieldBurstPolarity() {
+    using namespace chd::format;
+    constexpr int32_t width = 910, firstRow = 30, nRows = 12;
+    constexpr int32_t blanking = 240 * 64, white = 800 * 64;
+    constexpr int32_t burstStart = 75, burstEnd = 95;
+
+    // Burst quad per h%4 as measured from the TPG21 hardware reference
+    // capture (frame 0, field 1: the polarity the comb decodes correctly
+    // with positive-on-even-lines == true). Sign alternates per line.
+    auto makeField = [&](bool negate) {
+        std::vector<uint16_t> rows(static_cast<size_t>(width) * nRows,
+                                   static_cast<uint16_t>(blanking));
+        constexpr int32_t quad[4] = {94, 60, -94, -60};
+        for (int32_t r = 0; r < nRows; ++r) {
+            const int32_t lineSign = (((firstRow + r) % 2) == 0) ? 1 : -1;
+            const int32_t sign = negate ? -lineSign : lineSign;
+            for (int32_t h = burstStart; h < burstEnd; ++h) {
+                rows[static_cast<size_t>(r) * width + h] =
+                    static_cast<uint16_t>(blanking + sign * quad[h % 4] * 64);
+            }
+        }
+        return rows;
+    };
+
+    const auto fieldA = makeField(false);
+    auto p = measureNtscFieldBurstPolarity(fieldA.data(), firstRow, nRows, width,
+                                           burstStart, burstEnd, blanking, white);
+    REQUIRE(p.has_value());
+    REQUIRE(*p == true);
+
+    const auto fieldB = makeField(true);
+    p = measureNtscFieldBurstPolarity(fieldB.data(), firstRow, nRows, width,
+                                      burstStart, burstEnd, blanking, white);
+    REQUIRE(p.has_value());
+    REQUIRE(*p == false);
+
+    // Burst-free rows: unmeasurable, not a guess.
+    const std::vector<uint16_t> flatField(static_cast<size_t>(width) * nRows,
+                                          static_cast<uint16_t>(blanking));
+    REQUIRE(!measureNtscFieldBurstPolarity(flatField.data(), firstRow, nRows, width,
+                                           burstStart, burstEnd, blanking, white)
+                 .has_value());
+    return 0;
+}
+
 int testLayoutOverrideMerge() {
     // Force FIELD_RASTER onto a native-sized NTSC file through the override,
     // with the sidecar still supplying the preset triple.
@@ -850,6 +895,7 @@ int main() {
     rc |= testSubcarrierLockDerivationAndMerge();
     rc |= testS16FscAndSchemaV8();
     rc |= testMeasureRowZeroH();
+    rc |= testMeasureNtscFieldBurstPolarity();
     rc |= testResolveFrameNativeAlignment();
     rc |= testFrameNativeSyncStartWindows();
     rc |= testLayoutOverrideMerge();

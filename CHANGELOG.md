@@ -23,6 +23,18 @@ All notable changes to this project will be documented in this file. Format:
   upstream clarification of the frame origin (a correct serve needs a row
   re-cut). No new ABI surface: the selected alignment is visible through
   the reported `active_video_start` / `active_video_end`.
+- **NTSC field phase measurement for CVBS opens.** The `.meta` schema has
+  no per-field records, so synthesized metadata left every field's RS-170
+  four-field sequence position unknown and the NTSC comb assumed the same
+  burst polarity for both fields of a frame: one field per frame decoded
+  with chroma inverted 180 degrees, alternating with the colour frame.
+  Both CVBS open paths now measure each field's burst polarity (a dozen
+  post-VBI lines, quadrature-summed with the comb's own demodulation
+  convention) and position each frame's field pair in the sequence.
+  Fields without a measurable burst keep the unknown phase and warn.
+  Validated end-to-end on the TPG21 hardware reference captures: every
+  bar on every field of both NTSC colour frames decodes within 0.5% of
+  the ideal 75% values, and the PAL captures are unchanged.
 - **`CVBS_S16_FSC` sample encoding and `.meta` schema `user_version` 8.**
   The spec's blanking-centred signed encoding (int16 = (val10 − blanking10)
   × 32, offset per the standard: 256 PAL, 240 NTSC/PAL-M) decodes for

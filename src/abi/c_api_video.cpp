@@ -3,9 +3,12 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "../common/error_state.h"
+#include "../common/log.h"
 #include "../format/sample_encoding.h"
 #include "../format/signal_state.h"
 #include "../format/video_standards.h"
@@ -33,8 +36,52 @@ chd_status_t set_error(const std::string &msg) {
 // DropoutCorrector both consume). Generates alternating is-first-field
 // metadata matching the ld-decode convention so 1-based frame
 // number → field number translation works.
+// NTSC only: the comb decoder derives each line's chroma sign from the
+// four-field RS-170 sequence position, so every field needs a measured
+// fieldPhaseID (an ld-decode `.tbc` carries one per field; CVBS files don't).
+// PAL decoders detect burst phase per line and need none.
+std::vector<int32_t> measureNtscFieldPhaseIds(chd::reader::ISource &src, int32_t nf) {
+    std::vector<int32_t> ids(static_cast<size_t>(nf), -1);
+    const auto &vp = src.parameters();
+    if (vp.system != chd::metadata::NTSC) return ids;
+    if (!chd::format::getSampleEncoding(src.sampleEncoding()).hasStandardAmplitudeMapping) {
+        return ids;
+    }
+
+    // Post-VBI field lines with a stable burst, inside every field of the
+    // shortest servable capture.
+    constexpr int32_t kFirstRow = 30;
+    constexpr int32_t kNumRows = 12;
+    std::vector<std::optional<bool>> polarity(static_cast<size_t>(nf));
+    for (int32_t i = 0; i < nf; i++) {
+        const auto rows = src.getVideoField(i + 1, kFirstRow + 1, kFirstRow + kNumRows);
+        polarity[i] = chd::format::measureNtscFieldBurstPolarity(
+            rows.data(), kFirstRow, kNumRows, vp.fieldWidth, vp.colourBurstStart,
+            vp.colourBurstEnd, vp.blanking16bIre, vp.white16bIre);
+    }
+
+    int32_t assigned = 0;
+    for (int32_t i = 0; i + 1 < nf; i += 2) {
+        if (!polarity[i].has_value() || !polarity[i + 1].has_value()) continue;
+        // RS-170: fields 1 and 4 carry positive burst phase on even field
+        // lines, so a frame's (first, second) polarity pair fixes its
+        // position in the four-field sequence.
+        const bool p1 = *polarity[i];
+        const bool p2 = *polarity[i + 1];
+        ids[i]     = p1 ? (p2 ? 4 : 1) : (p2 ? 3 : 2);
+        ids[i + 1] = p1 ? (p2 ? 1 : 2) : (p2 ? 4 : 3);
+        assigned += 2;
+    }
+    if (assigned > 0 && assigned < nf) {
+        chd::log::warn() << "synthesizeMetadata: NTSC burst phase measurable on only"
+                         << assigned << "of" << nf << "fields; unmeasured frames keep"
+                         << "an unknown field phase and may decode with inverted chroma";
+    }
+    return ids;
+}
+
 std::unique_ptr<chd::metadata::LdDecodeMetaData>
-synthesizeMetadata(const chd::reader::ISource &src, bool firstFieldFirst) {
+synthesizeMetadata(chd::reader::ISource &src, bool firstFieldFirst) {
     auto meta = std::make_unique<chd::metadata::LdDecodeMetaData>();
     meta->setVideoParameters(src.parameters());
     meta->setIsFirstFieldFirst(firstFieldFirst);
@@ -42,10 +89,12 @@ synthesizeMetadata(const chd::reader::ISource &src, bool firstFieldFirst) {
     const int32_t nf = src.getNumberOfAvailableFields();
     if (nf <= 0) return meta;
 
+    const std::vector<int32_t> phaseIds = measureNtscFieldPhaseIds(src, nf);
     for (int32_t i = 0; i < nf; i++) {
         chd::metadata::LdDecodeMetaData::Field f;
         f.seqNo = i + 1;
         f.isFirstField = (i % 2 == 0) == firstFieldFirst;
+        f.fieldPhaseID = phaseIds[i];
         meta->appendField(f);
     }
     return meta;

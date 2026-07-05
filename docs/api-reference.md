@@ -345,6 +345,11 @@ Open a single-file composite capture: an ld-decode `.tbc` or a CVBS
   are read from the override. See the
   [which-fields-to-set matrix](integration-guide.md#which-fields-to-set).
 
+CVBS opens also measure signal properties the `.meta` sidecar cannot express:
+the horizontal alignment of frame-native rows, and for NTSC each field's
+four-field sequence position from its colour burst. See
+[file formats](file-formats.md#container-layouts) for both.
+
 ### chd_video_open_yc
 
 ```c

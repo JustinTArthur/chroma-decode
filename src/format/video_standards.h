@@ -214,6 +214,22 @@ HorizontalAlignment resolveFrameNativeAlignment(const VideoStandardPreset &prese
                                                 const std::optional<double> &measuredZeroH,
                                                 const char *sourceName);
 
+// Measure one NTSC field's colour burst polarity from canonical-domain
+// samples: the RS-170 "positive burst phase on even field lines" flag that
+// positions the field within the four-field sequence. `rows` holds numRows
+// consecutive field lines starting at 0-based field line firstRow, each
+// rowWidth samples, with the burst gated by [burstStart, burstEnd) sample
+// positions. Returns nullopt when the burst is too weak or the per-line
+// votes disagree (no burst, non-4fsc data, or a lattice-unlocked capture).
+std::optional<bool> measureNtscFieldBurstPolarity(const uint16_t *rows,
+                                                  int32_t firstRow,
+                                                  int32_t numRows,
+                                                  int32_t rowWidth,
+                                                  int32_t burstStart,
+                                                  int32_t burstEnd,
+                                                  int32_t blanking16bIre,
+                                                  int32_t white16bIre);
+
 }  // namespace chd::format
 
 #endif  // CHD_FORMAT_VIDEO_STANDARDS_H
