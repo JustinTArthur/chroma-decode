@@ -11,17 +11,39 @@ libchromadec follows [Semantic Versioning](https://semver.org).
 
 ## After 1.0
 
-- ABI stable across **major** versions: `1.x.y → 1.(x+1).0` is
+- ABI stable within a **major** version: `1.x.y → 1.(x+1).0` is
   binary-compatible.
 - ABI may break only at major-version boundaries: `1.x.y → 2.0.0` is an ABI
   break.
+
+## SONAME
+
+The shared library's soversion tracks the version at which the ABI is allowed to
+break, which is the **minor** before 1.0 and the **major** from 1.0 on. It is
+derived from the project version rather than written down separately, so the two
+cannot drift:
+
+|Project version|Library soversion|
+|---|---|
+|`0.1.x`|`0.1`|
+|`0.2.x`|`0.2`|
+|`1.x.y`|`1`|
+|`2.x.y`|`2`|
+
+So an ABI-breaking release always lands under a SONAME the previous release's
+binaries will not load, instead of silently satisfying them. On macOS the same
+value reaches the install name (`libchromadec.0.1.dylib`) and the Mach-O
+compatibility version, which Meson derives from the soversion.
 
 ## Symbol export discipline
 
 Only symbols matching `chd_*` are exported.
 
-- ELF (Linux, *BSD): enforced by the version script at `meson/chromadec.map`.
-- macOS: enforced by `meson/chromadec.exports`.
+- ELF (Linux, *BSD): enforced by a version script generated from
+  `meson/chromadec.map.in`. Its node (`CHROMADEC_0.1`) carries the same ABI
+  version as the soversion.
+- macOS: enforced by `meson/chromadec.exports`. Mach-O has no symbol
+  versioning, so this is a plain symbol list.
 - Windows: a `.def` file is added in a follow-up.
 
 Any new public function must:

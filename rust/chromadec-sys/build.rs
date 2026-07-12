@@ -4,12 +4,39 @@
 //
 // Discovery order:
 //   1. CHROMADEC_LIB_DIR + CHROMADEC_INCLUDE_DIR environment variables
-//      (CHROMADEC_STATIC=1 selects the static archive).
+//      (CHROMADEC_STATIC=1 selects the static archive). An explicit override,
+//      so it is trusted as-is and the ABI range below is not enforced.
 //   2. pkg-config probe for "chromadec" (also honours a Meson devenv /
-//      meson-uninstalled PKG_CONFIG_PATH).
+//      meson-uninstalled PKG_CONFIG_PATH), constrained to the ABI-compatible
+//      version range.
 
 use std::env;
 use std::path::PathBuf;
+
+/// The range of libchromadec versions these bindings are ABI-compatible with,
+/// as `[lower, upper)`.
+///
+/// libchromadec breaks its ABI at the minor before 1.0 and at the major from
+/// 1.0 on, so a version outside this range is one whose layouts and enum
+/// numbering the generated bindings cannot be trusted against. The range is
+/// derived from this crate's own version, which tracks the C library's, so the
+/// bound cannot be left behind when the version moves.
+fn abi_range() -> (String, String) {
+    let major: u64 = env::var("CARGO_PKG_VERSION_MAJOR")
+        .expect("CARGO_PKG_VERSION_MAJOR is set by cargo")
+        .parse()
+        .expect("CARGO_PKG_VERSION_MAJOR is numeric");
+    let minor: u64 = env::var("CARGO_PKG_VERSION_MINOR")
+        .expect("CARGO_PKG_VERSION_MINOR is set by cargo")
+        .parse()
+        .expect("CARGO_PKG_VERSION_MINOR is numeric");
+
+    if major == 0 {
+        (format!("0.{minor}.0"), format!("0.{}.0", minor + 1))
+    } else {
+        (format!("{major}.0.0"), format!("{}.0.0", major + 1))
+    }
+}
 
 fn main() {
     println!("cargo:rerun-if-env-changed=CHROMADEC_LIB_DIR");
@@ -29,15 +56,20 @@ fn main() {
         println!("cargo:rustc-link-lib={kind}=chromadec");
         include_paths.push(PathBuf::from(include_dir));
     } else {
+        let (abi_low, abi_high) = abi_range();
         let lib = pkg_config::Config::new()
-            .atleast_version("0.1.0")
+            .range_version(abi_low.as_str()..abi_high.as_str())
             .statik(statik)
             .probe("chromadec")
-            .expect(
-                "libchromadec not found via pkg-config; install it, point PKG_CONFIG_PATH at \
-                 a build tree's meson-uninstalled directory, or set CHROMADEC_LIB_DIR and \
-                 CHROMADEC_INCLUDE_DIR",
-            );
+            .unwrap_or_else(|e| {
+                panic!(
+                    "no libchromadec in [{abi_low}, {abi_high}) found via pkg-config: {e}\n\
+                     These bindings are ABI-compatible only with that range. Install a matching \
+                     libchromadec, point PKG_CONFIG_PATH at a build tree's meson-uninstalled \
+                     directory, or set CHROMADEC_LIB_DIR and CHROMADEC_INCLUDE_DIR (which skip \
+                     the version check)."
+                )
+            });
         include_paths.extend(lib.include_paths);
     }
 

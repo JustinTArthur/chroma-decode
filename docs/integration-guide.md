@@ -110,6 +110,19 @@ These must be resolvable at that final link:
   that SQLite is folded into `libchromadec.a` and you need nothing for
   it.
 
+When SQLite is folded in like that, its code is redistributed as part of your
+binary. The install records what went in: `share/licenses/chromadec/` carries
+the licence texts plus a `depmf.json` manifest naming every subproject absorbed
+into the archive and its licence. Point `-Dlicensedir=` somewhere else, or set
+it empty to skip installing them.
+
+## Relocating an install tree
+
+`chromadec.pc` is generated relocatable: its `prefix` is derived from the
+`.pc` file's own location rather than baked in as an absolute path. Moving or
+vendoring a built install tree therefore keeps it working, with no rewriting of
+`prefix=` by hand, as long as the internal layout is preserved.
+
 ## Consuming as a Meson subproject
 
 The linking examples above assume libchromadec is already installed to a prefix
@@ -151,6 +164,20 @@ to your `meson.build`.
     **your** environment; install them as you would for a standalone build. To
     force the SQLite fallback even when a system copy exists, configure with
     `--force-fallback-for=sqlite3`.
+
+Every libchromadec option, and every Meson built-in, can be set for the
+subproject alone by prefixing it with the subproject name, so a vendored build
+is tuned without touching your own settings:
+
+```sh
+meson setup build -Dchromadec:with_onnxruntime=false -Dchromadec:optimization=3
+```
+
+That is also how you pick which half of the library a vendored build links.
+libchromadec builds both a shared object and a static archive
+(`default_library=both`), and Meson hands dependents the shared one by default.
+`-Ddefault_both_libraries=static` selects the archive instead, which is the
+usual choice when you are producing a single self-contained binary.
 
 ## A minimal decode
 

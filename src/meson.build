@@ -112,11 +112,16 @@ if has_rocm
   if get_option('onnxruntime_root') != ''
     rocm_compile_args += '-I' + get_option('onnxruntime_root') / 'include'
   endif
+  # hipcc writes the header dependencies with -MD -MF; without a depfile Meson
+  # would treat the object as depending on the .cpp alone and editing any header
+  # it includes would leave a stale object behind.
   hip_pipeline_o = custom_target(
     'nntransform3d_pipeline_hip',
     input: 'decoders/nntransform3d/nntransform3d_pipeline_hip.cpp',
     output: 'nntransform3d_pipeline_hip.o',
-    command: [hipcc] + rocm_compile_args + ['@INPUT@', '-o', '@OUTPUT@'],
+    depfile: 'nntransform3d_pipeline_hip.d',
+    command: [hipcc] + rocm_compile_args
+             + ['-MD', '-MF', '@DEPFILE@', '@INPUT@', '-o', '@OUTPUT@'],
   )
   chromadec_sources += hip_pipeline_o
   chromadec_deps += [hipfft_dep, hip_rt_dep]
@@ -125,8 +130,9 @@ endif
 
 # Native CoreML path (macOS). The .mm sources are compiled by the `objcpp`
 # language; they share the same defines + include dirs as the C++ sources, so
-# objcpp_args mirrors cpp_args (plus -std and ARC). Must come after the blocks
-# above so chromadec_cpp_args is fully populated before we copy it.
+# objcpp_args mirrors cpp_args (plus ARC). The C++ standard comes from the
+# project-wide cpp_std, which objcpp shares. Must come after the blocks above so
+# chromadec_cpp_args is fully populated before we copy it.
 chromadec_objcpp_args = []
 if has_coreml
   chromadec_sources += files(
@@ -135,19 +141,34 @@ if has_coreml
   )
   chromadec_deps += [coreml_frameworks]
   chromadec_cpp_args += ['-DCHD_WITH_COREML=1']
-  chromadec_objcpp_args = chromadec_cpp_args + ['-std=c++17', '-fobjc-arc']
+  chromadec_objcpp_args = chromadec_cpp_args + ['-fobjc-arc']
 endif
 
 # Symbol export discipline:
-# - On ELF (Linux), restrict exported symbols via a version script.
-# - On macOS, restrict via -exported_symbols_list.
+# - On ELF (Linux), restrict exported symbols via a version script, whose node
+#   name carries chromadec_abi (configured from meson/chromadec.map.in).
+# - On macOS, restrict via -exported_symbols_list. Mach-O has no symbol
+#   versioning, so the plain symbol list needs no configuring; the ABI version
+#   reaches it through the install_name, which embeds the soversion.
 # - On Windows, a .def file will be added in a follow-up.
+#
+# The filter file is named inside a raw link_args string, which Meson does not
+# scan for filenames, so it is also passed as link_depends to make editing the
+# exported-symbol set relink the library.
 link_args = []
+symbol_filter = []
 host_os = host_machine.system()
 if host_os == 'linux' or host_os.endswith('bsd')
-  link_args += ['-Wl,--version-script,' + meson.project_source_root() / 'meson/chromadec.map']
+  symbol_filter = configure_file(
+    input:         chromadec_map_in,
+    output:        'chromadec.map',
+    configuration: {'CHROMADEC_ABI': chromadec_abi})
+  link_args += ['-Wl,--version-script,' +
+                meson.current_build_dir() / 'chromadec.map']
 elif host_os == 'darwin'
-  link_args += ['-Wl,-exported_symbols_list,' + meson.project_source_root() / 'meson/chromadec.exports']
+  symbol_filter = chromadec_exports
+  link_args += ['-Wl,-exported_symbols_list,' +
+                meson.project_source_root() / 'meson/chromadec.exports']
 endif
 
 libchromadec = library('chromadec',
@@ -163,6 +184,9 @@ libchromadec = library('chromadec',
   # -fvisibility=hidden would hide every internal symbol *and* the C ABI
   # before the linker filter even runs.
   link_args: link_args,
+  link_depends: symbol_filter,
   install: true,
-  soversion: '0',
+  # Not the major: pre-1.0 the ABI breaks at the minor, so the SONAME has to
+  # move with it. Collapses to plain major-tracking from 1.0 on.
+  soversion: chromadec_abi,
   version: meson.project_version())

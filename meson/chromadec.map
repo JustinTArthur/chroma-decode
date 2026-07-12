@@ -1,6 +1,0 @@
-CHROMADEC_0.1 {
-  global:
-    chd_*;
-  local:
-    *;
-};

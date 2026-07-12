@@ -35,11 +35,22 @@ raw FFI.
 
 1. **`CHROMADEC_LIB_DIR` + `CHROMADEC_INCLUDE_DIR`** — explicit override. Set
    both. `CHROMADEC_STATIC=1` links the static archive instead of the shared
-   library.
+   library. Being an explicit override it is trusted as-is, so the version
+   check below does not apply: you are responsible for pointing it at a
+   compatible library.
 2. **pkg-config** — probes for `chromadec`. Point `PKG_CONFIG_PATH` at an
    installed prefix's `lib/pkgconfig`, or at a Meson build tree's
    `meson-uninstalled` directory to build against an in-tree library without
    installing.
+
+The pkg-config probe is constrained to the libchromadec versions the bindings
+are ABI-compatible with, and fails rather than binding to a library outside it.
+The range follows the C library's ABI boundary (see
+[ABI stability](abi-stability.md)): the minor before 1.0, the major from 1.0 on.
+So `chromadec-sys` 0.1.x accepts libchromadec `>= 0.1.0, < 0.2.0`, and a 1.x
+crate would accept `>= 1.0.0, < 2.0.0`. The bindings are generated from the
+headers of whatever the probe finds, so a library outside the range could
+otherwise be bound with mismatched struct layouts or enum numbering.
 
 For a shared library that is not on the system's default search path at
 runtime, set the loader path (`LD_LIBRARY_PATH` on Linux, `DYLD_LIBRARY_PATH`

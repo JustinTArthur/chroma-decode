@@ -19,8 +19,11 @@ Every function returns `CHD_E_INTERNAL`. See
 
 ## Building (once functional)
 
+Needs Meson 1.8 or newer.
+
 ```
 python -m venv .venv && source .venv/bin/activate
+pip install meson ninja
 meson setup build
 meson compile -C build
 meson test -C build

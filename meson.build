@@ -1,18 +1,49 @@
 project('chromadec', 'cpp', 'c',
         version: '0.1.0',
         license: 'GPL-3.0-or-later',
-        meson_version: '>=0.60.0',
-        default_options: [
-            'cpp_std=c++17',
-            'c_std=c11',
-            'cuda_std=c++17',
-            'warning_level=2',
-            'default_library=both',
-            'b_ndebug=if-release',
-        ])
+        license_files: 'LICENSE',
+        meson_version: '>=1.8.0',
+        default_options: {
+            # cpp_std also drives the Objective-C++ sources: since Meson 1.8 the
+            # objcpp compiler shares the C++ standard option.
+            'cpp_std': 'c++17',
+            'c_std': 'c11',
+            'cuda_std': 'c++17',
+            'warning_level': '2',
+            'default_library': 'both',
+            'b_ndebug': 'if-release',
+            # Compute the .pc file's `prefix` relative to where the file is
+            # installed, so a relocated or vendored install tree resolves without
+            # anyone rewriting the prefix by hand.
+            'pkgconfig.relocatable': true,
+            # A consumer static-linking libchromadec absorbs the bundled SQLite
+            # (see the link_whole below), so install the licence texts plus a
+            # manifest naming every subproject that ended up in the archive.
+            # Packagers can redirect or empty this.
+            'licensedir': 'share/licenses/chromadec',
+        })
 
 cpp = meson.get_compiler('cpp')
 cc  = meson.get_compiler('c')
+
+# ── ABI version ───────────────────────────────────────────────────────────────
+# The version at which the ABI is allowed to break: the minor before 1.0, the
+# major from 1.0 on (docs/abi-stability.md). Both the shared library's soversion
+# and the ELF version-script node track it, so a breaking release lands under a
+# SONAME that the previous release's consumers will not load. Derived rather than
+# written down twice, because the two drifting apart is the failure this guards
+# against.
+version_components = meson.project_version().split('.')
+if version_components[0] == '0'
+  chromadec_abi = version_components[0] + '.' + version_components[1]
+else
+  chromadec_abi = version_components[0]
+endif
+
+# Consumed in src/meson.build. files() rejects '..', so the symbol-filter inputs
+# are named here, where meson/ is a child of the source root.
+chromadec_map_in  = files('meson/chromadec.map.in')
+chromadec_exports = files('meson/chromadec.exports')
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 threads_dep = dependency('threads')
@@ -68,9 +99,11 @@ endif
 # of this flag: a session can still attach the CUDA / TensorRT EP, the
 # library just can't take the device-resident pipeline shortcut without
 # this build option — every inference round-trips through host memory.
-cuda_opt = get_option('with_cuda')
+cuda_opt = get_option('with_cuda').disable_if(
+  not has_ort,
+  error_message: 'the CUDA pipeline feeds ONNX Runtime IoBinding and needs the ORT backend')
 has_cuda = false
-if not cuda_opt.disabled() and has_ort
+if not cuda_opt.disabled()
   cuda_dep = dependency('cuda',
                         version: '>=11.0',
                         modules: ['cudart', 'cufft'],
@@ -88,9 +121,14 @@ endif
 # Meson has no first-class HIP language, so the HIP pipeline source is
 # compiled by hipcc via a custom_target in src/meson.build rather than
 # being listed alongside the C++ sources. ROCm is Linux-only.
-rocm_opt = get_option('with_rocm')
+rocm_opt = get_option('with_rocm').disable_if(
+  not has_ort,
+  error_message: 'the HIP pipeline feeds ONNX Runtime IoBinding and needs the ORT backend'
+).disable_if(
+  host_machine.system() != 'linux',
+  error_message: 'ROCm is Linux-only')
 has_rocm = false
-if not rocm_opt.disabled() and has_ort and host_machine.system() == 'linux'
+if not rocm_opt.disabled()
   hipcc = find_program('hipcc', required: rocm_opt)
   # Always include /opt/rocm (AMD's apt/dnf default on Ubuntu/RHEL/SLES);
   # CMake silently ignores it on distros installing under /usr. User-set
@@ -128,9 +166,11 @@ endif
 # Runtime. `with_onnxruntime=false -Dwith_coreml=enabled` yields a CoreML-only
 # library on macOS. (It also sits alongside the ORT CoreML EP when ORT is
 # present, adding the native .mlpackage path the EP can't accelerate.)
-coreml_opt = get_option('with_coreml')
+coreml_opt = get_option('with_coreml').disable_if(
+  host_machine.system() != 'darwin',
+  error_message: 'the native CoreML backend is macOS-only')
 has_coreml = false
-if not coreml_opt.disabled() and host_machine.system() == 'darwin'
+if not coreml_opt.disabled()
   objcpp_ok = add_languages('objcpp', required: coreml_opt, native: false)
   # MetalPerformanceShadersGraph carries the GPU FFT used by nnTransform3D
   # Layer 2; CoreML + Foundation + Metal cover model load + buffer interop.
@@ -141,10 +181,6 @@ if not coreml_opt.disabled() and host_machine.system() == 'darwin'
   if objcpp_ok and coreml_frameworks.found()
     has_coreml = true
   endif
-elif coreml_opt.enabled()
-  # Explicit request on a non-macOS host can't be satisfied — fail loudly
-  # rather than silently dropping it.
-  error('with_coreml=enabled but the native CoreML backend is macOS-only.')
 endif
 
 # The NN framework (the chd::nn::InferenceEngine interface, the ldzeug and

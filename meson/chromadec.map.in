@@ -1,0 +1,9 @@
+/* Generated from chromadec.map.in by meson configure_file().
+   The node name carries the ABI version, so a breaking release exports its
+   symbols under a tag the previous release's binaries did not bind to. */
+CHROMADEC_@CHROMADEC_ABI@ {
+  global:
+    chd_*;
+  local:
+    *;
+};
