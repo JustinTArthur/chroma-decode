@@ -68,6 +68,13 @@ public:
 
     void close();
 
+    // Re-declare the colour standard over the opened preset's, for captures
+    // the CVBS spec cannot yet name (SECAM stored under the byte-compatible
+    // 625/50 PAL preset). Geometry is untouched; a SECAM re-declaration also
+    // clears the subcarrier-lock flag (line-sequential FM chroma has no QAM
+    // subcarrier to lock to).
+    void redeclareVideoSystem(chd::metadata::VideoSystem system, double fSC);
+
     // ISource implementation -------------------------------------------------
     const chd::metadata::LdDecodeMetaData::VideoParameters &parameters() const override;
     chd::format::SignalState     signalState()    const override;

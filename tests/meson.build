@@ -21,6 +21,43 @@ test_tbc_json_reader = executable('test_tbc_json_reader',
   link_with: libchromadec)
 test('tbc_json_reader', test_tbc_json_reader)
 
+# SECAM video-system plumbing: SECAM/ME-SECAM name parsing, system defaults,
+# and the open-time colour-standard re-declaration (a vhs-decode ME-SECAM
+# sidecar says PAL). Links the static lib for parseVideoSystemName /
+# LdDecodeMetaData access.
+test_secam_metadata = executable('test_secam_metadata',
+  'unit/test_secam_metadata.cpp',
+  include_directories: [public_inc, version_inc],
+  link_with: libchromadec.get_static_lib(),
+  dependencies: [sqlite3_dep, threads_dep, fftw3_dep])
+test('secam_metadata', test_secam_metadata)
+
+# 4:4:0 output paths and the line-sequential frame accessors: OutputWriter
+# convert440/convertToFloat440 geometry + row provenance with synthetic
+# component frames, the chd_frame plane-info/row-component/ident accessors,
+# and the SECAM commit-time output-format gating. Static lib for internal
+# access; CHD_WITH_NN must match the library build (handles.h layout).
+test_secam_output_abi = executable('test_secam_output_abi',
+  'unit/test_secam_output_abi.cpp',
+  include_directories: [public_inc, version_inc],
+  cpp_args: has_nn ? ['-DCHD_WITH_NN=1'] : [],
+  link_with: libchromadec.get_static_lib(),
+  dependencies: [sqlite3_dep, threads_dep, fftw3_dep])
+test('secam_output_abi', test_secam_output_abi)
+
+# SECAM decoder core against the synthetic Table 4 generator (both
+# pre-corrections, ME-SECAM carrier offset, per-line AGC, porch carriers),
+# plus an end-to-end Y/C ABI decode to a 4:4:0 float frame. Static lib for
+# internal access; CHD_WITH_NN must match the library build (handles.h /
+# decoder layouts).
+test_secam_decoder = executable('test_secam_decoder',
+  'unit/test_secam_decoder.cpp',
+  include_directories: [public_inc, version_inc],
+  cpp_args: has_nn ? ['-DCHD_WITH_NN=1'] : [],
+  link_with: libchromadec.get_static_lib(),
+  dependencies: [sqlite3_dep, threads_dep, fftw3_dep])
+test('secam_decoder', test_secam_decoder)
+
 # End-to-end pipeline sanity test. Reaches into internal
 # headers (the C ABI for decode isn't wired up yet) and
 # links against the static libchromadec so internal C++ symbols are

@@ -32,16 +32,27 @@ chd_status_t chd_decoder_set_dropout(chd_decoder_t *d, const chd_dropout_opts_t 
 chd_status_t chd_decoder_get_last_dropout_stats(const chd_decoder_t *d,
                                                  chd_dropout_stats_t *out);
 
+/* Where a reported span came from. Numeric-gapped per family so future
+ * origins (extension metadata, other decoder detectors) can slot in. */
+typedef enum chd_dropout_origin {
+    CHD_DROPOUT_ORIGIN_SOURCE_METADATA     = 0,
+
+    CHD_DROPOUT_ORIGIN_DECODER_CONCEALMENT = 8
+} chd_dropout_origin_t;
+
 /* A run of dropped samples on one output row, expressed in the committed
  * active-output framing: x is half-open [x_start, x_end) within [0, output
  * width); y is a row within [0, output height). The mapping from the stored
  * field-relative dropouts honours the committed crop, padding, line overrides
  * and field order, so spans align pixel-for-pixel with frames decoded by the
- * same committed decoder. */
+ * same committed decoder. origin distinguishes upstream-flagged regions from
+ * samples the decoder itself detected and concealed (SECAM FM click
+ * concealment; present after the frame has been decoded). */
 typedef struct chd_dropout_span {
     int32_t y;
     int32_t x_start;
     int32_t x_end;
+    chd_dropout_origin_t origin;
 } chd_dropout_span_t;
 
 /* Which dropout regions a detection query reports (mutually exclusive). */

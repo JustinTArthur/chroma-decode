@@ -48,7 +48,18 @@ public:
     enum PixelFormat {
         RGB48 = 0,
         YUV444P16,
-        GRAY16
+        GRAY16,
+        YUV440P16
+    };
+
+    // Geometry of the two 4:4:0 chroma planes produced by the convert440
+    // paths, in output-frame rows. Heights differ by at most one; each
+    // plane's rows keep the frame's top-to-bottom order.
+    struct Chroma440Geometry {
+        int32_t cbHeight = 0;
+        int32_t crHeight = 0;
+        int32_t cbFirstRow = 0;
+        int32_t crFirstRow = 0;
     };
 
     // Output sample clamping mode.
@@ -99,6 +110,16 @@ public:
     // CHD_PIXEL_RGBS.
     void convertToFloatRGB(const ComponentFrame &componentFrame,
                            std::vector<float> *outPlanes) const;
+
+    // 4:4:0 paths: full-height Y plus subsampled Cb/Cr planes holding only
+    // the rows the frame's chromaRowComponents map assigns to each
+    // component, in frame order. The integer form appends [Y | Cb | Cr]
+    // into outputFrame; the float form fills outPlanes[0..2]. Both require
+    // a populated chromaRowComponents map covering the active region.
+    Chroma440Geometry convert440(const ComponentFrame &componentFrame,
+                                 OutputFrame &outputFrame) const;
+    Chroma440Geometry convertToFloat440(const ComponentFrame &componentFrame,
+                                        std::vector<float> *outPlanes) const;
 
     PixelFormat getPixelFormat() const {
         return config.pixelFormat;

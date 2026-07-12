@@ -40,22 +40,11 @@ class DecoderPool;
 
 // Abstract base class for chroma decoders.
 //
-// For each chroma decoder in ld-chroma-decoder, there is a subclass of this
-// class, and a corresponding subclass of DecoderThread -- let's say
-// SecamDecoder and SecamThread.
-//
-// main() creates an instance of SecamDecoder and passes it to DecoderPool.
-// DecoderPool calls SecamDecoder::configure with the input video parameters,
-// then calls SecamDecoder::makeThread repeatedly to populate its thread pool.
-//
-// SecamThread::run fetches input frames from DecoderPool and writes completed
-// output frames back to DecoderPool; it keeps going until there are no input
-// frames left, or until abort becomes true. If it detects that something's
-// gone wrong, it sets abort to true and returns.
-//
-// This means that you can have state shared between all the decoder threads,
-// in SecamDecoder, or specific to each thread, in SecamThread -- and
-// DecoderPool doesn't need to know anything specific about the decoder.
+// Each decoder family (comb, PalColour, SecamDecoder, ...) subclasses this
+// with per-instance configuration plus whatever scratch state its
+// decodeFrames needs. Instances are not reentrant: the C ABI builds one
+// configured instance per worker thread at commit and serialises calls into
+// each, so subclasses may keep mutable per-call scratch without locking.
 class Decoder {
 public:
     virtual ~Decoder() = default;

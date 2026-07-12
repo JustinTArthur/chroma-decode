@@ -38,6 +38,7 @@ chromadec_sources = files(
   'decoders/comb/beta_calibration.cpp',
   'decoders/comb/comb.cpp',
   'decoders/comb/ntsc_decoder.cpp',
+  'decoders/secam/secam_decoder.cpp',
   'dropout/dropout_corrector.cpp',
   'dropout/luma_filters.cpp',
   'dropout/multi_source_alignment.cpp',

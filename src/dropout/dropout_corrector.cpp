@@ -313,6 +313,13 @@ DropoutCorrector::Replacement DropoutCorrector::findReplacementLine(const std::v
         } else {
             otherFieldOffset = -1;
         }
+    } else if (videoParameters.system == chd::metadata::SECAM) {
+        // SECAM alternates the Db/Dr component per transmitted line, so the
+        // nearest line carrying the same component is 2 field lines away
+        // within a field; the first field's odd transmitted length (313)
+        // makes the adjacent line of the other field the same-component one.
+        stepAmount = 2;
+        otherFieldOffset = -1;
     } else {
         // For NTSC: [Poynton ch42 p511]
         //
@@ -489,7 +496,8 @@ void DropoutCorrector::correctDropOut(const DropOutLocation &dropOut,
         Filters filters;
         std::vector<uint16_t> lineBuf(videoParameters.fieldWidth);
         auto filterLineBuf = [&] {
-            if (videoParameters.system == chd::metadata::PAL) {
+            if (videoParameters.system == chd::metadata::PAL
+                || videoParameters.system == chd::metadata::SECAM) {
                 filters.palLumaFirFilter(lineBuf.data(), lineBuf.size());
             } else if (videoParameters.system == chd::metadata::NTSC) {
                 filters.ntscLumaFirFilter(lineBuf.data(), lineBuf.size());

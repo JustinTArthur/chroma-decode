@@ -367,6 +367,62 @@ HorizontalAlignment resolveFrameNativeAlignment(const VideoStandardPreset &prese
     return HorizontalAlignment::SYNC_START;
 }
 
+std::optional<ChromaPorchSignature> measure625ChromaPorchSignature(
+    const uint16_t *rows, int32_t numRows, int32_t rowWidth,
+    int32_t porchStart, int32_t porchEnd, double sampleRateHz,
+    int32_t blanking16bIre, int32_t white16bIre)
+{
+    // Per row, estimate the dominant porch frequency from the lag-1
+    // autocorrelation of the mean-removed window: for a near-tone,
+    // r1/r0 = cos(2*pi*f/fs). Reject rows whose porch RMS is under 1% of
+    // the blanking-to-white range (no reference carrier).
+    const double minRms = 0.01 * (white16bIre - blanking16bIre);
+    std::vector<double> freqs;
+    freqs.reserve(numRows);
+    std::vector<int32_t> parities;
+    parities.reserve(numRows);
+
+    for (int32_t row = 0; row < numRows; ++row) {
+        const uint16_t *r = rows + static_cast<int64_t>(row) * rowWidth;
+        double mean = 0.0;
+        int32_t n = 0;
+        for (int32_t x = porchStart; x < porchEnd && x < rowWidth; ++x) {
+            mean += r[x];
+            n++;
+        }
+        if (n < 16) return std::nullopt;
+        mean /= n;
+        double r0 = 0.0, r1 = 0.0;
+        double prev = 0.0;
+        bool havePrev = false;
+        for (int32_t x = porchStart; x < porchEnd && x < rowWidth; ++x) {
+            const double v = r[x] - mean;
+            r0 += v * v;
+            if (havePrev) r1 += v * prev;
+            prev = v;
+            havePrev = true;
+        }
+        if (std::sqrt(r0 / n) < minRms || r0 <= 0.0) continue;
+        const double c = std::clamp(r1 / r0, -1.0, 1.0);
+        freqs.push_back(std::acos(c) * sampleRateHz / (2.0 * M_PI));
+        parities.push_back(row & 1);
+    }
+    if (freqs.size() < 24) return std::nullopt;
+
+    double sum[2] = {0.0, 0.0};
+    int32_t count[2] = {0, 0};
+    for (size_t i = 0; i < freqs.size(); i++) {
+        sum[parities[i]] += freqs[i];
+        count[parities[i]]++;
+    }
+    if (count[0] == 0 || count[1] == 0) return std::nullopt;
+
+    ChromaPorchSignature sig;
+    sig.meanHz = (sum[0] + sum[1]) / (count[0] + count[1]);
+    sig.alternationHz = std::abs(sum[0] / count[0] - sum[1] / count[1]);
+    return sig;
+}
+
 std::optional<bool> measureNtscFieldBurstPolarity(const uint16_t *rows,
                                                   int32_t firstRow,
                                                   int32_t numRows,

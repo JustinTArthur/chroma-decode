@@ -75,11 +75,25 @@ static constexpr VideoSystemDefaults palMDefaults {
     ntscDefaults.firstActiveFrameLine, ntscDefaults.lastActiveFrameLine,
 };
 
+static constexpr VideoSystemDefaults secamDefaults {
+    SECAM,
+    "SECAM",
+    // SECAM carries FM chroma on two line-alternate subcarriers (fOB = 272*fH,
+    // fOR = 282*fH), so no single subcarrier frequency exists; the reference
+    // frequency here is the HF pre-correction ("bell") centre f0 from
+    // BT.1700 Part C Table 4. Raster geometry is shared with PAL.
+    4286000.0,
+    palDefaults.minActiveFrameLine,
+    palDefaults.firstActiveFieldLine, palDefaults.lastActiveFieldLine,
+    palDefaults.firstActiveFrameLine, palDefaults.lastActiveFrameLine,
+};
+
 // These must be in the same order as enum VideoSystem
 static constexpr VideoSystemDefaults VIDEO_SYSTEM_DEFAULTS[] = {
     palDefaults,
     ntscDefaults,
     palMDefaults,
+    secamDefaults,
 };
 
 // Return appropriate defaults for the selected video system
@@ -132,10 +146,17 @@ bool parseVideoSystemName(std::string name, VideoSystem &system)
         return true;
     }
 
+    // ME-SECAM names the PAL-circuit VHS recording method for SECAM signals;
+    // the baseband colour standard is SECAM either way.
+    if (normalisedName == "MESECAM" || normalisedName == "ME_SECAM") {
+        system = SECAM;
+        return true;
+    }
+
     // PAL-family aliases emitted/accepted by vhs-decode workflows, mapped to
     // PAL line-system defaults.
-    if (normalisedName == "SECAM" || normalisedName == "MESECAM" || normalisedName == "PALN"
-        || normalisedName == "PAL_N" || normalisedName == "405" || normalisedName == "819") {
+    if (normalisedName == "PALN" || normalisedName == "PAL_N"
+        || normalisedName == "405" || normalisedName == "819") {
         system = PAL;
         return true;
     }
@@ -745,6 +766,21 @@ void LdDecodeMetaData::initialiseVideoSystemParameters()
 void LdDecodeMetaData::processLineParameters(LdDecodeMetaData::LineParameters &lineParameters)
 {
     lineParameters.applyTo(videoParameters);
+}
+
+// Re-declare the video system, rederiving system defaults and revalidating
+// the active-line ranges against the new system's bounds
+void LdDecodeMetaData::overrideVideoSystem(VideoSystem system)
+{
+    videoParameters.system = system;
+    videoParameters.fSC = getSystemDefaults(videoParameters).fSC;
+
+    LineParameters lines;
+    lines.firstActiveFieldLine = videoParameters.firstActiveFieldLine;
+    lines.lastActiveFieldLine  = videoParameters.lastActiveFieldLine;
+    lines.firstActiveFrameLine = videoParameters.firstActiveFrameLine;
+    lines.lastActiveFrameLine  = videoParameters.lastActiveFrameLine;
+    processLineParameters(lines);
 }
 
 // Validate and apply to a set of VideoParameters

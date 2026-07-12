@@ -22,11 +22,17 @@ int32_t u16PerPixel(chd_pixel_format_t fmt) {
         case CHD_PIXEL_RGB48:        return 3;
         case CHD_PIXEL_YUV444P16:    return 1;  // planar — each plane is width samples
         case CHD_PIXEL_GRAY16:       return 1;
+        case CHD_PIXEL_YUV440P16:    return 1;
         case CHD_PIXEL_YUV444PS:     return 0;  // floats — not exposed via this getter
         case CHD_PIXEL_RGBS:         return 0;  // floats — not exposed via this getter
         case CHD_PIXEL_GRAYS:        return 0;  // floats — not exposed via this getter
+        case CHD_PIXEL_YUV440PS:     return 0;  // floats — not exposed via this getter
     }
     return 1;
+}
+
+bool isFrame440(const chd_frame_t *f) {
+    return f->format == CHD_PIXEL_YUV440P16 || f->format == CHD_PIXEL_YUV440PS;
 }
 
 }  // namespace
@@ -34,6 +40,81 @@ int32_t u16PerPixel(chd_pixel_format_t fmt) {
 chd_status_t chd_frame_get_info(const chd_frame_t *f, chd_frame_info_t *out) {
     if (f == nullptr || out == nullptr) return arg_error("chd_frame_get_info");
     *out = f->info;
+    return CHD_OK;
+}
+
+chd_status_t chd_frame_get_plane_info(const chd_frame_t *f, chd_plane_t plane,
+                                      chd_plane_info_t *out) {
+    if (f == nullptr || out == nullptr) return arg_error("chd_frame_get_plane_info");
+
+    // Which planes exist for the frame's format.
+    bool valid = false;
+    switch (f->format) {
+        case CHD_PIXEL_YUV444P16:
+        case CHD_PIXEL_YUV444PS:
+        case CHD_PIXEL_YUV440P16:
+        case CHD_PIXEL_YUV440PS:
+            valid = plane == CHD_PLANE_Y || plane == CHD_PLANE_CB || plane == CHD_PLANE_CR;
+            break;
+        case CHD_PIXEL_GRAY16:
+        case CHD_PIXEL_GRAYS:
+            valid = plane == CHD_PLANE_Y;
+            break;
+        case CHD_PIXEL_RGB48:
+        case CHD_PIXEL_RGBS:
+            valid = plane == CHD_PLANE_R || plane == CHD_PLANE_G || plane == CHD_PLANE_B;
+            break;
+    }
+    if (!valid) {
+        chd::detail::set_last_error(
+            "chd_frame_get_plane_info: plane not valid for the frame's pixel format");
+        return CHD_E_INVALID_ARG;
+    }
+
+    out->width = f->activeWidth;
+    out->height = f->outputHeight;
+    out->first_frame_row = 0;
+    if (isFrame440(f) && plane == CHD_PLANE_CB) {
+        out->height = f->chroma440.cbHeight;
+        out->first_frame_row = f->chroma440.cbFirstRow;
+    } else if (isFrame440(f) && plane == CHD_PLANE_CR) {
+        out->height = f->chroma440.crHeight;
+        out->first_frame_row = f->chroma440.crFirstRow;
+    }
+    return CHD_OK;
+}
+
+chd_status_t chd_frame_chroma_row_component(const chd_frame_t *f, int32_t frame_row,
+                                            chd_chroma_row_component_t *out) {
+    if (f == nullptr || out == nullptr) return arg_error("chd_frame_chroma_row_component");
+    if (f->rowComponent.empty()) {
+        chd::detail::set_last_error(
+            "chd_frame_chroma_row_component: frame does not carry line-sequential chroma");
+        return CHD_E_UNSUPPORTED;
+    }
+    if (frame_row < 0 || frame_row >= static_cast<int32_t>(f->rowComponent.size())) {
+        chd::detail::set_last_error("chd_frame_chroma_row_component: frame_row out of range");
+        return CHD_E_OUT_OF_RANGE;
+    }
+    const int8_t c = f->rowComponent[static_cast<size_t>(frame_row)];
+    if (c != 0 && c != 1) {
+        chd::detail::set_last_error(
+            "chd_frame_chroma_row_component: no chroma was decoded for this row");
+        return CHD_E_OUT_OF_RANGE;
+    }
+    *out = (c == 0) ? CHD_CHROMA_ROW_DB : CHD_CHROMA_ROW_DR;
+    return CHD_OK;
+}
+
+chd_status_t chd_frame_get_chroma_ident(const chd_frame_t *f,
+                                        chd_chroma_ident_report_t *out) {
+    if (f == nullptr || out == nullptr) return arg_error("chd_frame_get_chroma_ident");
+    if (!f->hasIdentReport) {
+        chd::detail::set_last_error(
+            "chd_frame_get_chroma_ident: frame does not carry line-sequential chroma");
+        return CHD_E_UNSUPPORTED;
+    }
+    *out = f->identReport;
     return CHD_OK;
 }
 
@@ -75,6 +156,24 @@ chd_status_t chd_frame_get_plane(const chd_frame_t *f, chd_plane_t plane,
             *out_stride_bytes = static_cast<ptrdiff_t>(w) * sizeof(uint16_t);
             return CHD_OK;
         }
+        case CHD_PIXEL_YUV440P16: {
+            // Layout written by OutputWriter::convert440:
+            // [Y w*h | Cb w*cbHeight | Cr w*crHeight].
+            const uint16_t *base = f->u16Plane.data();
+            switch (plane) {
+                case CHD_PLANE_Y:  *out_data = base; break;
+                case CHD_PLANE_CB: *out_data = base + static_cast<size_t>(w) * h; break;
+                case CHD_PLANE_CR:
+                    *out_data = base + static_cast<size_t>(w) * (h + f->chroma440.cbHeight);
+                    break;
+                default:
+                    chd::detail::set_last_error(
+                        "chd_frame_get_plane: plane not valid for YUV440P16");
+                    return CHD_E_INVALID_ARG;
+            }
+            *out_stride_bytes = static_cast<ptrdiff_t>(w) * sizeof(uint16_t);
+            return CHD_OK;
+        }
         case CHD_PIXEL_RGB48: {
             // Packed interleaved RGB48: each row is w * 3 u16 samples. The
             // R/G/B accessors return the same buffer with a per-channel
@@ -97,6 +196,7 @@ chd_status_t chd_frame_get_plane(const chd_frame_t *f, chd_plane_t plane,
         case CHD_PIXEL_YUV444PS:
         case CHD_PIXEL_RGBS:
         case CHD_PIXEL_GRAYS:
+        case CHD_PIXEL_YUV440PS:
             chd::detail::set_last_error(
                 "chd_frame_get_plane: use chd_frame_get_plane_float for float pixel formats");
             return CHD_E_INVALID_ARG;
@@ -113,7 +213,7 @@ chd_status_t chd_frame_get_plane_float(const chd_frame_t *f, chd_plane_t plane,
         return arg_error("chd_frame_get_plane_float");
     }
     if (f->format != CHD_PIXEL_YUV444PS && f->format != CHD_PIXEL_GRAYS
-        && f->format != CHD_PIXEL_RGBS) {
+        && f->format != CHD_PIXEL_RGBS && f->format != CHD_PIXEL_YUV440PS) {
         chd::detail::set_last_error(
             "chd_frame_get_plane_float: frame is not a float pixel format");
         return CHD_E_INVALID_ARG;

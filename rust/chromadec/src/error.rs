@@ -25,6 +25,7 @@ pub enum Status {
     Cancelled,
     Internal,
     Oom,
+    Unsupported,
     /// A status value this crate doesn't know about (newer library).
     Other(u32),
 }
@@ -48,6 +49,7 @@ impl Status {
             sys::chd_status::CHD_E_CANCELLED => Status::Cancelled,
             sys::chd_status::CHD_E_INTERNAL => Status::Internal,
             sys::chd_status::CHD_E_OOM => Status::Oom,
+            sys::chd_status::CHD_E_UNSUPPORTED => Status::Unsupported,
             other => Status::Other(other.0),
         }
     }
@@ -70,6 +72,7 @@ impl Status {
             Status::Cancelled => sys::chd_status::CHD_E_CANCELLED,
             Status::Internal => sys::chd_status::CHD_E_INTERNAL,
             Status::Oom => sys::chd_status::CHD_E_OOM,
+            Status::Unsupported => sys::chd_status::CHD_E_UNSUPPORTED,
             Status::Other(v) => sys::chd_status(v),
         }
     }

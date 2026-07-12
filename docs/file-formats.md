@@ -189,6 +189,16 @@ schema version). As with `.tbc`, the data files hold samples and the `.meta`
 file holds everything needed to interpret them; pass `NULL` to the open
 function to auto-locate `capture.meta`, or give an explicit path.
 
+**SECAM captures.** The specification's preset list has no SECAM entry yet,
+so a SECAM capture is stored under the byte-compatible 625/50 `PAL` preset
+at a `NONSTANDARD_*` signal state (the PAL-specific frame-sample-count and
+burst-lock semantics do not apply there) and declared SECAM at open time
+with `chd_video_params_t.standard = CHD_STD_SECAM`. That declaration selects
+the PAL lattice for geometry and re-declares the colour standard over it;
+with a `.meta` sidecar present, the sidecar's preset must be `PAL`. In a
+dual-file Y/C pair the `.c` file holds the SECAM FM block oscillating about
+the centred-chroma zero, the same convention QAM chroma uses.
+
 ### Container layouts
 
 The specification addresses CVBS data **by frame**, with exact per-frame

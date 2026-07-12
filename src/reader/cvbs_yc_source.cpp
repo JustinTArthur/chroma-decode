@@ -118,6 +118,15 @@ void CvbsYcSource::close()
     fieldCache.clear();
 }
 
+void CvbsYcSource::redeclareVideoSystem(chd::metadata::VideoSystem system, double fSC)
+{
+    videoParameters.system = system;
+    videoParameters.fSC = fSC;
+    if (system == chd::metadata::SECAM) {
+        videoParameters.isSubcarrierLocked = false;
+    }
+}
+
 const chd::metadata::LdDecodeMetaData::VideoParameters &CvbsYcSource::parameters() const
 {
     return videoParameters;

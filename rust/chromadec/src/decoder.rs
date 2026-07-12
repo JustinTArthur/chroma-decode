@@ -35,6 +35,28 @@ pub struct DropoutStats {
     pub total_distance: i64,
 }
 
+/// Where a reported span came from (`chd_dropout_origin_t`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DropoutOrigin {
+    /// Flagged upstream and stored in the source's sidecar metadata.
+    SourceMetadata,
+    /// Detected and concealed by the decoder itself (SECAM FM click
+    /// concealment; present once the frame has been decoded).
+    DecoderConcealment,
+}
+
+impl DropoutOrigin {
+    fn from_raw(raw: sys::chd_dropout_origin) -> DropoutOrigin {
+        match raw {
+            sys::chd_dropout_origin::CHD_DROPOUT_ORIGIN_DECODER_CONCEALMENT => {
+                DropoutOrigin::DecoderConcealment
+            }
+            _ => DropoutOrigin::SourceMetadata,
+        }
+    }
+}
+
 /// A run of dropped samples on one output row (`chd_dropout_span_t`):
 /// `x_start..x_end` (half-open) on row `y`, in the committed output framing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -42,6 +64,7 @@ pub struct DropoutSpan {
     pub y: i32,
     pub x_start: i32,
     pub x_end: i32,
+    pub origin: DropoutOrigin,
 }
 
 /// Which dropout regions a detection query reports
@@ -312,6 +335,7 @@ impl<'v> Decoder<'v> {
                     y: raw.y,
                     x_start: raw.x_start,
                     x_end: raw.x_end,
+                    origin: DropoutOrigin::from_raw(raw.origin),
                 });
             }
             unsafe { sys::chd_dropout_spans_free(spans) };

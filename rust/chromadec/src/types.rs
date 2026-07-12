@@ -25,6 +25,8 @@ pub enum DecoderKind {
     /// decoding is rejected, but output-info and dropout span/mask queries
     /// work.
     None,
+    /// Line-sequential FM chroma (SECAM family); output is 4:4:0.
+    Secam,
 }
 
 impl DecoderKind {
@@ -44,6 +46,7 @@ impl DecoderKind {
             DecoderKind::LdzeugLumaSep => sys::chd_decoder_kind::CHD_DEC_LDZEUG_LUMA_SEP,
             DecoderKind::LdzeugLumaSepFrame => sys::chd_decoder_kind::CHD_DEC_LDZEUG_LUMA_SEP_FRAME,
             DecoderKind::None => sys::chd_decoder_kind::CHD_DEC_NONE,
+            DecoderKind::Secam => sys::chd_decoder_kind::CHD_DEC_SECAM,
         }
     }
 }
@@ -57,6 +60,7 @@ pub enum VideoStandard {
     Ntsc,
     Pal,
     PalM,
+    Secam,
 }
 
 impl VideoStandard {
@@ -66,6 +70,7 @@ impl VideoStandard {
             VideoStandard::Ntsc => sys::chd_video_standard::CHD_STD_NTSC,
             VideoStandard::Pal => sys::chd_video_standard::CHD_STD_PAL,
             VideoStandard::PalM => sys::chd_video_standard::CHD_STD_PAL_M,
+            VideoStandard::Secam => sys::chd_video_standard::CHD_STD_SECAM,
         }
     }
 
@@ -74,6 +79,7 @@ impl VideoStandard {
             sys::chd_video_standard::CHD_STD_NTSC => VideoStandard::Ntsc,
             sys::chd_video_standard::CHD_STD_PAL => VideoStandard::Pal,
             sys::chd_video_standard::CHD_STD_PAL_M => VideoStandard::PalM,
+            sys::chd_video_standard::CHD_STD_SECAM => VideoStandard::Secam,
             _ => VideoStandard::Unknown,
         }
     }
@@ -233,6 +239,8 @@ pub enum PixelFormat {
     Rgbs,
     Gray16,
     Grays,
+    Yuv440p16,
+    Yuv440ps,
 }
 
 impl PixelFormat {
@@ -244,6 +252,8 @@ impl PixelFormat {
             sys::chd_pixel_format::CHD_PIXEL_RGBS => PixelFormat::Rgbs,
             sys::chd_pixel_format::CHD_PIXEL_GRAY16 => PixelFormat::Gray16,
             sys::chd_pixel_format::CHD_PIXEL_GRAYS => PixelFormat::Grays,
+            sys::chd_pixel_format::CHD_PIXEL_YUV440P16 => PixelFormat::Yuv440p16,
+            sys::chd_pixel_format::CHD_PIXEL_YUV440PS => PixelFormat::Yuv440ps,
             other => {
                 return Err(Error::internal(&format!(
                     "unrecognized chd_pixel_format value {}",
@@ -258,9 +268,62 @@ impl PixelFormat {
     pub fn is_float(self) -> bool {
         matches!(
             self,
-            PixelFormat::Yuv444ps | PixelFormat::Rgbs | PixelFormat::Grays
+            PixelFormat::Yuv444ps | PixelFormat::Rgbs | PixelFormat::Grays | PixelFormat::Yuv440ps
         )
     }
+}
+
+/// Per-plane geometry (`chd_plane_info_t`). Full-height planes report the
+/// frame dimensions and `first_frame_row` 0; 4:4:0 chroma planes report
+/// their subsampled height and the output frame row of their first row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlaneInfo {
+    pub width: i32,
+    pub height: i32,
+    pub first_frame_row: i32,
+}
+
+/// Colour-difference component of one frame row of a line-sequential
+/// (SECAM) decode (`chd_chroma_row_component_t`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChromaRowComponent {
+    Db,
+    Dr,
+}
+
+impl ChromaRowComponent {
+    pub(crate) fn from_raw(raw: sys::chd_chroma_row_component) -> Result<ChromaRowComponent> {
+        Ok(match raw {
+            sys::chd_chroma_row_component::CHD_CHROMA_ROW_DB => ChromaRowComponent::Db,
+            sys::chd_chroma_row_component::CHD_CHROMA_ROW_DR => ChromaRowComponent::Dr,
+            other => {
+                return Err(Error::internal(&format!(
+                    "unrecognized chd_chroma_row_component value {}",
+                    other.0
+                )));
+            }
+        })
+    }
+}
+
+/// How per-line Db/Dr identity was decided
+/// (`chd_chroma_ident_mechanism_t`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ChromaIdentMechanism {
+    Porch,
+    Bottles,
+    Content,
+    Manual,
+}
+
+/// Per-frame Db/Dr ident summary (`chd_chroma_ident_report_t`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChromaIdentReport {
+    pub mechanism: ChromaIdentMechanism,
+    pub confidence: f64,
+    pub field_confidence: [f64; 2],
+    pub first_row_component: ChromaRowComponent,
 }
 
 /// Source parameter overrides for the CVBS open functions

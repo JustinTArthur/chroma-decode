@@ -24,6 +24,7 @@ const char *chd_status_str(chd_status_t s) {
         case CHD_E_CANCELLED:               return "CHD_E_CANCELLED";
         case CHD_E_INTERNAL:                return "CHD_E_INTERNAL";
         case CHD_E_OOM:                     return "CHD_E_OOM";
+        case CHD_E_UNSUPPORTED:             return "CHD_E_UNSUPPORTED";
     }
     return "CHD_E_UNKNOWN";
 }

@@ -37,6 +37,11 @@ void ComponentFrame::init(const chd::metadata::LdDecodeMetaData::VideoParameters
     width = videoParameters.fieldWidth;
     height = (videoParameters.fieldHeight * 2) - 1;
 
+    chromaRowComponents.clear();
+    chromaIdent = {};
+    chromaConcealedSpans.clear();
+    chromaClick = {};
+
     const int32_t size = width * height;
 
     yData.assign(size, 0.0);

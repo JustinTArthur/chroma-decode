@@ -28,7 +28,10 @@ typedef enum chd_decoder_kind {
      * rejected with CHD_E_DECODER_INCOMPATIBLE; chd_decoder_get_output_info and the
      * dropout span/mask queries work. For consumers that want dropout regions
      * without paying for chroma decoding. */
-    CHD_DEC_NONE                  = 13
+    CHD_DEC_NONE                  = 13,
+
+    /* Line-sequential FM chroma (SECAM family); output is 4:4:0. */
+    CHD_DEC_SECAM                 = 20
 } chd_decoder_kind_t;
 
 chd_status_t chd_decoder_create(chd_video_t *v, chd_decoder_kind_t kind, chd_decoder_t **out);
@@ -65,6 +68,11 @@ chd_status_t chd_decoder_get_output_info(const chd_decoder_t *d, chd_output_info
 #define CHD_OPT_COMB_CHROMA_WEIGHT          "comb_chroma_weight"        /* f64, NTSC 3D */
 #define CHD_OPT_COMB_SHOW_MAP               "comb_show_map"             /* bool, NTSC 3D */
 #define CHD_OPT_CHROMA_FILTER               "chroma_filter"             /* str: "compat"|"equiband_wide"|"equiband"|"color_under"|"wideband_i_ssb"|"equiband_vsb" */
+#define CHD_OPT_CHROMA_IDENT_MODE           "chroma_ident_mode"         /* str: "auto"|"porch"|"bottles"|"manual", SECAM */
+#define CHD_OPT_CHROMA_IDENT_MANUAL         "chroma_ident_manual"       /* str: "db_first"|"dr_first"; required iff mode is "manual" */
+#define CHD_OPT_CHROMA_CLICK_NR_LEVEL       "chroma_click_nr_level"     /* f64 0.0-1.0, default 1.0, SECAM FM click concealment (0.0 = off) */
+#define CHD_OPT_CHROMA_CLICK_ENV_DIP_DB     "chroma_click_env_dip_db"   /* f64 dB, absolute override of the adaptive envelope-dip threshold */
+#define CHD_OPT_CHROMA_CLICK_FREQ_OVERSHOOT "chroma_click_freq_overshoot" /* f64 multiples of the max-deviation bound, absolute override */
 #define CHD_OPT_CHROMA_UPPER_SIDEBAND_HZ    "chroma_upper_sideband_hz"  /* f64, equiband_vsb only: upper-sideband room +X above fSC */
 #define CHD_OPT_TRANSFORM_THRESHOLD         "transform_threshold"       /* f64 */
 #define CHD_OPT_TRANSFORM_THRESHOLDS_FILE   "transform_thresholds_file" /* str */
@@ -74,10 +82,18 @@ chd_status_t chd_decoder_get_output_info(const chd_decoder_t *d, chd_output_info
 #define CHD_OPT_LAST_ACTIVE_FRAME_LINE      "last_active_frame_line"    /* i32, inclusive */
 #define CHD_OPT_NN_INPUT_MAGNITUDE_SCALE    "nn_input_magnitude_scale"  /* f64 (nnTransform3D only) */
 #define CHD_OPT_NN_CHROMA_BANDPASS          "nn_chroma_bandpass"        /* bool (ldzeug2_luma_sep only) */
-#define CHD_OPT_OUTPUT_FORMAT               "output_format"             /* str: "yuv444p16"|"yuv444ps"|"rgb48"|"rgbs"|"gray16"|"grays" */
+#define CHD_OPT_OUTPUT_FORMAT               "output_format"             /* str: "yuv444p16"|"yuv444ps"|"rgb48"|"rgbs"|"gray16"|"grays"|"yuv440p16"|"yuv440ps" */
 #define CHD_OPT_OUTPUT_CLAMP                "output_clamp"              /* str: "none"|"legal_rgb_sdr"|"legal_rgb_hdr"|"legal_ycbcr_bt601" */
 #define CHD_OPT_OUTPUT_Y4M_HEADERS          "output_y4m_headers"        /* bool */
 #define CHD_OPT_THREAD_COUNT                "thread_count"              /* i32, 0=auto */
+
+/* Effective SECAM click-concealment thresholds applied to the most recent
+ * chd_decode_frame on this decoder (after the adaptive formula or expert
+ * overrides): the envelope-dip depth in dB and the deviation-overshoot
+ * multiple. CHD_E_UNSUPPORTED before any decode or when concealment is off. */
+chd_status_t chd_decoder_get_chroma_click_thresholds(const chd_decoder_t *d,
+                                                     double *env_dip_db,
+                                                     double *freq_overshoot);
 
 chd_status_t chd_decode_frame(chd_decoder_t *d, int64_t frame_index, chd_frame_t **out);
 

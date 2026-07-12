@@ -161,6 +161,7 @@ Declared in `<chromadec/errors.h>`.
 | `CHD_E_CANCELLED`               | The operation was cancelled via a [`chd_cancel_t`](#cancellation).                        |
 | `CHD_E_INTERNAL`                | An unexpected internal error.                                                             |
 | `CHD_E_OOM`                     | Allocation failure.                                                                       |
+| `CHD_E_UNSUPPORTED`             | The query does not apply to this object (e.g. a chroma-ident query on a non-4:4:0 frame). |
 
 ### chd_status_str
 
@@ -209,12 +210,14 @@ typedef struct chd_cancel   chd_cancel_t;
 
 | Enum | Values |
 |---|---|
-| `chd_video_standard_t` | `CHD_STD_UNKNOWN`, `CHD_STD_NTSC`, `CHD_STD_PAL`, `CHD_STD_PAL_M` |
+| `chd_video_standard_t` | `CHD_STD_UNKNOWN`, `CHD_STD_NTSC`, `CHD_STD_PAL`, `CHD_STD_PAL_M`, `CHD_STD_SECAM` |
 | `chd_sample_encoding_t` | `CHD_ENC_UNKNOWN`, `CHD_ENC_CVBS_U10_4FSC`, `CHD_ENC_CVBS_U16_4FSC`, `CHD_ENC_CVBS_TPG21_4FSC`, `CHD_ENC_CVBS_S16_FSC`, `CHD_ENC_RAW_S16_28M`, `CHD_ENC_RAW_S16_40M` |
 | `chd_signal_state_t` | `CHD_SIG_UNKNOWN`, `CHD_SIG_STANDARD_TBC_LOCKED`, `CHD_SIG_STANDARD_TBC_UNLOCKED`, `CHD_SIG_STANDARD_RAW`, `CHD_SIG_NONSTANDARD_TBC_LOCKED`, `CHD_SIG_NONSTANDARD_TBC_UNLOCKED`, `CHD_SIG_NONSTANDARD_RAW` |
 | `chd_frame_layout_t` | `CHD_FRAME_LAYOUT_UNKNOWN`, `CHD_FRAME_LAYOUT_FIELD_RASTER`, `CHD_FRAME_LAYOUT_FRAME_NATIVE` |
 | `chd_plane_t` | `CHD_PLANE_Y`, `CHD_PLANE_CB`, `CHD_PLANE_CR`, `CHD_PLANE_R`, `CHD_PLANE_G`, `CHD_PLANE_B` |
-| `chd_pixel_format_t` | `CHD_PIXEL_YUV444P16`, `CHD_PIXEL_YUV444PS`, `CHD_PIXEL_RGB48`, `CHD_PIXEL_RGBS`, `CHD_PIXEL_GRAY16`, `CHD_PIXEL_GRAYS` |
+| `chd_pixel_format_t` | `CHD_PIXEL_YUV444P16`, `CHD_PIXEL_YUV444PS`, `CHD_PIXEL_RGB48`, `CHD_PIXEL_RGBS`, `CHD_PIXEL_GRAY16`, `CHD_PIXEL_GRAYS`, `CHD_PIXEL_YUV440P16`, `CHD_PIXEL_YUV440PS` |
+| `chd_chroma_row_component_t` | `CHD_CHROMA_ROW_DB`, `CHD_CHROMA_ROW_DR` |
+| `chd_chroma_ident_mechanism_t` | `CHD_CHROMA_IDENT_PORCH`, `CHD_CHROMA_IDENT_BOTTLES`, `CHD_CHROMA_IDENT_CONTENT`, `CHD_CHROMA_IDENT_MANUAL` |
 | `chd_clamp_t` | `CHD_CLAMP_NONE`, `CHD_CLAMP_LEGAL_RGB_SDR`, `CHD_CLAMP_LEGAL_RGB_HDR`, `CHD_CLAMP_LEGAL_YCBCR_BT601` |
 
 `chd_frame_layout_t` is the container addressing of a CVBS data file:
@@ -228,8 +231,17 @@ layout means and how it is detected.
 Caller-supplied parameters used to override or supply metadata when opening a
 source (see [`chd_video_open_composite`](#chd_video_open_composite)). The
 first three identify the capture when no sidecar is found: `standard`,
-`encoding`, and `signal_state` are required there and ignored when a sidecar
-is present. The remaining three merge over sidecar metadata, because the CVBS
+`encoding`, and `signal_state` are required there. When an ld-decode sidecar
+is present, a non-zero `standard` re-declares the colour standard over the
+sidecar's, for captures whose sidecar cannot express it (a vhs-decode ME-SECAM
+sidecar says `PAL`); the declared standard must keep the capture's line
+standard, so a 525-line capture cannot be re-declared 625-line or vice
+versa. `CHD_STD_SECAM` works the same way for CVBS sources: it selects the
+byte-compatible 625/50 `PAL` preset for geometry (the CVBS specification has
+no SECAM preset yet; see [file formats](file-formats.md#shape-of-the-format))
+and re-declares the opened source SECAM, requiring a `PAL` preset when a
+`.meta` sidecar is present. The remaining three merge over sidecar metadata,
+because the CVBS
 `.meta` schema does not carry them: `layout` (`CHD_FRAME_LAYOUT_UNKNOWN`
 means auto-detect), `is_subcarrier_locked` (set to mark an encoder-style
 subcarrier-locked field raster; field rasters default to line-locked), and
@@ -297,6 +309,39 @@ typedef struct chd_frame_info {
 } chd_frame_info_t;
 ```
 
+### chd_plane_info_t
+
+```c
+typedef struct chd_plane_info {
+    int32_t width;
+    int32_t height;
+    int32_t first_frame_row;
+} chd_plane_info_t;
+```
+
+Per-plane geometry, filled by
+[`chd_frame_get_plane_info`](#chd_frame_get_plane_info). Full-height planes
+report the frame dimensions and `first_frame_row` 0. The 4:4:0 chroma planes
+report their subsampled height and the output frame row their first row was
+decoded from; see [4:4:0 output](#440-output).
+
+### chd_chroma_ident_report_t
+
+```c
+typedef struct chd_chroma_ident_report {
+    chd_chroma_ident_mechanism_t mechanism;
+    double confidence;
+    double field_confidence[2];
+    chd_chroma_row_component_t first_row_component;
+} chd_chroma_ident_report_t;
+```
+
+Per-frame Db/Dr ident summary for line-sequential (SECAM) decodes, filled by
+[`chd_frame_get_chroma_ident`](#chd_frame_get_chroma_ident): which mechanism
+decided the per-line component identity, the fraction of measured lines that
+agreed with the majority lattice (overall and per field, in frame order;
+`1.0` for `manual`), and the component of the frame's first output row.
+
 ### chd_output_info_t
 
 ```c
@@ -341,8 +386,9 @@ Open a single-file composite capture: an ld-decode `.tbc` or a CVBS
 - `override_or_null`: `NULL` means all parameters come from the sidecar. When
   no sidecar is found, the override is mandatory and must set `standard`,
   `encoding`, and `signal_state`; the open fails otherwise. When a sidecar is
-  present, only `layout`, `is_subcarrier_locked`, and `is_second_field_first`
-  are read from the override. See the
+  present, `layout`, `is_subcarrier_locked`, and `is_second_field_first` are
+  read from the override, and a non-zero `standard` re-declares the colour
+  standard (see [chd_video_params_t](#chd_video_params_t)). See the
   [which-fields-to-set matrix](integration-guide.md#which-fields-to-set).
 
 CVBS opens also measure signal properties the `.meta` sidecar cannot express:
@@ -434,6 +480,7 @@ default appropriate to the video standard.
 | `CHD_DEC_LDZEUG_COLOR_CNN`                         | Neural colour CNN.                          |
 | `CHD_DEC_LDZEUG_LUMA_SEP` / `_FRAME`               | Neural luma separation (field / frame).     |
 | `CHD_DEC_NONE`                                     | Geometry/metadata only — no chroma decode.  |
+| `CHD_DEC_SECAM`                                    | SECAM line-sequential FM chroma (4:4:0 output). |
 
 `CHD_DEC_NONE` builds no chroma-decoding engine. Commit still resolves the
 output framing, so [`chd_decoder_get_output_info`](#chd_decoder_get_output_info)
@@ -517,6 +564,11 @@ and any decoder-kind restriction.
 | `CHD_OPT_COMB_SHOW_MAP`             | bool | Overlay the adaptive 3D decision map; `CHD_DEC_NTSC_3D` only.                                                                |
 | `CHD_OPT_CHROMA_FILTER`             | str  | `"compat"` (default), `"equiband_wide"` (NTSC), `"equiband"`, `"color_under"`, `"wideband_i_ssb"` (NTSC), `"equiband_vsb"` (PAL). See [Chroma filter](#chroma-filter).      |
 | `CHD_OPT_CHROMA_UPPER_SIDEBAND_HZ`  | f64  | Upper-sideband room +X above fSC; `"equiband_vsb"` only. See [Chroma filter](#chroma-filter).                                |
+| `CHD_OPT_CHROMA_IDENT_MODE`         | str  | `"auto"` (default), `"porch"`, `"bottles"`, or `"manual"`; `CHD_DEC_SECAM` only. See [SECAM line identification](#secam-line-identification). |
+| `CHD_OPT_CHROMA_IDENT_MANUAL`       | str  | `"db_first"` or `"dr_first"`; required iff `chroma_ident_mode` is `"manual"`.                                                |
+| `CHD_OPT_CHROMA_CLICK_NR_LEVEL`     | f64  | SECAM FM click concealment, `0.0`–`1.0` (default `1.0`; `0.0` bypasses the stage). See [SECAM click concealment](#secam-click-concealment). |
+| `CHD_OPT_CHROMA_CLICK_ENV_DIP_DB`   | f64  | Expert absolute override of the adaptive envelope-dip threshold (dB); needs `chroma_click_nr_level` > 0.                     |
+| `CHD_OPT_CHROMA_CLICK_FREQ_OVERSHOOT` | f64 | Expert absolute override of the adaptive deviation-overshoot threshold (max-deviation multiples); needs `chroma_click_nr_level` > 0. |
 | `CHD_OPT_TRANSFORM_THRESHOLD`       | f64  | Transform-decoder threshold.                                                                                                 |
 | `CHD_OPT_TRANSFORM_THRESHOLDS_FILE` | str  | Per-bin thresholds file.                                                                                                     |
 | `CHD_OPT_FIRST_ACTIVE_FIELD_LINE`   | i32  | First active field line (inclusive).                                                                                         |
@@ -525,10 +577,92 @@ and any decoder-kind restriction.
 | `CHD_OPT_LAST_ACTIVE_FRAME_LINE`    | i32  | Last active frame line (inclusive — the line is included in the output).                                                     |
 | `CHD_OPT_NN_INPUT_MAGNITUDE_SCALE`  | f64  | nnTransform3D input magnitude scale.                                                                                         |
 | `CHD_OPT_NN_CHROMA_BANDPASS`        | bool | ldzeug2 luma-sep chroma bandpass.                                                                                            |
-| `CHD_OPT_OUTPUT_FORMAT`             | str  | `"yuv444p16"`, `"yuv444ps"`, `"rgb48"`, `"rgbs"`, `"gray16"`, or `"grays"`.                                                  |
+| `CHD_OPT_OUTPUT_FORMAT`             | str  | `"yuv444p16"`, `"yuv444ps"`, `"rgb48"`, `"rgbs"`, `"gray16"`, `"grays"`, `"yuv440p16"`, or `"yuv440ps"` (the 4:4:0 pair is SECAM-only; see [4:4:0 output](#440-output)). |
 | `CHD_OPT_OUTPUT_CLAMP`              | str  | `"none"` (default), `"legal_rgb_sdr"`, `"legal_rgb_hdr"`, or `"legal_ycbcr_bt601"`. See [Output clamping](#output-clamping). |
 | `CHD_OPT_OUTPUT_Y4M_HEADERS`        | bool | Emit Y4M stream headers.                                                                                                     |
 | `CHD_OPT_THREAD_COUNT`              | i32  | Worker threads (`0` = auto).                                                                                                 |
+
+### SECAM line identification { #secam-line-identification }
+
+`CHD_OPT_CHROMA_IDENT_MODE` selects how the SECAM decoder resolves each
+line's Db/Dr identity. Whatever the mode, per-line decisions feed a
+strict-alternation majority fit per field, so single-line measurement errors
+self-heal, and the result is reported per frame through
+[`chd_frame_get_chroma_ident`](#chd_frame_get_chroma_ident).
+
+- `"auto"` (default): back-porch reference-carrier measurement, preferred
+  when enough lines measure cleanly; field-ident bottles cross-check it when
+  present, take over when the porch is blanked, and content statistics are
+  the last fallback.
+- `"porch"`: line identification only, no fallback. The reported confidence
+  still shows when this was a bad idea.
+- `"bottles"`: the vertical-interval ident trapezoids only, for sources with
+  blanked porches but intact vertical intervals.
+- `"manual"`: no measurement; a fixed lattice anchored by
+  `CHD_OPT_CHROMA_IDENT_MANUAL`, which names the component of the first
+  active line of the first field of frame 0. The deterministic four-field
+  alternation (Rec. ITU-R BR.469) extends it across the capture. For
+  pathological captures and deterministic re-decodes.
+
+The porch measurement doubles as per-field carrier calibration: the decoder
+clusters the measured per-line reference carriers into the two undeviated
+subcarriers and discriminates against the measured pair, absorbing converter
+offsets (an ME-SECAM deck's free-running conversion arithmetic) without
+assuming absolute carrier positions. The calibration also recentres the
+chroma band and the inverse HF pre-correction bell on the measured pair:
+a converter offset arises after encoding and translates the whole FM block,
+bell shaping included, so an inverse left at nominal would sit on the wrong
+centre (measured on an ME-SECAM capture with carriers +108 kHz off nominal:
+colour-difference overshoot at large bar transitions drops from roughly
+twice the step to a few percent once the inverse follows the block). When
+the porch pair is unmeasurable, the nominal 4.25/4.40625 MHz subcarriers
+apply. Opening a 625-line capture
+whose measured porch signature contradicts its declared standard (a PAL
+declaration over an alternating SECAM carrier pair, or the reverse) logs a
+warning; the declaration always wins.
+
+### SECAM click concealment { #secam-click-concealment }
+
+FM clicks ("SECAM fire") on low-SNR tape are not fixable by a better
+discriminator formula, so the decoder conceals them after demodulation,
+enabled by default at full level. Detection flags discriminator samples
+where the analytic envelope collapses below a threshold or the instantaneous
+deviation exits the BT.1700 Part C Table 4 maxima; concealment interpolates
+across narrow spans and substitutes the previous same-component line for
+spans too wide to interpolate, before de-emphasis. `chroma_click_nr_level = 0`
+bypasses the stage entirely.
+
+Independent of the concealment stage, the demodulated deviation is always
+clamped to the Table 4 maxima (D'B −350/+506 kHz, D'R −506/+350 kHz) before
+de-emphasis. The transmitter clips the pre-corrected signal to those bounds,
+so nothing beyond them is signal; the rail turns any click the concealment
+stage left (or all of them, when bypassed) into a bounded flat-top instead
+of an unbounded spike.
+
+The thresholds come from a frozen formula composing the level with a
+per-field chroma noise-floor estimate, measured deterministically from the
+same back-porch windows used for ident and calibration (the median absolute
+deviation of the per-line porch frequencies about their component's
+carrier). With `level` in `0.0`–`1.0` and `noise` in Hz:
+
+- envelope dip: `12 - 6*level` dB below the row's median analytic envelope;
+- deviation overshoot: `max(2.6 - 1.6*level, 1.15) + 6*noise/506000` in
+  multiples of the per-component maximum deviation. The floor keeps a
+  transmitter limiter flat-top riding exactly at the Table 4 bounds from
+  flagging on its own ripple; the deviation rail already bounds everything
+  beneath the detection threshold.
+
+Same capture and same level give bit-identical output; across captures the
+effective thresholds adapt through the noise term. The endpoints were
+calibrated with a swept-level study on the synthetic Table 4 generator. The
+expert overrides replace either threshold with an absolute value for
+batch-comparable decodes; `chd_decoder_get_chroma_click_thresholds` reports
+the values actually applied to the most recent decode, so any decode is
+auditable after the fact. Concealed spans are reported through
+[`chd_decoder_get_dropout_spans`](#chd_decoder_get_dropout_spans) with
+`CHD_DROPOUT_ORIGIN_DECODER_CONCEALMENT`, consistent with 4:4:0's
+every-row-is-real honesty contract: consumers see exactly which chroma
+samples are concealed rather than genuine.
 
 ### Chroma filter { #chroma-filter }
 
@@ -778,6 +912,69 @@ chd_status_t chd_frame_get_info(const chd_frame_t *f, chd_frame_info_t *out);
 Fill `*out` with the frame's [format, dimensions, plane count, and
 index](#chd_frame_info_t).
 
+### 4:4:0 output
+
+The `yuv440p16` / `yuv440ps` output formats carry line-sequential (SECAM)
+chroma honestly: the Cb and Cr planes are full width but hold only the rows
+that were really decoded, one plane row per decoded line, with no vertical
+interpolation. SECAM transmits one colour-difference component per line, and
+because the second field of a 625-line frame sits an odd line count after the
+first, the components pair up in interlaced frame-row order
+(`Db, Dr, Dr, Db, Db, ...`). Consequences:
+
+- The two chroma planes' heights differ by at most one and together cover
+  every active row.
+- Chroma plane row `k` is the `k`-th row of that component in frame order;
+  its luma row is **not** a fixed-step lattice. Use
+  [`chd_frame_chroma_row_component`](#chd_frame_chroma_row_component) to map
+  frame rows to components (and therefore plane rows to frame rows), and
+  [`chd_frame_get_plane_info`](#chd_frame_get_plane_info) for each plane's
+  height and first frame row.
+- The mapping is per-frame, not per-format: a given frame row's component
+  flips frame to frame (the 625-line count is odd, giving the four-field
+  ident cycle of Rec. ITU-R BR.469).
+
+SECAM sources decode only to these formats or to luma-only `gray16`/`grays`;
+`chd_decoder_commit` rejects full-height chroma and RGB formats because any
+line-repeat or resample decision belongs to the consuming application.
+`padding_multiple` > 1 and `output_y4m_headers` are likewise rejected for
+4:4:0 output.
+
+### chd_frame_get_plane_info
+
+```c
+chd_status_t chd_frame_get_plane_info(const chd_frame_t *f, chd_plane_t p,
+                                      chd_plane_info_t *out);
+```
+
+Fill `*out` with plane `p`'s [geometry](#chd_plane_info_t). Valid for every
+pixel format, so consumers can size per-plane buffers unconditionally; the
+4:4:0 formats are the reason to call it.
+
+### chd_frame_chroma_row_component
+
+```c
+chd_status_t chd_frame_chroma_row_component(const chd_frame_t *f, int32_t frame_row,
+                                            chd_chroma_row_component_t *out);
+```
+
+Report which colour-difference component the chroma decoded at output frame
+row `frame_row` carries (`CHD_CHROMA_ROW_DB` or `CHD_CHROMA_ROW_DR`).
+Line-sequential (4:4:0) frames only: returns `CHD_E_UNSUPPORTED` for other
+frames and `CHD_E_OUT_OF_RANGE` for rows outside the output frame.
+
+### chd_frame_get_chroma_ident
+
+```c
+chd_status_t chd_frame_get_chroma_ident(const chd_frame_t *f,
+                                        chd_chroma_ident_report_t *out);
+```
+
+Fill `*out` with the frame's [Db/Dr ident summary](#chd_chroma_ident_report_t).
+Line-sequential (4:4:0) frames only: returns `CHD_E_UNSUPPORTED` otherwise.
+Archival consumers can use the confidence fraction to flag suspect colour
+framing without touching the generic frame info.
+
 ### chd_frame_get_plane
 
 ```c
@@ -790,9 +987,9 @@ Zero-copy borrow of a read-only pointer to a 16-bit plane `p` and its row stride
 in **bytes**. The pointer is owned by the frame. Do not free it, and do not use
 it after [`chd_frame_free`](#chd_frame_free). Valid for the integer pixel formats;
 which planes are valid depends on the frame's [pixel format](#chd_frame_info_t)
-(Y/Cb/Cr for `CHD_PIXEL_YUV444P16`, R/G/B for `CHD_PIXEL_RGB48`, or a single Y
-plane for `CHD_PIXEL_GRAY16`). For float frames use
-[`chd_frame_get_plane_float`](#chd_frame_get_plane_float).
+(Y/Cb/Cr for `CHD_PIXEL_YUV444P16` and `CHD_PIXEL_YUV440P16`, R/G/B for
+`CHD_PIXEL_RGB48`, or a single Y plane for `CHD_PIXEL_GRAY16`). For float
+frames use [`chd_frame_get_plane_float`](#chd_frame_get_plane_float).
 
 ### chd_frame_get_plane_float
 
@@ -813,6 +1010,8 @@ the frame's float storage. Valid for the float pixel formats:
   = white). Computed directly from the decoder's component signals via the
   BT.601/H.273 MatrixCoefficients=5/6 Y′CbCr → R′G′B′ matrix; no intermediate
   Y′CbCr integer quantization.
+- `CHD_PIXEL_YUV440PS` exposes the same signals as `CHD_PIXEL_YUV444PS` with
+  subsampled Cb/Cr planes; see [4:4:0 output](#440-output).
 
 For `CHD_PIXEL_YUV444PS` and `CHD_PIXEL_GRAYS` these are the normalized
 colour-difference signals `E′Y E′Cb E′Cr` of ITU-R BT.601 / ITU-T H.273; the
@@ -900,6 +1099,20 @@ chd_status_t chd_decoder_get_last_dropout_stats(const chd_decoder_t *d,
 Return the correction counters from the **most recent**
 [`chd_decode_frame`](#chd_decode_frame) on this decoder.
 
+### chd_decoder_get_chroma_click_thresholds
+
+```c
+chd_status_t chd_decoder_get_chroma_click_thresholds(const chd_decoder_t *d,
+                                                     double *env_dip_db,
+                                                     double *freq_overshoot);
+```
+
+Return the effective [SECAM click-concealment](#secam-click-concealment)
+thresholds applied to the **most recent** decode on this decoder: the
+envelope-dip depth in dB and the deviation-overshoot multiple, after the
+adaptive formula or the expert overrides. `CHD_E_UNSUPPORTED` before any
+decode has run with `chroma_click_nr_level` > 0.
+
 ## Dropout detection
 
 The functions above *conceal* dropouts during a decode; these *expose* the
@@ -910,12 +1123,24 @@ whether concealment is enabled — and pair naturally with a
 [`CHD_DEC_NONE`](#chd_decoder_create) decoder to skip chroma decoding entirely.
 
 ```c
+typedef enum chd_dropout_origin {
+    CHD_DROPOUT_ORIGIN_SOURCE_METADATA     = 0,
+    CHD_DROPOUT_ORIGIN_DECODER_CONCEALMENT = 8
+} chd_dropout_origin_t;
+
 typedef struct chd_dropout_span {
     int32_t y;        /* active-output row */
     int32_t x_start;  /* half-open [x_start, x_end) within the active width */
     int32_t x_end;
+    chd_dropout_origin_t origin;
 } chd_dropout_span_t;
 ```
+
+`origin` distinguishes upstream-flagged regions (source metadata) from
+samples the decoder itself detected and concealed (SECAM
+[click concealment](#secam-click-concealment)). One enumeration path,
+filterable by origin; the enum is numeric-gapped per family so future
+origins can slot in.
 
 ### chd_dropout_detect_mode_t
 
@@ -933,7 +1158,10 @@ Selects which regions the queries below report (mutually exclusive):
 | `CHD_DROPOUT_DETECTED` | The raw regions flagged in the source metadata. |
 | `CHD_DROPOUT_OVERCORRECT` | The detected regions widened by the overcorrect margin (±24 samples, clamped to the active picture) — the footprint that overcorrect-mode concealment would touch. Independent of the configured [dropout options](#chd_decoder_set_dropout); reporting this footprint does not require `overcorrect` to be enabled. |
 
-Both modes read source metadata only — no replacement search, no chroma decode.
+Both modes read source metadata only — no replacement search, no chroma
+decode. Decoder-detected concealment spans are the exception: they exist only
+once a frame has been decoded with `chroma_click_nr_level` > 0, after which
+both modes include them for that frame.
 
 ### chd_decoder_get_dropout_spans
 

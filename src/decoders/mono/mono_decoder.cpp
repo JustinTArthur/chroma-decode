@@ -91,7 +91,9 @@ void MonoDecoder::doYNR(chd::output::ComponentFrame &componentFrame) {
     double nr_y     = monoConfig.yNRLevel * irescale;
 
     // 2. Choose filter taps & descriptor based on system
-    bool usePal = (monoConfig.videoParameters.system == chd::metadata::PAL || monoConfig.videoParameters.system == chd::metadata::PAL_M);
+    bool usePal = (monoConfig.videoParameters.system == chd::metadata::PAL
+                || monoConfig.videoParameters.system == chd::metadata::PAL_M
+                || monoConfig.videoParameters.system == chd::metadata::SECAM);
     const auto& taps       = usePal ? chd::decoders::filter::c_nrpal_b
                                     : chd::decoders::filter::c_nr_b;
     const auto& descriptor = usePal ? chd::decoders::filter::f_nrpal

@@ -44,6 +44,10 @@ Module layout under `src/`:
 - Mono (luma only).
 - NTSC comb: 1D / 2D / 3D and adaptive.
 - PAL: PALcolour and Transform-PAL 2D / 3D.
+- SECAM: line-sequential FM chroma via block-FFT analytic signal, exact
+  inverses of both Table 4 pre-corrections, a near-DC differentiating-FIR
+  discriminator, and porch-calibrated carriers that recentre the band and
+  bell masks on the measured pair; 4:4:0 output only.
 - nnTransform3D: neural 3D decode, fronted by an FFT stage (see NN inference).
 - ldzeug2: color_cnn and luma_sep (per-field and per-frame), pure convolutional
   neural networks (CNNs).

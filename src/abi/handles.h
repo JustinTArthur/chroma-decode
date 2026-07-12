@@ -13,6 +13,7 @@
 #pragma once
 
 #include <atomic>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -105,6 +106,14 @@ struct chd_decoder {
     // value reflects whichever frame finished last.
     chd_dropout_stats_t lastDropoutStats{};
 
+    // SECAM click-concealment results, guarded by statsMutex: spans per
+    // decoded frame (merged into chd_decoder_get_dropout_spans) and the
+    // effective thresholds from the most recent decode.
+    std::map<int64_t, std::vector<chd_dropout_span_t>> concealedSpansByFrame;
+    double lastClickEnvDipDb = 0.0;
+    double lastClickFreqOvershoot = 0.0;
+    bool haveClickThresholds = false;
+
     // Set by commit. Once true, the fields below are populated and the
     // decode entry points work.
     bool committed = false;
@@ -174,15 +183,25 @@ struct chd_frame {
 
     // YUV444P16 / RGB48 / GRAY16: packed/planar as written by
     // chd::output::OutputWriter::convert. activeWidth/outputHeight match
-    // info.width / info.height (post-padding).
+    // info.width / info.height (post-padding). YUV440P16 appends the two
+    // subsampled chroma planes after the full-height Y plane.
     chd::output::OutputFrame u16Plane;
 
     // YUV444PS / RGBS: three contiguous planes, each width*height floats.
-    // GRAYS: only floatPlane[0] populated.
+    // GRAYS: only floatPlane[0] populated. YUV440PS: planes 1/2 hold
+    // width*chroma440.{cb,cr}Height floats.
     std::vector<float> floatPlane[3];
 
     int32_t activeWidth  = 0;
     int32_t outputHeight = 0;
+
+    // 4:4:0 frames: chroma plane geometry, the per-output-row component map
+    // backing chd_frame_chroma_row_component (0 = Db, 1 = Dr, sized
+    // outputHeight; empty otherwise), and the ident report.
+    chd::output::OutputWriter::Chroma440Geometry chroma440{};
+    std::vector<int8_t> rowComponent;
+    chd_chroma_ident_report_t identReport{};
+    bool hasIdentReport = false;
 };
 
 struct chd_cancel {

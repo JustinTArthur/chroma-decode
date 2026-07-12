@@ -19,7 +19,9 @@ typedef enum chd_video_standard {
     CHD_STD_UNKNOWN = 0,
     CHD_STD_NTSC,
     CHD_STD_PAL,
-    CHD_STD_PAL_M
+    CHD_STD_PAL_M,
+
+    CHD_STD_SECAM   = 8
 } chd_video_standard_t;
 
 typedef enum chd_sample_encoding {
@@ -63,7 +65,12 @@ typedef enum chd_pixel_format {
     CHD_PIXEL_RGB48     = 2,
     CHD_PIXEL_RGBS      = 3,
     CHD_PIXEL_GRAY16    = 4,
-    CHD_PIXEL_GRAYS     = 5
+    CHD_PIXEL_GRAYS     = 5,
+
+    /* 4:4:0: full-width chroma planes holding only really-decoded rows
+     * (line-sequential chroma; see chd_frame_get_plane_info). */
+    CHD_PIXEL_YUV440P16 = 8,
+    CHD_PIXEL_YUV440PS  = 9
 } chd_pixel_format_t;
 
 typedef enum chd_clamp {
@@ -112,6 +119,43 @@ typedef struct chd_frame_info {
     int32_t  num_planes;
     int64_t  frame_index;
 } chd_frame_info_t;
+
+/* Per-plane geometry, reported by chd_frame_get_plane_info. Full-height
+ * planes report the frame dimensions and first_frame_row 0. 4:4:0 chroma
+ * planes report their subsampled height and the output frame row their
+ * first row was decoded from; each of their rows is a real decoded line,
+ * located per row via chd_frame_chroma_row_component. */
+typedef struct chd_plane_info {
+    int32_t width;
+    int32_t height;
+    int32_t first_frame_row;
+} chd_plane_info_t;
+
+/* Colour-difference component carried by one frame row of a
+ * line-sequential (SECAM) decode. */
+typedef enum chd_chroma_row_component {
+    CHD_CHROMA_ROW_DB = 0,
+    CHD_CHROMA_ROW_DR = 1
+} chd_chroma_row_component_t;
+
+/* How per-line Db/Dr identity was decided for a frame. */
+typedef enum chd_chroma_ident_mechanism {
+    CHD_CHROMA_IDENT_PORCH   = 0,
+    CHD_CHROMA_IDENT_BOTTLES = 1,
+    CHD_CHROMA_IDENT_CONTENT = 2,
+    CHD_CHROMA_IDENT_MANUAL  = 3
+} chd_chroma_ident_mechanism_t;
+
+/* Per-frame ident summary, reported by chd_frame_get_chroma_ident.
+ * confidence is the fraction of measured lines agreeing with the majority
+ * lattice (1.0 for manual); field_confidence splits it by field in frame
+ * order. */
+typedef struct chd_chroma_ident_report {
+    chd_chroma_ident_mechanism_t mechanism;
+    double confidence;
+    double field_confidence[2];
+    chd_chroma_row_component_t first_row_component;
+} chd_chroma_ident_report_t;
 
 /* Committed output framing, reported by chd_decoder_get_output_info. width and
  * height are the active picture region after crop and padding — the same

@@ -214,6 +214,23 @@ HorizontalAlignment resolveFrameNativeAlignment(const VideoStandardPreset &prese
                                                 const std::optional<double> &measuredZeroH,
                                                 const char *sourceName);
 
+// Measure the back-porch chroma reference of a 625/50 capture: the per-line
+// dominant frequency over the [porchStart, porchEnd) window across `numRows`
+// consecutive rows, summarised as the mean frequency and the absolute
+// difference between even- and odd-row means. A PAL burst reads a near-zero
+// alternation around 4.433619 MHz; the SECAM line-ident carrier pair
+// alternates by ~fOR-fOB (156.25 kHz). Returns nullopt when too few rows
+// carry a measurable reference. Used for the open-time declared-vs-measured
+// warning only; it never switches decode semantics.
+struct ChromaPorchSignature {
+    double meanHz;
+    double alternationHz;
+};
+std::optional<ChromaPorchSignature> measure625ChromaPorchSignature(
+    const uint16_t *rows, int32_t numRows, int32_t rowWidth,
+    int32_t porchStart, int32_t porchEnd, double sampleRateHz,
+    int32_t blanking16bIre, int32_t white16bIre);
+
 // Measure one NTSC field's colour burst polarity from canonical-domain
 // samples: the RS-170 "positive burst phase on even field lines" flag that
 // positions the field within the four-field sequence. `rows` holds numRows

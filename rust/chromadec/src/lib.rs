@@ -18,7 +18,9 @@ mod util;
 mod video;
 
 pub use cancel::Cancel;
-pub use decoder::{Decoder, DropoutDetectMode, DropoutOpts, DropoutSpan, DropoutStats};
+pub use decoder::{
+    Decoder, DropoutDetectMode, DropoutOpts, DropoutOrigin, DropoutSpan, DropoutStats,
+};
 pub use error::{Error, Result, Status};
 pub use frame::{Frame, PlaneView};
 pub use nn::{
@@ -30,8 +32,9 @@ pub use stream::{
     decode_frames_stream,
 };
 pub use types::{
-    DecoderKind, FrameInfo, FrameLayout, OutputInfo, PixelFormat, Plane, SampleEncoding,
-    SignalState, VideoInfo, VideoParams, VideoStandard,
+    ChromaIdentMechanism, ChromaIdentReport, ChromaRowComponent, DecoderKind, FrameInfo,
+    FrameLayout, OutputInfo, PixelFormat, Plane, PlaneInfo, SampleEncoding, SignalState,
+    VideoInfo, VideoParams, VideoStandard,
 };
 pub use video::Video;
 
@@ -51,6 +54,11 @@ pub mod options {
     pub const COMB_ADAPT_THRESHOLD: &str = "comb_adapt_threshold"; // f64, NTSC 3D
     pub const COMB_CHROMA_WEIGHT: &str = "comb_chroma_weight"; // f64, NTSC 3D
     pub const COMB_SHOW_MAP: &str = "comb_show_map"; // bool, NTSC 3D
+    pub const CHROMA_IDENT_MODE: &str = "chroma_ident_mode"; // str, SECAM
+    pub const CHROMA_IDENT_MANUAL: &str = "chroma_ident_manual"; // str, SECAM manual mode
+    pub const CHROMA_CLICK_NR_LEVEL: &str = "chroma_click_nr_level"; // f64, SECAM
+    pub const CHROMA_CLICK_ENV_DIP_DB: &str = "chroma_click_env_dip_db"; // f64, SECAM expert
+    pub const CHROMA_CLICK_FREQ_OVERSHOOT: &str = "chroma_click_freq_overshoot"; // f64, SECAM expert
     pub const TRANSFORM_THRESHOLD: &str = "transform_threshold"; // f64
     pub const TRANSFORM_THRESHOLDS_FILE: &str = "transform_thresholds_file"; // str
     pub const FIRST_ACTIVE_FIELD_LINE: &str = "first_active_field_line"; // i32

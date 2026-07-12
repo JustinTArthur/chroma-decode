@@ -101,6 +101,37 @@ public:
         return height;
     }
 
+    // Line-sequential (SECAM) chroma lattice: per frame row, the colour-
+    // difference component that row's chroma carries (0 = Db, 1 = Dr, -1 =
+    // no chroma decoded for the row). Empty for simultaneous-chroma decodes.
+    std::vector<int8_t> chromaRowComponents;
+
+    // Ident measurement summary backing chd_frame_get_chroma_ident.
+    // `mechanism` matches chd_chroma_ident_mechanism_t.
+    struct ChromaIdent {
+        bool valid = false;
+        int32_t mechanism = 0;
+        double confidence = 0.0;
+        double fieldConfidence[2] = {0.0, 0.0};
+    };
+    ChromaIdent chromaIdent;
+
+    // FM click concealment results: sample spans (frame rows, full-line
+    // sample coordinates) whose chroma was concealed rather than decoded,
+    // and the effective thresholds that were applied.
+    struct ChromaConcealedSpan {
+        int32_t frameRow;
+        int32_t xStart;
+        int32_t xEnd;
+    };
+    std::vector<ChromaConcealedSpan> chromaConcealedSpans;
+    struct ChromaClickThresholds {
+        bool valid = false;
+        double envDipDb = 0.0;
+        double freqOvershoot = 0.0;
+    };
+    ChromaClickThresholds chromaClick;
+
 private:
     int32_t getLineOffset(int32_t line) const {
         assert(line >= 0);

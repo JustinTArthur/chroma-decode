@@ -100,13 +100,89 @@ synthesizeMetadata(chd::reader::ISource &src, bool firstFieldFirst) {
     return meta;
 }
 
+// Declared-vs-measured chroma check for 625/50 captures (warn-only, never
+// switches decode semantics): the back-porch reference either alternates
+// like the SECAM FM carrier pair or sits constant at the PAL burst
+// frequency. A contradiction usually means the open-time declaration (or
+// its absence) is wrong for this capture. For a Y/C pair this runs on the
+// chroma plane; a luma plane carries no porch reference and measures
+// inconclusive.
+void warn625ChromaSignatureMismatch(chd::reader::ISource &src, const char *what) {
+    const auto &vp = src.parameters();
+    if (vp.system != chd::metadata::PAL && vp.system != chd::metadata::SECAM) return;
+    if (vp.colourBurstStart <= 0 || vp.colourBurstEnd <= vp.colourBurstStart
+        || vp.colourBurstEnd >= vp.fieldWidth || vp.sampleRate <= 0.0) {
+        return;
+    }
+    if (!chd::format::getSampleEncoding(src.sampleEncoding()).hasStandardAmplitudeMapping) {
+        return;
+    }
+
+    // Post-VBI rows with a settled reference, over the first few fields.
+    constexpr int32_t kFirstRow = 40;
+    constexpr int32_t kNumRows = 32;
+    const int32_t numFields = std::min<int32_t>(src.getNumberOfAvailableFields(), 4);
+    std::vector<uint16_t> rowBuffer;
+    std::vector<double> means, alternations;
+    for (int32_t i = 0; i < numFields; i++) {
+        const auto rows = src.getVideoField(i + 1, kFirstRow + 1, kFirstRow + kNumRows);
+        const auto sig = chd::format::measure625ChromaPorchSignature(
+            rows.data(), kNumRows, vp.fieldWidth, vp.colourBurstStart,
+            vp.colourBurstEnd, vp.sampleRate, vp.blanking16bIre, vp.white16bIre);
+        if (!sig) continue;
+        means.push_back(sig->meanHz);
+        alternations.push_back(sig->alternationHz);
+    }
+    if (means.empty()) return;
+    double mean = 0.0, alternation = 0.0;
+    for (size_t i = 0; i < means.size(); i++) {
+        mean += means[i];
+        alternation += alternations[i];
+    }
+    mean /= means.size();
+    alternation /= alternations.size();
+
+    const bool looksSecam = alternation > 100000.0 && alternation < 220000.0;
+    const bool looksPal = alternation < 50000.0 && std::abs(mean - 4433618.75) < 40000.0;
+    if (vp.system == chd::metadata::PAL && looksSecam) {
+        chd::log::warn().nospace()
+            << what << ": back-porch chroma reference alternates by "
+            << alternation << " Hz line to line, the SECAM FM carrier-pair "
+            << "signature; if this capture is SECAM, re-declare it with "
+            << "chd_video_params_t.standard = CHD_STD_SECAM";
+    } else if (vp.system == chd::metadata::SECAM && looksPal) {
+        chd::log::warn().nospace()
+            << what << ": back-porch chroma reference is a constant "
+            << mean << " Hz burst, the PAL signature; the SECAM declaration "
+            << "looks wrong for this capture";
+    }
+}
+
 chd_video_standard_t toAbiStandard(chd::metadata::VideoSystem system) {
     switch (system) {
         case chd::metadata::PAL:   return CHD_STD_PAL;
         case chd::metadata::NTSC:  return CHD_STD_NTSC;
         case chd::metadata::PAL_M: return CHD_STD_PAL_M;
+        case chd::metadata::SECAM: return CHD_STD_SECAM;
     }
     return CHD_STD_UNKNOWN;
+}
+
+std::optional<chd::metadata::VideoSystem> fromAbiStandard(chd_video_standard_t standard) {
+    switch (standard) {
+        case CHD_STD_NTSC:  return chd::metadata::NTSC;
+        case CHD_STD_PAL:   return chd::metadata::PAL;
+        case CHD_STD_PAL_M: return chd::metadata::PAL_M;
+        case CHD_STD_SECAM: return chd::metadata::SECAM;
+        default:            return std::nullopt;
+    }
+}
+
+// 625-line systems share raster geometry with each other, as do the 525-line
+// systems; an open-time colour-standard re-declaration is only meaningful
+// within the same line standard.
+bool is625Line(chd::metadata::VideoSystem system) {
+    return system == chd::metadata::PAL || system == chd::metadata::SECAM;
 }
 
 chd_sample_encoding_t toAbiEncoding(chd::format::SampleEncoding encoding) {
@@ -160,6 +236,9 @@ int32_t nativeSamplesPerFrame(chd::metadata::VideoSystem system) {
             return chd::format::getVideoStandard(chd::format::VideoStandard::NTSC).samplesPerFrame;
         case chd::metadata::PAL_M:
             return chd::format::getVideoStandard(chd::format::VideoStandard::PAL_M).samplesPerFrame;
+        case chd::metadata::SECAM:
+            // SECAM shares the 625/50 sampling lattice with PAL.
+            return chd::format::getVideoStandard(chd::format::VideoStandard::PAL).samplesPerFrame;
     }
     return 0;
 }
@@ -232,6 +311,10 @@ struct ResolvedCvbsParams {
     std::optional<bool>                     subcarrierLockedOverride;
     bool                                    secondFieldFirst = false;
     std::optional<int64_t>                  declaredFrames;
+    // The capture is SECAM stored under the byte-compatible 625/50 PAL
+    // preset (the CVBS spec has no SECAM preset yet); re-declare the opened
+    // source and its synthesized metadata after open.
+    bool                                    declareSecam = false;
 };
 
 chd_status_t resolveCvbsParams(const std::string &dataPath,
@@ -265,6 +348,14 @@ chd_status_t resolveCvbsParams(const std::string &dataPath,
         out->sampleEncoding = parsed->sampleEncoding;
         out->signalState    = parsed->signalState;
         out->declaredFrames = parsed->numberOfSequentialFrames;
+        if (overrideOrNull != nullptr && overrideOrNull->standard == CHD_STD_SECAM) {
+            if (parsed->videoStandard->videoSystem != chd::metadata::PAL) {
+                return set_error(
+                    "CVBS open: a SECAM re-declaration requires the sidecar's "
+                    "preset to be the 625-line PAL lattice");
+            }
+            out->declareSecam = true;
+        }
         out->meta           = std::move(parsed);
         return CHD_OK;
     }
@@ -276,12 +367,18 @@ chd_status_t resolveCvbsParams(const std::string &dataPath,
         return CHD_E_METADATA_MISSING;
     }
 
-    // Translate ABI standard enum back into a format preset.
+    // Translate ABI standard enum back into a format preset. The CVBS spec
+    // has no SECAM preset yet, so a SECAM declaration selects the
+    // byte-compatible 625/50 PAL lattice and re-declares after open.
     const chd::format::VideoStandardPreset *standard = nullptr;
     switch (overrideOrNull->standard) {
         case CHD_STD_PAL:   standard = &chd::format::getVideoStandard(chd::format::VideoStandard::PAL);   break;
         case CHD_STD_NTSC:  standard = &chd::format::getVideoStandard(chd::format::VideoStandard::NTSC);  break;
         case CHD_STD_PAL_M: standard = &chd::format::getVideoStandard(chd::format::VideoStandard::PAL_M); break;
+        case CHD_STD_SECAM:
+            standard = &chd::format::getVideoStandard(chd::format::VideoStandard::PAL);
+            out->declareSecam = true;
+            break;
         default:
             return set_error("CVBS open: chd_video_params_t.standard unset or unknown");
     }
@@ -348,6 +445,24 @@ chd_status_t openCompositeSource(const std::string &fn, const std::string &path,
         } catch (const std::exception &e) {
             return set_error(fn + ": " + e.what());
         }
+        // A non-zero override standard re-declares the colour standard over
+        // the sidecar's, for captures whose sidecar cannot express it (a
+        // vhs-decode ME-SECAM sidecar says "PAL"). The line standard must
+        // match; a 525-line capture cannot be re-declared as a 625-line one.
+        if (overrideOrNull != nullptr && overrideOrNull->standard != CHD_STD_UNKNOWN) {
+            const auto declared = fromAbiStandard(overrideOrNull->standard);
+            if (!declared) {
+                return set_error(fn + ": chd_video_params_t.standard unknown");
+            }
+            const auto current = metadata->getVideoParameters().system;
+            if (*declared != current) {
+                if (is625Line(*declared) != is625Line(current)) {
+                    return set_error(fn + ": declared standard's line standard does not"
+                                          " match the capture's");
+                }
+                metadata->overrideVideoSystem(*declared);
+            }
+        }
         const auto &vp = metadata->getVideoParameters();
         auto src = std::make_unique<chd::reader::TbcSource>();
         if (!src->open(path, vp.fieldWidth * vp.fieldHeight, vp.fieldWidth)) {
@@ -373,8 +488,13 @@ chd_status_t openCompositeSource(const std::string &fn, const std::string &path,
                    resolved.declaredFrames, resolved.subcarrierLockedOverride)) {
         return set_error(fn + ": failed to open sample file");
     }
+    out->metadata = synthesizeMetadata(*src, !resolved.secondFieldFirst);
+    if (resolved.declareSecam) {
+        out->metadata->overrideVideoSystem(chd::metadata::SECAM);
+        const auto &mvp = out->metadata->getVideoParameters();
+        src->redeclareVideoSystem(mvp.system, mvp.fSC);
+    }
     out->source = std::move(src);
-    out->metadata = synthesizeMetadata(*out->source, !resolved.secondFieldFirst);
     out->metadataSynthesized = true;
     return CHD_OK;
 }
@@ -417,6 +537,8 @@ chd_status_t chd_video_open_composite(const char *path,
     const chd_status_t rc = openCompositeSource(
         "chd_video_open_composite", path, sidecar_path_or_null, override_or_null, &opened);
     if (rc != CHD_OK) return rc;
+
+    warn625ChromaSignatureMismatch(*opened.source, "chd_video_open_composite");
 
     auto handle = std::make_unique<chd_video>();
     handle->primaryPath        = path;
@@ -464,6 +586,12 @@ chd_status_t chd_video_open_yc(const char *luma_path, const char *chroma_path,
             return set_error("chd_video_open_yc: failed to open y/c files");
         }
         handle->metadata = synthesizeMetadata(*src, !resolved.secondFieldFirst);
+        if (resolved.declareSecam) {
+            handle->metadata->overrideVideoSystem(chd::metadata::SECAM);
+            const auto &mvp = handle->metadata->getVideoParameters();
+            src->redeclareVideoSystem(mvp.system, mvp.fSC);
+        }
+        warn625ChromaSignatureMismatch(*src, "chd_video_open_yc");
         handle->metadataSynthesized = true;
         handle->source  = std::move(src);
         *out = handle.release();
@@ -496,6 +624,8 @@ chd_status_t chd_video_open_yc(const char *luma_path, const char *chroma_path,
     if (luma.metadata->getNumberOfFrames() != chroma.metadata->getNumberOfFrames()) {
         return set_error("chd_video_open_yc: luma and chroma have different frame counts");
     }
+
+    warn625ChromaSignatureMismatch(*chroma.source, "chd_video_open_yc");
 
     handle->source             = std::move(luma.source);
     handle->metadata           = std::move(luma.metadata);

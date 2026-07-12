@@ -33,6 +33,7 @@ enum VideoSystem {
     PAL = 0,    // 625-line PAL
     NTSC,       // 525-line NTSC
     PAL_M,      // 525-line PAL
+    SECAM,      // 625-line SECAM
 };
 
 bool parseVideoSystemName(std::string name, VideoSystem &system);
@@ -237,6 +238,11 @@ public:
 
     // Handle line parameters
     void processLineParameters(LdDecodeMetaData::LineParameters &_lineParameters);
+
+    // Re-declare the video system after a successful read/set (e.g. a SECAM
+    // capture whose sidecar says PAL): rederives the system defaults and
+    // revalidates the active-line ranges against the new system's bounds.
+    void overrideVideoSystem(VideoSystem system);
 
     // Get field metadata
     const Field &getField(int32_t sequentialFieldNumber);

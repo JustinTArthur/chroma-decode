@@ -11,6 +11,24 @@ extern "C" {
 
 chd_status_t chd_frame_get_info(const chd_frame_t *f, chd_frame_info_t *out);
 
+/* Per-plane geometry. Valid for every pixel format; the 4:4:0 formats are
+ * the reason to call it (their chroma planes are shorter than the frame and
+ * differ from each other by up to one row). */
+chd_status_t chd_frame_get_plane_info(const chd_frame_t *f, chd_plane_t p,
+                                      chd_plane_info_t *out);
+
+/* Which colour-difference component the chroma decoded at output frame row
+ * `frame_row` carries. Line-sequential (4:4:0) frames only:
+ * CHD_E_UNSUPPORTED otherwise. Per-frame, not per-format: a given row's
+ * component changes frame to frame (the 625-line count is odd). */
+chd_status_t chd_frame_chroma_row_component(const chd_frame_t *f, int32_t frame_row,
+                                            chd_chroma_row_component_t *out);
+
+/* Per-frame Db/Dr ident summary for line-sequential (4:4:0) frames;
+ * CHD_E_UNSUPPORTED otherwise. */
+chd_status_t chd_frame_get_chroma_ident(const chd_frame_t *f,
+                                        chd_chroma_ident_report_t *out);
+
 /* Zero-copy borrow of a 16-bit plane (integer pixel formats). Caller does NOT
  * free the pointer; it is owned by the frame and invalid after chd_frame_free.
  * Stride in bytes. */

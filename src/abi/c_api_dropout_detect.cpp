@@ -77,6 +77,7 @@ chd_pixel_format_t maskFormatFor(chd_pixel_format_t committed) {
         case CHD_PIXEL_GRAYS:
         case CHD_PIXEL_YUV444PS:
         case CHD_PIXEL_RGBS:
+        case CHD_PIXEL_YUV440PS:
             return CHD_PIXEL_GRAYS;
         default:
             return CHD_PIXEL_GRAY16;
@@ -116,6 +117,7 @@ void appendFieldSpans(const chd::decoders::SourceField &sf, const OutputGeometry
         span.y       = y;
         span.x_start = x0 - avs;
         span.x_end   = x1 - avs;
+        span.origin  = CHD_DROPOUT_ORIGIN_SOURCE_METADATA;
         spans.push_back(span);
     }
 }
@@ -149,6 +151,17 @@ chd_status_t collectSpans(chd_decoder_t *d, int64_t frame_index,
     const int32_t total = static_cast<int32_t>(fields.size());
     if (startIndex < total)     appendFieldSpans(fields[startIndex], g, mode, spans);
     if (startIndex + 1 < total) appendFieldSpans(fields[startIndex + 1], g, mode, spans);
+
+    // Merge decoder-detected concealment spans for this frame (present once
+    // the frame has been decoded with click concealment enabled). One
+    // enumeration path, filterable by origin.
+    {
+        std::lock_guard<std::mutex> sl(d->statsMutex);
+        const auto it = d->concealedSpansByFrame.find(frame_index);
+        if (it != d->concealedSpansByFrame.end()) {
+            spans.insert(spans.end(), it->second.begin(), it->second.end());
+        }
+    }
 
     std::sort(spans.begin(), spans.end(),
               [](const chd_dropout_span_t &a, const chd_dropout_span_t &b) {

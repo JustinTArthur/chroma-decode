@@ -62,6 +62,10 @@ public:
 
     void close();
 
+    // Re-declare the colour standard over the opened preset's; see
+    // CvbsCompositeSource::redeclareVideoSystem.
+    void redeclareVideoSystem(chd::metadata::VideoSystem system, double fSC);
+
     // ISource implementation -------------------------------------------------
     const chd::metadata::LdDecodeMetaData::VideoParameters &parameters() const override;
     chd::format::SignalState     signalState()    const override;

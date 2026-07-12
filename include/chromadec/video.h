@@ -22,6 +22,9 @@ void         chd_shutdown(void);
  *   - standard/encoding/signal_state are required when no sidecar is found;
  *     layout, is_subcarrier_locked, and is_second_field_first merge
  *     field-wise over sidecar metadata
+ *   - with an ld-decode sidecar, a non-zero standard re-declares the colour
+ *     standard over the sidecar's (same line standard only; e.g. SECAM for
+ *     an ME-SECAM capture whose sidecar says PAL)
  * The sidecar flavour (ld-decode vs CVBS) is detected automatically. */
 chd_status_t chd_video_open_composite(const char *path,
                                       const char *sidecar_path_or_null,

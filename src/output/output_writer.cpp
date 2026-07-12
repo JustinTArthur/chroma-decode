@@ -247,6 +247,8 @@ const char *OutputWriter::getPixelName() const
         return "YUV444P16";
     case GRAY16:
         return "GRAY16";
+    case YUV440P16:
+        return "YUV440P16";
     default:
         return "unknown";
     }
@@ -277,7 +279,9 @@ std::string OutputWriter::getStreamHeader() const
     str << " H" << outputHeight;
 
     // Frame rate
-    if (videoParameters.system == chd::metadata::PAL) {
+    const bool is625 = videoParameters.system == chd::metadata::PAL
+                    || videoParameters.system == chd::metadata::SECAM;
+    if (is625) {
         str << " F25:1";
     } else {
         str << " F30000:1001";
@@ -293,7 +297,7 @@ std::string OutputWriter::getStreamHeader() const
     // Pixel aspect ratio
     // Follows EBU R92 and SMPTE RP 187 except that values are scaled from
     // BT.601 sampling (13.5 MHz) to 4fSC
-    if (videoParameters.system == chd::metadata::PAL) {
+    if (is625) {
         if (videoParameters.isWidescreen) {
             str << " A865:779"; // (16 / 9) * (576 / (702 * 4*fSC / 13.5))
         } else {
@@ -344,6 +348,10 @@ void OutputWriter::convert(const ComponentFrame &componentFrame, OutputFrame &ou
         break;
     case GRAY16:
         break;
+    case YUV440P16:
+        // Subsampled path sizes and fills its own buffer.
+        convert440(componentFrame, outputFrame);
+        return;
     }
     outputFrame.resize(totalSize);
 
@@ -394,6 +402,9 @@ void OutputWriter::clearPadLines(int32_t firstLine, int32_t numLines, OutputFram
 
             break;
         }
+        case YUV440P16:
+            // 4:4:0 output rejects padding (no padded chroma rows exist).
+            break;
     }
 }
 
@@ -474,7 +485,155 @@ void OutputWriter::convertLine(int32_t lineNumber, const ComponentFrame &compone
 
             break;
         }
+        case YUV440P16:
+            // Whole-frame path only (convert440).
+            break;
     }
+}
+
+// Active-region-relative row lists for the two 4:4:0 chroma planes, read
+// from the frame's chromaRowComponents map. Shared by the integer and float
+// convert440 paths, which must agree on geometry.
+namespace {
+struct Rows440 {
+    std::vector<int32_t> cb;
+    std::vector<int32_t> cr;
+};
+}  // namespace
+
+static Rows440 gather440Rows(const ComponentFrame &componentFrame,
+                             int32_t firstActiveFrameLine, int32_t activeHeight,
+                             int32_t topPadLines, int32_t bottomPadLines) {
+    if (topPadLines != 0 || bottomPadLines != 0) {
+        throw std::runtime_error("4:4:0 output does not define padded chroma rows");
+    }
+    const auto &map = componentFrame.chromaRowComponents;
+    if (static_cast<int32_t>(map.size()) < firstActiveFrameLine + activeHeight) {
+        throw std::runtime_error("4:4:0 output requires a chroma row component map");
+    }
+
+    Rows440 rows;
+    rows.cb.reserve((activeHeight + 1) / 2);
+    rows.cr.reserve((activeHeight + 1) / 2);
+    for (int32_t y = 0; y < activeHeight; y++) {
+        const int8_t c = map[firstActiveFrameLine + y];
+        if (c == 0)      rows.cb.push_back(y);
+        else if (c == 1) rows.cr.push_back(y);
+    }
+    return rows;
+}
+
+static OutputWriter::Chroma440Geometry geometryFor(const Rows440 &rows) {
+    OutputWriter::Chroma440Geometry g;
+    g.cbHeight   = static_cast<int32_t>(rows.cb.size());
+    g.crHeight   = static_cast<int32_t>(rows.cr.size());
+    g.cbFirstRow = rows.cb.empty() ? 0 : rows.cb.front();
+    g.crFirstRow = rows.cr.empty() ? 0 : rows.cr.front();
+    return g;
+}
+
+OutputWriter::Chroma440Geometry OutputWriter::convert440(const ComponentFrame &componentFrame,
+                                                         OutputFrame &outputFrame) const
+{
+    const Rows440 rows = gather440Rows(componentFrame, videoParameters.firstActiveFrameLine,
+                                       activeHeight, topPadLines, bottomPadLines);
+    const Chroma440Geometry g = geometryFor(rows);
+
+    outputFrame.resize(static_cast<size_t>(activeWidth)
+                       * (outputHeight + g.cbHeight + g.crHeight));
+
+    const double yOffset = videoParameters.black16bIre;
+    const double yRange = videoParameters.white16bIre - videoParameters.black16bIre;
+    const double uvRange = yRange;
+    const double eyScale  = 1.0 / yRange;
+    const double ecbScale = 1.0 / (BLUE_DIFFERENCE_SCALE * kB * uvRange);
+    const double ecrScale = 1.0 / (RED_DIFFERENCE_SCALE  * kR * uvRange);
+    const auto b = intYCbCrBounds(config.clampMode);
+
+    uint16_t *outY  = outputFrame.data();
+    uint16_t *outCB = outY + static_cast<size_t>(activeWidth) * outputHeight;
+    uint16_t *outCR = outCB + static_cast<size_t>(activeWidth) * g.cbHeight;
+
+    for (int32_t y = 0; y < activeHeight; y++) {
+        const int32_t inputLine = videoParameters.firstActiveFrameLine + y;
+        const double *inY = componentFrame.y(inputLine) + videoParameters.activeVideoStart;
+        uint16_t *out = outY + static_cast<size_t>(y) * activeWidth;
+        for (int32_t x = 0; x < activeWidth; x++) {
+            out[x] = quantizeLuma((inY[x] - yOffset) * eyScale, b.yLo, b.yHi);
+        }
+    }
+
+    for (size_t k = 0; k < rows.cb.size(); k++) {
+        const int32_t inputLine = videoParameters.firstActiveFrameLine + rows.cb[k];
+        const double *inU = componentFrame.u(inputLine) + videoParameters.activeVideoStart;
+        uint16_t *out = outCB + k * activeWidth;
+        for (int32_t x = 0; x < activeWidth; x++) {
+            out[x] = quantizeChroma(inU[x] * ecbScale, b.cLo, b.cHi);
+        }
+    }
+
+    for (size_t k = 0; k < rows.cr.size(); k++) {
+        const int32_t inputLine = videoParameters.firstActiveFrameLine + rows.cr[k];
+        const double *inV = componentFrame.v(inputLine) + videoParameters.activeVideoStart;
+        uint16_t *out = outCR + k * activeWidth;
+        for (int32_t x = 0; x < activeWidth; x++) {
+            out[x] = quantizeChroma(inV[x] * ecrScale, b.cLo, b.cHi);
+        }
+    }
+
+    return g;
+}
+
+OutputWriter::Chroma440Geometry OutputWriter::convertToFloat440(
+    const ComponentFrame &componentFrame, std::vector<float> *outPlanes) const
+{
+    const Rows440 rows = gather440Rows(componentFrame, videoParameters.firstActiveFrameLine,
+                                       activeHeight, topPadLines, bottomPadLines);
+    const Chroma440Geometry g = geometryFor(rows);
+
+    outPlanes[0].assign(static_cast<size_t>(activeWidth) * outputHeight, 0.0f);
+    outPlanes[1].assign(static_cast<size_t>(activeWidth) * g.cbHeight, 0.0f);
+    outPlanes[2].assign(static_cast<size_t>(activeWidth) * g.crHeight, 0.0f);
+
+    const double yOffset = videoParameters.black16bIre;
+    const double yRange = videoParameters.white16bIre - videoParameters.black16bIre;
+    const double uvRange = yRange;
+    const double eyScale  = 1.0 / yRange;
+    const double ecbScale = 1.0 / (BLUE_DIFFERENCE_SCALE * kB * uvRange);
+    const double ecrScale = 1.0 / (RED_DIFFERENCE_SCALE  * kR * uvRange);
+    const auto bounds = floatYCbCrBounds(config.clampMode);
+
+    for (int32_t y = 0; y < activeHeight; y++) {
+        const int32_t inputLine = videoParameters.firstActiveFrameLine + y;
+        const double *inY = componentFrame.y(inputLine) + videoParameters.activeVideoStart;
+        float *outY = outPlanes[0].data() + static_cast<size_t>(y) * activeWidth;
+        for (int32_t x = 0; x < activeWidth; x++) {
+            outY[x] = std::clamp(static_cast<float>((inY[x] - yOffset) * eyScale),
+                                 bounds.eyLo, bounds.eyHi);
+        }
+    }
+
+    for (size_t k = 0; k < rows.cb.size(); k++) {
+        const int32_t inputLine = videoParameters.firstActiveFrameLine + rows.cb[k];
+        const double *inU = componentFrame.u(inputLine) + videoParameters.activeVideoStart;
+        float *outCB = outPlanes[1].data() + k * activeWidth;
+        for (int32_t x = 0; x < activeWidth; x++) {
+            outCB[x] = std::clamp(static_cast<float>(inU[x] * ecbScale),
+                                  bounds.ecLo, bounds.ecHi);
+        }
+    }
+
+    for (size_t k = 0; k < rows.cr.size(); k++) {
+        const int32_t inputLine = videoParameters.firstActiveFrameLine + rows.cr[k];
+        const double *inV = componentFrame.v(inputLine) + videoParameters.activeVideoStart;
+        float *outCR = outPlanes[2].data() + k * activeWidth;
+        for (int32_t x = 0; x < activeWidth; x++) {
+            outCR[x] = std::clamp(static_cast<float>(inV[x] * ecrScale),
+                                  bounds.ecLo, bounds.ecHi);
+        }
+    }
+
+    return g;
 }
 
 void OutputWriter::convertToFloat(const ComponentFrame &componentFrame,

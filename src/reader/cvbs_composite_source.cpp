@@ -103,6 +103,15 @@ void CvbsCompositeSource::close()
     fieldCache.clear();
 }
 
+void CvbsCompositeSource::redeclareVideoSystem(chd::metadata::VideoSystem system, double fSC)
+{
+    videoParameters.system = system;
+    videoParameters.fSC = fSC;
+    if (system == chd::metadata::SECAM) {
+        videoParameters.isSubcarrierLocked = false;
+    }
+}
+
 const chd::metadata::LdDecodeMetaData::VideoParameters &CvbsCompositeSource::parameters() const
 {
     return videoParameters;

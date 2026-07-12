@@ -12,6 +12,7 @@
 #include "mono/mono_decoder.h"
 #include "palcolour/pal_decoder.h"
 #include "palcolour/palcolour.h"
+#include "secam/secam_decoder.h"
 
 #if defined(CHD_WITH_NN)
 #include "ldzeug/ldzeug_color_cnn.h"
@@ -80,8 +81,11 @@ chd_decoder_kind_t resolveAuto(chd_decoder_kind_t kind, chd::metadata::VideoSyst
         case chd::metadata::NTSC:  return CHD_DEC_NTSC_2D;
         case chd::metadata::PAL:
         case chd::metadata::PAL_M: return CHD_DEC_PAL_2D;
+        case chd::metadata::SECAM: return CHD_DEC_SECAM;
     }
-    return CHD_DEC_NTSC_2D;
+    // Systems with no decoder family stay AUTO, which commit reports as an
+    // unsupported kind.
+    return CHD_DEC_AUTO;
 }
 
 bool kindUsesNn(chd_decoder_kind_t kind) {
@@ -98,9 +102,10 @@ bool optionApplies(chd_decoder_kind_t kind, const std::string &name, OptionType 
     const bool pal    = isPalKind(kind)  || kind == CHD_DEC_AUTO;
     const bool ldzeug = isLdzeugKind(kind);
     const bool nn3d   = kind == CHD_DEC_NN_TRANSFORM3D;
+    const bool secam  = kind == CHD_DEC_SECAM;
 
     // Comb / PAL chroma-trim options.
-    if (type == OptionType::F64 && name == CHD_OPT_CHROMA_GAIN)     return comb || pal || ldzeug;
+    if (type == OptionType::F64 && name == CHD_OPT_CHROMA_GAIN)     return comb || pal || ldzeug || secam;
     if (type == OptionType::F64 && name == CHD_OPT_CHROMA_PHASE_DEG) return comb || pal || ldzeug;
     if (type == OptionType::F64 && name == CHD_OPT_LUMA_NR_LEVEL) {
         return comb || pal || kind == CHD_DEC_MONO;
@@ -116,6 +121,16 @@ bool optionApplies(chd_decoder_kind_t kind, const std::string &name, OptionType 
     if (type == OptionType::F64  && name == CHD_OPT_COMB_ADAPT_THRESHOLD) return kind == CHD_DEC_NTSC_3D;
     if (type == OptionType::F64  && name == CHD_OPT_COMB_CHROMA_WEIGHT)   return kind == CHD_DEC_NTSC_3D;
     if (type == OptionType::Bool && name == CHD_OPT_COMB_SHOW_MAP)        return kind == CHD_DEC_NTSC_3D;
+
+    // SECAM line-identification options. Value validation happens at commit
+    // (chroma_ident_manual is required iff chroma_ident_mode is "manual").
+    if (type == OptionType::Str && name == CHD_OPT_CHROMA_IDENT_MODE)   return secam;
+    if (type == OptionType::Str && name == CHD_OPT_CHROMA_IDENT_MANUAL) return secam;
+
+    // SECAM FM click concealment; range and pairing validated at commit.
+    if (type == OptionType::F64 && name == CHD_OPT_CHROMA_CLICK_NR_LEVEL)       return secam;
+    if (type == OptionType::F64 && name == CHD_OPT_CHROMA_CLICK_ENV_DIP_DB)     return secam;
+    if (type == OptionType::F64 && name == CHD_OPT_CHROMA_CLICK_FREQ_OVERSHOOT) return secam;
 
     // Cross-system chroma-filter intent + numeric upper-sideband geometry.
     // Both apply to the comb (NTSC) and PalColour (PAL/PAL-M) decoders;
@@ -273,6 +288,26 @@ std::unique_ptr<chd::decoders::Decoder> build(chd_decoder_kind_t kind, const Opt
             chd::decoders::palcolour::PalColour::Configuration pc;
             fillPalConfig(pc, opts, kind);
             return std::make_unique<chd::decoders::palcolour::PalDecoder>(pc);
+        }
+        case CHD_DEC_SECAM: {
+            using IdentMode = chd::decoders::secam::SecamDecoder::IdentMode;
+            chd::decoders::secam::SecamDecoder::SecamConfiguration sc;
+            sc.chromaGain = findOr(opts.f64, CHD_OPT_CHROMA_GAIN, sc.chromaGain);
+            // Strings were validated at commit; unknown values fall back to
+            // the defaults here.
+            const auto mode = findOr(opts.str, CHD_OPT_CHROMA_IDENT_MODE, std::string{});
+            if (mode == "porch")        sc.identMode = IdentMode::Porch;
+            else if (mode == "bottles") sc.identMode = IdentMode::Bottles;
+            else if (mode == "manual")  sc.identMode = IdentMode::Manual;
+            else                        sc.identMode = IdentMode::Auto;
+            const auto manual = findOr(opts.str, CHD_OPT_CHROMA_IDENT_MANUAL, std::string{});
+            sc.manualFirstComponent = (manual == "dr_first") ? 1 : 0;
+            sc.clickNrLevel = findOr(opts.f64, CHD_OPT_CHROMA_CLICK_NR_LEVEL, sc.clickNrLevel);
+            sc.clickEnvDipDbOverride =
+                findOr(opts.f64, CHD_OPT_CHROMA_CLICK_ENV_DIP_DB, sc.clickEnvDipDbOverride);
+            sc.clickFreqOvershootOverride = findOr(
+                opts.f64, CHD_OPT_CHROMA_CLICK_FREQ_OVERSHOOT, sc.clickFreqOvershootOverride);
+            return std::make_unique<chd::decoders::secam::SecamDecoder>(sc);
         }
 #if defined(CHD_WITH_NN)
         case CHD_DEC_LDZEUG_COLOR_CNN: {

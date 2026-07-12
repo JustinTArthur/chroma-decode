@@ -23,7 +23,8 @@ typedef enum chd_status {
     CHD_E_OUT_OF_RANGE             = 13,
     CHD_E_CANCELLED                = 14,
     CHD_E_INTERNAL                 = 15,
-    CHD_E_OOM                      = 16
+    CHD_E_OOM                      = 16,
+    CHD_E_UNSUPPORTED              = 17
 } chd_status_t;
 
 const char *chd_status_str(chd_status_t s);

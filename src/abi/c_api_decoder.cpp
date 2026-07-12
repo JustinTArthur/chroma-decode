@@ -55,6 +55,8 @@ int parseOutputFormat(const std::string &name) {
     if (name == "yuv444ps"  || name == "YUV444PS")  return chd::output::OutputWriter::YUV444P16;
     if (name == "rgbs"      || name == "RGBS")      return chd::output::OutputWriter::RGB48;
     if (name == "grays"     || name == "GRAYS")     return chd::output::OutputWriter::GRAY16;
+    if (name == "yuv440p16" || name == "YUV440P16") return chd::output::OutputWriter::YUV440P16;
+    if (name == "yuv440ps"  || name == "YUV440PS")  return chd::output::OutputWriter::YUV440P16;
     return -1;
 }
 
@@ -65,6 +67,8 @@ chd_pixel_format_t parseChdPixelFormat(const std::string &name) {
     if (name == "yuv444ps"  || name == "YUV444PS")  return CHD_PIXEL_YUV444PS;
     if (name == "rgbs"      || name == "RGBS")      return CHD_PIXEL_RGBS;
     if (name == "grays"     || name == "GRAYS")     return CHD_PIXEL_GRAYS;
+    if (name == "yuv440p16" || name == "YUV440P16") return CHD_PIXEL_YUV440P16;
+    if (name == "yuv440ps"  || name == "YUV440PS")  return CHD_PIXEL_YUV440PS;
     return CHD_PIXEL_YUV444P16;
 }
 
@@ -265,6 +269,13 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
         }
         primaryCF.setU(*chromaCF.getU());
         primaryCF.setV(*chromaCF.getV());
+        // Line-sequential (SECAM) chroma carries its row lattice, ident
+        // report, and concealment results with the chroma plane; empty for
+        // QAM decodes.
+        primaryCF.chromaRowComponents = std::move(chromaCF.chromaRowComponents);
+        primaryCF.chromaIdent = chromaCF.chromaIdent;
+        primaryCF.chromaConcealedSpans = std::move(chromaCF.chromaConcealedSpans);
+        primaryCF.chromaClick = chromaCF.chromaClick;
     }
 
     auto frame = std::make_unique<chd_frame>();
@@ -273,7 +284,72 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
     const int32_t activeWidth =
         d->videoParameters.activeVideoEnd - d->videoParameters.activeVideoStart;
 
-    if (frame->format == CHD_PIXEL_YUV444PS || frame->format == CHD_PIXEL_GRAYS) {
+    // Publish click-concealment results: spans mapped into the committed
+    // active-output framing (cached per frame for the unified dropout-span
+    // query) and the effective thresholds actually applied.
+    if (primaryCF.chromaClick.valid) {
+        std::vector<chd_dropout_span_t> concealed;
+        concealed.reserve(primaryCF.chromaConcealedSpans.size());
+        const int32_t firstLine = d->videoParameters.firstActiveFrameLine;
+        const int32_t lastLine = d->videoParameters.lastActiveFrameLine;
+        const int32_t avs = d->videoParameters.activeVideoStart;
+        for (const auto &span : primaryCF.chromaConcealedSpans) {
+            if (span.frameRow < firstLine || span.frameRow > lastLine) continue;
+            const int32_t xs = std::clamp(span.xStart - avs, 0, activeWidth);
+            const int32_t xe = std::clamp(span.xEnd - avs, 0, activeWidth);
+            if (xe <= xs) continue;
+            concealed.push_back({span.frameRow - firstLine, xs, xe,
+                                 CHD_DROPOUT_ORIGIN_DECODER_CONCEALMENT});
+        }
+        std::lock_guard<std::mutex> sl(d->statsMutex);
+        // Bound the cache; evicting the lowest frame index keeps streaming
+        // (ascending) decodes holding their recent frames.
+        if (d->concealedSpansByFrame.size() > 4096) {
+            d->concealedSpansByFrame.erase(d->concealedSpansByFrame.begin());
+        }
+        d->concealedSpansByFrame[frame_index] = std::move(concealed);
+        d->lastClickEnvDipDb = primaryCF.chromaClick.envDipDb;
+        d->lastClickFreqOvershoot = primaryCF.chromaClick.freqOvershoot;
+        d->haveClickThresholds = true;
+    }
+
+    if (frame->format == CHD_PIXEL_YUV440PS || frame->format == CHD_PIXEL_YUV440P16) {
+        // 4:4:0: full-height Y, chroma planes holding only the rows the
+        // frame's component lattice assigns to each of Db/Dr. Geometry is
+        // per-frame; the frame carries it for chd_frame_get_plane_info.
+        const int32_t outputHeight = d->outputWriter.getOutputHeight();
+        try {
+            frame->chroma440 = (frame->format == CHD_PIXEL_YUV440PS)
+                ? d->outputWriter.convertToFloat440(primaryCF, frame->floatPlane)
+                : d->outputWriter.convert440(primaryCF, frame->u16Plane);
+        } catch (const std::exception &e) {
+            chd::detail::set_last_error(
+                std::string("chd_decode_frame: 4:4:0 conversion failed: ") + e.what());
+            return CHD_E_INTERNAL;
+        }
+        frame->rowComponent.assign(static_cast<size_t>(outputHeight), -1);
+        const int32_t firstLine = d->videoParameters.firstActiveFrameLine;
+        for (int32_t y = 0; y < outputHeight; y++) {
+            frame->rowComponent[static_cast<size_t>(y)] =
+                primaryCF.chromaRowComponents[static_cast<size_t>(firstLine + y)];
+        }
+        if (primaryCF.chromaIdent.valid) {
+            frame->identReport.mechanism = static_cast<chd_chroma_ident_mechanism_t>(
+                primaryCF.chromaIdent.mechanism);
+            frame->identReport.confidence = primaryCF.chromaIdent.confidence;
+            frame->identReport.field_confidence[0] = primaryCF.chromaIdent.fieldConfidence[0];
+            frame->identReport.field_confidence[1] = primaryCF.chromaIdent.fieldConfidence[1];
+            frame->identReport.first_row_component =
+                (frame->rowComponent[0] == 1) ? CHD_CHROMA_ROW_DR : CHD_CHROMA_ROW_DB;
+            frame->hasIdentReport = true;
+        }
+        frame->activeWidth = activeWidth;
+        frame->outputHeight = outputHeight;
+        frame->info.format = frame->format;
+        frame->info.width  = activeWidth;
+        frame->info.height = outputHeight;
+        frame->info.num_planes = 3;
+    } else if (frame->format == CHD_PIXEL_YUV444PS || frame->format == CHD_PIXEL_GRAYS) {
         // Honor any requested padding: the float path mirrors the integer path's
         // committed geometry (top/bottom blank lines), it does not crop tight.
         // GRAYS emits only the E'Y plane; YUV444PS also emits E'Cb/E'Cr.
@@ -454,6 +530,41 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
         }
     }
     {
+        // SECAM's line-sequential chroma decodes to 4:4:0 (or luma-only).
+        // Emitting full-height chroma or matrixed RGB would force the library
+        // to pick a vertical chroma reconstruction kernel; that decision
+        // belongs to the consuming application, so those formats are
+        // rejected. Conversely, 4:4:0 exists only as the SECAM lattice.
+        const bool is440 = (abiFormat == CHD_PIXEL_YUV440P16
+                            || abiFormat == CHD_PIXEL_YUV440PS);
+        const bool lumaOnly = (abiFormat == CHD_PIXEL_GRAY16
+                               || abiFormat == CHD_PIXEL_GRAYS);
+        if (system == chd::metadata::SECAM && !is440 && !lumaOnly) {
+            chd::detail::set_last_error(
+                "chd_decoder_commit: SECAM sources decode to 4:4:0 chroma "
+                "(\"yuv440ps\"/\"yuv440p16\") or luma-only (\"grays\"/\"gray16\"); "
+                "vertical chroma reconstruction is the consumer's choice");
+            return CHD_E_INVALID_ARG;
+        }
+        if (is440 && system != chd::metadata::SECAM) {
+            chd::detail::set_last_error(
+                "chd_decoder_commit: 4:4:0 output is produced only by "
+                "line-sequential (SECAM) decodes");
+            return CHD_E_INVALID_ARG;
+        }
+        if (is440 && outCfg.paddingAmount > 1) {
+            chd::detail::set_last_error(
+                "chd_decoder_commit: padding_multiple does not apply to 4:4:0 "
+                "output (no padded chroma rows exist)");
+            return CHD_E_INVALID_ARG;
+        }
+        if (is440 && outCfg.outputY4m) {
+            chd::detail::set_last_error(
+                "chd_decoder_commit: output_y4m_headers does not support 4:4:0 output");
+            return CHD_E_INVALID_ARG;
+        }
+    }
+    {
         // Resolve the chroma-filter intent against the source system and reject
         // invalid (mode, system) cells here, where the system is known. The
         // registry's per-decoder config build trusts this gate.
@@ -464,6 +575,13 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
             if (!intent) {
                 chd::detail::set_last_error(
                     "chd_decoder_commit: unknown chroma_filter \"" + it->second + "\"");
+                return CHD_E_INVALID_ARG;
+            }
+            if (system == chd::metadata::SECAM) {
+                // The chroma-filter intents shape QAM subcarrier
+                // reconstruction; SECAM's FM block has no such cell.
+                chd::detail::set_last_error(
+                    "chd_decoder_commit: chroma_filter does not apply to SECAM decodes");
                 return CHD_E_INVALID_ARG;
             }
             const auto res = chd::decoders::resolveChromaFilter(*intent, system);
@@ -517,6 +635,71 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
                 "chd_decoder_commit: an active chroma sideband profile requires "
                 "chroma_filter=\"wideband_i_ssb\"");
             return CHD_E_INVALID_ARG;
+        }
+    }
+
+    {
+        // SECAM line-identification options: validate the enum strings and
+        // the manual-mode cross-option requirement (optionApplies is
+        // per-kind only, so the pairing is checked here).
+        auto modeIt = d->optionMaps.str.find(CHD_OPT_CHROMA_IDENT_MODE);
+        auto manualIt = d->optionMaps.str.find(CHD_OPT_CHROMA_IDENT_MANUAL);
+        std::string mode;
+        if (modeIt != d->optionMaps.str.end()) {
+            mode = modeIt->second;
+            if (mode != "auto" && mode != "porch" && mode != "bottles" && mode != "manual") {
+                chd::detail::set_last_error(
+                    "chd_decoder_commit: unknown chroma_ident_mode \"" + mode + "\"");
+                return CHD_E_INVALID_ARG;
+            }
+        }
+        if (manualIt != d->optionMaps.str.end()) {
+            if (manualIt->second != "db_first" && manualIt->second != "dr_first") {
+                chd::detail::set_last_error(
+                    "chd_decoder_commit: unknown chroma_ident_manual \""
+                    + manualIt->second + "\"");
+                return CHD_E_INVALID_ARG;
+            }
+            if (mode != "manual") {
+                chd::detail::set_last_error(
+                    "chd_decoder_commit: chroma_ident_manual is only meaningful with "
+                    "chroma_ident_mode=\"manual\"");
+                return CHD_E_INVALID_ARG;
+            }
+        } else if (mode == "manual") {
+            chd::detail::set_last_error(
+                "chd_decoder_commit: chroma_ident_mode=\"manual\" requires "
+                "chroma_ident_manual (\"db_first\" or \"dr_first\")");
+            return CHD_E_INVALID_ARG;
+        }
+    }
+    {
+        // SECAM click-concealment options: level range plus the rule that
+        // the expert absolute overrides only mean something when the stage
+        // is enabled at all.
+        auto lvlIt = d->optionMaps.f64.find(CHD_OPT_CHROMA_CLICK_NR_LEVEL);
+        const double level = (lvlIt != d->optionMaps.f64.end()) ? lvlIt->second : 1.0;
+        if (lvlIt != d->optionMaps.f64.end()
+            && (!std::isfinite(level) || level < 0.0 || level > 1.0)) {
+            chd::detail::set_last_error(
+                "chd_decoder_commit: chroma_click_nr_level must be in [0.0, 1.0]");
+            return CHD_E_INVALID_ARG;
+        }
+        for (const char *name :
+             {CHD_OPT_CHROMA_CLICK_ENV_DIP_DB, CHD_OPT_CHROMA_CLICK_FREQ_OVERSHOOT}) {
+            auto it = d->optionMaps.f64.find(name);
+            if (it == d->optionMaps.f64.end()) continue;
+            if (!std::isfinite(it->second) || it->second <= 0.0) {
+                chd::detail::set_last_error(std::string("chd_decoder_commit: ") + name
+                                            + " must be a positive threshold");
+                return CHD_E_INVALID_ARG;
+            }
+            if (level <= 0.0) {
+                chd::detail::set_last_error(
+                    std::string("chd_decoder_commit: ") + name
+                    + " is only meaningful when chroma_click_nr_level > 0");
+                return CHD_E_INVALID_ARG;
+            }
         }
     }
 
@@ -665,6 +848,25 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
     d->threadCount = threadCount;
 
     d->committed = true;
+    return CHD_OK;
+}
+
+chd_status_t chd_decoder_get_chroma_click_thresholds(const chd_decoder_t *d,
+                                                     double *env_dip_db,
+                                                     double *freq_overshoot) {
+    if (d == nullptr || env_dip_db == nullptr || freq_overshoot == nullptr) {
+        return set_arg_error("chd_decoder_get_chroma_click_thresholds");
+    }
+    auto *mutableD = const_cast<chd_decoder_t *>(d);
+    std::lock_guard<std::mutex> sl(mutableD->statsMutex);
+    if (!d->haveClickThresholds) {
+        chd::detail::set_last_error(
+            "chd_decoder_get_chroma_click_thresholds: no decode has run with "
+            "chroma_click_nr_level > 0");
+        return CHD_E_UNSUPPORTED;
+    }
+    *env_dip_db = d->lastClickEnvDipDb;
+    *freq_overshoot = d->lastClickFreqOvershoot;
     return CHD_OK;
 }
 
