@@ -29,6 +29,18 @@ auto findOr(const M &m, const std::string &key, typename M::mapped_type fallback
     return it == m.end() ? fallback : it->second;
 }
 
+// The colour matrix the OutputWriter will invert. Strings were validated at
+// commit; unknown values fall back to the defaults here.
+chd::color::ColorConversion colorConversionFor(const OptionMaps &o) {
+    const auto cdp = chd::color::parseColorDifferencePrecision(
+        findOr(o.str, CHD_OPT_COLOR_DIFFERENCE_PRECISION, std::string{}))
+        .value_or(chd::color::ColorDifferencePrecision::Modern);
+    const auto bsp = chd::color::parseBroadcastScalingPrecision(
+        findOr(o.str, CHD_OPT_BROADCAST_SCALING_PRECISION, std::string{}))
+        .value_or(chd::color::BroadcastScalingPrecision::Scientific);
+    return chd::color::resolveColorConversion(cdp, bsp);
+}
+
 // Common option names that apply to most decoders.
 bool isLineLayoutOption(const std::string &name, OptionType type) {
     if (type != OptionType::I32) return false;
@@ -42,7 +54,9 @@ bool isOutputOption(const std::string &name, OptionType type) {
     if (type == OptionType::I32 && (name == CHD_OPT_PADDING_MULTIPLE
                                     || name == CHD_OPT_THREAD_COUNT)) return true;
     if (type == OptionType::Str  && (name == CHD_OPT_OUTPUT_FORMAT
-                                    || name == CHD_OPT_OUTPUT_CLAMP))    return true;
+                                    || name == CHD_OPT_OUTPUT_CLAMP
+                                    || name == CHD_OPT_COLOR_DIFFERENCE_PRECISION
+                                    || name == CHD_OPT_BROADCAST_SCALING_PRECISION)) return true;
     if (type == OptionType::Bool && (name == CHD_OPT_OUTPUT_Y4M_HEADERS
                                     || name == CHD_OPT_REVERSE_FIELD_ORDER)) return true;
     return false;
@@ -191,6 +205,7 @@ void fillCombConfig(chd::decoders::comb::Comb::Configuration &c, const OptionMap
         findOr(o.str, CHD_OPT_CHROMA_FILTER, std::string{}))
         .value_or(chd::decoders::ChromaFilter::Compat);
     c.chromaFilterMode = combModeFor(intent);
+    c.colorConversion = colorConversionFor(o);
     // The asymmetric wide-I/narrow-Q reconstruction is only defined on the
     // burst-locked I/Q axes, so wideband_i_ssb implies phase compensation unless
     // the caller explicitly turned it off (in which case filterIQ degrades to
@@ -249,6 +264,7 @@ void fillPalConfig(chd::decoders::palcolour::PalColour::Configuration &c, const 
     c.chromaBandwidthHz     = res.cutoffHz;
     c.chromaVsbRecovery     = (intent == chd::decoders::ChromaFilter::EquibandVsb);
     c.chromaUpperSidebandHz = findOr(o.f64, CHD_OPT_CHROMA_UPPER_SIDEBAND_HZ, 0.0);
+    c.colorConversion = colorConversionFor(o);
 
     switch (kind) {
         case CHD_DEC_PAL_2D:
@@ -307,6 +323,7 @@ std::unique_ptr<chd::decoders::Decoder> build(chd_decoder_kind_t kind, const Opt
                 findOr(opts.f64, CHD_OPT_CHROMA_CLICK_ENV_DIP_DB, sc.clickEnvDipDbOverride);
             sc.clickFreqOvershootOverride = findOr(
                 opts.f64, CHD_OPT_CHROMA_CLICK_FREQ_OVERSHOOT, sc.clickFreqOvershootOverride);
+            sc.colorConversion = colorConversionFor(opts);
             return std::make_unique<chd::decoders::secam::SecamDecoder>(sc);
         }
 #if defined(CHD_WITH_NN)

@@ -30,11 +30,6 @@ constexpr double kBandPassLo = 3500000.0;
 constexpr double kBandPassHi = 5100000.0;
 constexpr double kBandStopHi = 5700000.0;
 
-// Composite-domain U/V reduction factors: U = kB*(B'-Y'), V = kR*(R'-Y')
-// [Poynton eq 28.1 p336]; matches the OutputWriter's inverse scalings.
-constexpr double kB = 0.49211104112248356308804691718185;
-constexpr double kR = 0.87728321993817866838972487283129;
-
 double bandGain(double f) {
     const double af = std::abs(f);
     if (af <= kBandStopLo || af >= kBandStopHi) return 0.0;
@@ -736,11 +731,15 @@ void SecamDecoder::decodeField(const SourceField &inputField,
 
     // Write the decoded lines: Y from the input minus the reconstituted
     // chroma band, and one colour-difference component per line, scaled to
-    // the composite-domain U/V the OutputWriter expects.
+    // the composite-domain U/V the OutputWriter expects. The reduction factors
+    // are the ones the writer will divide back out, so they cancel: SECAM's
+    // own Db/Dr scalings (kDbScale/kDrScale) are what the signal actually
+    // carries, and the broadcast_scaling_precision option leaves the picture
+    // untouched here by construction.
     const int32_t offset = inputField.getOffset();
     const double uvRange = vp.white16bIre - vp.black16bIre;
-    const double uScale = kB * uvRange * config.chromaGain / kDbScale;
-    const double vScale = kR * uvRange * config.chromaGain / kDrScale;
+    const double uScale = config.colorConversion.uReduction * uvRange * config.chromaGain / kDbScale;
+    const double vScale = config.colorConversion.vReduction * uvRange * config.chromaGain / kDrScale;
     const int32_t frameHeight = componentFrame.getHeight();
 
     for (int32_t fieldLine = firstActive; fieldLine < lastActive; fieldLine++) {

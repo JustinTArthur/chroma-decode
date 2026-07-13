@@ -1067,7 +1067,7 @@ void Comb::FrameBuffer::overlayMap(const FrameBuffer &previousFrame, const Frame
     chd::log::debug() << "Comb::FrameBuffer::overlayMap(): Overlaying map onto output";
 
     // Create a canvas for colour conversion
-    chd::output::FrameCanvas canvas(*componentFrame, videoParameters);
+    chd::output::FrameCanvas canvas(*componentFrame, videoParameters, configuration.colorConversion);
 
     // Convert CANDIDATE_SHADES into Y'UV form
     chd::output::FrameCanvas::Colour shades[NUM_CANDIDATES];

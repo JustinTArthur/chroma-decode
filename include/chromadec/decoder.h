@@ -84,6 +84,8 @@ chd_status_t chd_decoder_get_output_info(const chd_decoder_t *d, chd_output_info
 #define CHD_OPT_NN_CHROMA_BANDPASS          "nn_chroma_bandpass"        /* bool (ldzeug2_luma_sep only) */
 #define CHD_OPT_OUTPUT_FORMAT               "output_format"             /* str: "yuv444p16"|"yuv444ps"|"rgb48"|"rgbs"|"gray16"|"grays"|"yuv440p16"|"yuv440ps" */
 #define CHD_OPT_OUTPUT_CLAMP                "output_clamp"              /* str: "none"|"legal_rgb_sdr"|"legal_rgb_hdr"|"legal_ycbcr_bt601" */
+#define CHD_OPT_COLOR_DIFFERENCE_PRECISION  "color_difference_precision"  /* str: "classic"|"modern", default "modern" */
+#define CHD_OPT_BROADCAST_SCALING_PRECISION "broadcast_scaling_precision" /* str: "classic"|"modern"|"scientific", default "scientific" */
 #define CHD_OPT_OUTPUT_Y4M_HEADERS          "output_y4m_headers"        /* bool */
 #define CHD_OPT_THREAD_COUNT                "thread_count"              /* i32, 0=auto */
 

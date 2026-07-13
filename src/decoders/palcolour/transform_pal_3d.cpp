@@ -347,7 +347,7 @@ void TransformPal3D::overlayFFTFrame(int32_t positionX, int32_t positionY,
     applyFilter();
 
     // Create a canvas
-    chd::output::FrameCanvas canvas(componentFrame, videoParameters);
+    chd::output::FrameCanvas canvas(componentFrame, videoParameters, colorConversion);
 
     // Outline the selected tile
     const auto green = canvas.rgb(0, 0xFFFF, 0);

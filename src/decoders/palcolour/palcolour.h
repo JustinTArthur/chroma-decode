@@ -36,6 +36,7 @@
 
 #include "../../output/component_frame.h"
 #include "../chroma_filter.h"
+#include "../../common/color_conversion.h"
 #include "../decoder_base.h"
 #include "../source_field.h"
 #include "transform_pal.h"
@@ -64,6 +65,11 @@ public:
     struct Configuration {
         double chromaGain = 1.0;
         double chromaPhase = 0.0;
+        // Needed only by the show-FFT overlay, which draws R'G'B' colours that
+        // must survive the OutputWriter's inverse conversion.
+        chd::color::ColorConversion colorConversion = chd::color::resolveColorConversion(
+            chd::color::ColorDifferencePrecision::Modern,
+            chd::color::BroadcastScalingPrecision::Scientific);
         double yNRLevel = 0.0;
         bool simplePAL = false;
         SeparationMethod separation = palColourFilter;

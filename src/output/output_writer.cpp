@@ -39,21 +39,9 @@
 
 namespace chd::output {
 
-// ITU-R BT.601-7 / ITU-T H.273 luma matrix coefficients for MatrixCoefficients
-// 5 (625-line) and 6 (525-line): Kr = 0.299, Kb = 0.114. The full-excursion
-// color-difference spans are 2*(1-Kb) and 2*(1-Kr) [H.273 eq 46, 47].
-static constexpr double ONE_MINUS_Kb = 1.0 - 0.114;
-static constexpr double ONE_MINUS_Kr = 1.0 - 0.299;
-static constexpr double BLUE_DIFFERENCE_SCALE = 2.0 * ONE_MINUS_Kb;  // 1.772
-static constexpr double RED_DIFFERENCE_SCALE  = 2.0 * ONE_MINUS_Kr;  // 1.402
-
-// Reduction factors relating the composite-domain U/V stored in ComponentFrame
-// to the (B'-Y') and (R'-Y') color differences: U = kB*(B'-Y'), V = kR*(R'-Y').
-// kB = sqrt(209556997.0 / 96146491.0) / 3.0
-// kR = sqrt(221990474.0 / 288439473.0)
-// [Poynton eq 28.1 p336]
-static constexpr double kB = 0.49211104112248356308804691718185;
-static constexpr double kR = 0.87728321993817866838972487283129;
+// Luma matrix coefficients, the composite U/V reduction factors, and scalars
+// derived from them live in chd::color::ColorConversion, resolved from
+// configuration options for precision.
 
 // Narrow-range ("limited range") quantization of the normalized signals
 // E'Y in [0,1] and E'Cb/E'Cr in [-0.5,0.5] to 16-bit integers, per
@@ -156,15 +144,19 @@ FloatYCbCrBounds floatYCbCrBounds(OutputWriter::ClampMode mode) {
 
 // Normalized-signal-domain per-component bounds for CHD_PIXEL_RGBS under a
 // given clamp mode. CLAMP_LEGAL_YCBCR_BT601 projects the BT.601 §2.5.3
-// legal Y'CbCr volume forward through the MatrixCoefficients=5/6 matrix:
-// each axis bound is reached at a corner of the Y'CbCr box.
+// legal Y'CbCr volume forward through the H.273 inverse matrix [eq 44-46]:
+// each axis bound is reached at a corner of the Y'CbCr box. That projection
+// follows the luma coefficients, so the box moves with the colour-difference
+// precision. (It does not involve the broadcast scaling, which lives entirely
+// on the composite side of E'Cb/E'Cr.)
 struct FloatRGBBounds {
     float rLo, rHi;
     float gLo, gHi;
     float bLo, bHi;
 };
 
-FloatRGBBounds floatRGBBounds(OutputWriter::ClampMode mode) {
+FloatRGBBounds floatRGBBounds(OutputWriter::ClampMode mode,
+                              const chd::color::ColorConversion &conversion) {
     const float inf = std::numeric_limits<float>::infinity();
     switch (mode) {
         case OutputWriter::CLAMP_LEGAL_RGB_SDR:
@@ -174,10 +166,25 @@ FloatRGBBounds floatRGBBounds(OutputWriter::ClampMode mode) {
             // Positive-only light with unconstrained headroom past SDR
             // white (1.0): floor each component at black, no ceiling.
             return {0.0f, inf, 0.0f, inf, 0.0f, inf};
-        case OutputWriter::CLAMP_LEGAL_YCBCR_BT601:
-            return {-0.8633767f, 1.8835022f,
-                    -0.6672844f, 1.6901543f,
-                    -1.0731534f, 2.0928660f};
+        case OutputWriter::CLAMP_LEGAL_YCBCR_BT601: {
+            // E'R = E'Y + 2*(1-kr)*E'Cr, E'B = E'Y + 2*(1-kb)*E'Cb, and
+            // E'G = E'Y - (kb*2*(1-kb)/kg)*E'Cb - (kr*2*(1-kr)/kg)*E'Cr. The
+            // green coefficients are negative, so its corners take the
+            // opposite chroma bound. At the modern precision this reproduces
+            // R' in [-0.863377, 1.883502], G' in [-0.667284, 1.690154],
+            // B' in [-1.073153, 2.092866].
+            const auto b = floatYCbCrBounds(mode);
+            const double gFromCb = (conversion.kb * conversion.blueDifferenceScale) / conversion.kg;
+            const double gFromCr = (conversion.kr * conversion.redDifferenceScale)  / conversion.kg;
+            return {
+                static_cast<float>(b.eyLo + conversion.redDifferenceScale  * b.ecLo),
+                static_cast<float>(b.eyHi + conversion.redDifferenceScale  * b.ecHi),
+                static_cast<float>(b.eyLo - (gFromCb + gFromCr) * b.ecHi),
+                static_cast<float>(b.eyHi - (gFromCb + gFromCr) * b.ecLo),
+                static_cast<float>(b.eyLo + conversion.blueDifferenceScale * b.ecLo),
+                static_cast<float>(b.eyHi + conversion.blueDifferenceScale * b.ecHi),
+            };
+        }
         case OutputWriter::CLAMP_NONE:
         default:
             return {-inf, inf, -inf, inf, -inf, inf};
@@ -190,6 +197,8 @@ void OutputWriter::updateConfiguration(chd::metadata::LdDecodeMetaData::VideoPar
 {
     config = _config;
     videoParameters = _videoParameters;
+    conversion = chd::color::resolveColorConversion(config.colorDifferencePrecision,
+                                            config.broadcastScalingPrecision);
     topPadLines = 0;
     bottomPadLines = 0;
 
@@ -427,11 +436,11 @@ void OutputWriter::convertLine(int32_t lineNumber, const ComponentFrame &compone
 
     // Scale factors from the composite-domain Y/U/V stored in the ComponentFrame
     // to the normalized signals E'Y in [0,1] and E'Cb/E'Cr in [-0.5,0.5]
-    // [ITU-T H.273 eq 45-47]. The chroma factors undo the U = kB*(B'-Y') /
-    // V = kR*(R'-Y') reduction and divide by the full color-difference excursion.
+    // [ITU-T H.273 eq 45-47]. The chroma factors undo the broadcast U/V
+    // reduction and divide by the full color-difference excursion.
     const double eyScale  = 1.0 / yRange;
-    const double ecbScale = 1.0 / (BLUE_DIFFERENCE_SCALE * kB * uvRange);
-    const double ecrScale = 1.0 / (RED_DIFFERENCE_SCALE  * kR * uvRange);
+    const double ecbScale = conversion.ecbFromU / uvRange;
+    const double ecrScale = conversion.ecrFromV / uvRange;
 
     switch (config.pixelFormat) {
         case RGB48: {
@@ -450,9 +459,9 @@ void OutputWriter::convertLine(int32_t lineNumber, const ComponentFrame &compone
 
                 // Convert Y'UV to R'G'B'
                 const int32_t pos = x * 3;
-                out[pos]     = static_cast<uint16_t>(std::clamp(rY                    + (1.139883 * rV),  rgb.lo, rgb.hi));
-                out[pos + 1] = static_cast<uint16_t>(std::clamp(rY + (-0.394642 * rU) + (-0.580622 * rV), rgb.lo, rgb.hi));
-                out[pos + 2] = static_cast<uint16_t>(std::clamp(rY + (2.032062 * rU),                     rgb.lo, rgb.hi));
+                out[pos]     = static_cast<uint16_t>(std::clamp(rY + (conversion.rFromV * rV),                        rgb.lo, rgb.hi));
+                out[pos + 1] = static_cast<uint16_t>(std::clamp(rY + (conversion.gFromU * rU) + (conversion.gFromV * rV), rgb.lo, rgb.hi));
+                out[pos + 2] = static_cast<uint16_t>(std::clamp(rY + (conversion.bFromU * rU),                        rgb.lo, rgb.hi));
             }
 
             break;
@@ -546,8 +555,8 @@ OutputWriter::Chroma440Geometry OutputWriter::convert440(const ComponentFrame &c
     const double yRange = videoParameters.white16bIre - videoParameters.black16bIre;
     const double uvRange = yRange;
     const double eyScale  = 1.0 / yRange;
-    const double ecbScale = 1.0 / (BLUE_DIFFERENCE_SCALE * kB * uvRange);
-    const double ecrScale = 1.0 / (RED_DIFFERENCE_SCALE  * kR * uvRange);
+    const double ecbScale = conversion.ecbFromU / uvRange;
+    const double ecrScale = conversion.ecrFromV / uvRange;
     const auto b = intYCbCrBounds(config.clampMode);
 
     uint16_t *outY  = outputFrame.data();
@@ -599,8 +608,8 @@ OutputWriter::Chroma440Geometry OutputWriter::convertToFloat440(
     const double yRange = videoParameters.white16bIre - videoParameters.black16bIre;
     const double uvRange = yRange;
     const double eyScale  = 1.0 / yRange;
-    const double ecbScale = 1.0 / (BLUE_DIFFERENCE_SCALE * kB * uvRange);
-    const double ecrScale = 1.0 / (RED_DIFFERENCE_SCALE  * kR * uvRange);
+    const double ecbScale = conversion.ecbFromU / uvRange;
+    const double ecrScale = conversion.ecrFromV / uvRange;
     const auto bounds = floatYCbCrBounds(config.clampMode);
 
     for (int32_t y = 0; y < activeHeight; y++) {
@@ -661,8 +670,8 @@ void OutputWriter::convertToFloat(const ComponentFrame &componentFrame,
     const double yRange = videoParameters.white16bIre - videoParameters.black16bIre;
     const double uvRange = yRange;
     const double eyScale  = 1.0 / yRange;
-    const double ecbScale = 1.0 / (BLUE_DIFFERENCE_SCALE * kB * uvRange);
-    const double ecrScale = 1.0 / (RED_DIFFERENCE_SCALE  * kR * uvRange);
+    const double ecbScale = conversion.ecbFromU / uvRange;
+    const double ecrScale = conversion.ecrFromV / uvRange;
     const auto bounds = floatYCbCrBounds(config.clampMode);
 
     for (int32_t y = 0; y < activeHeight; y++) {
@@ -712,14 +721,11 @@ void OutputWriter::convertToFloatRGB(const ComponentFrame &componentFrame,
     const double uvRange = yRange;
     const double eyScale = 1.0 / yRange;
     const double uvScale = 1.0 / uvRange;
-    // Composite-domain U/V → R'G'B' coefficients, derived from
-    // U = kB*(B'-Y') and V = kR*(R'-Y'); see the integer RGB48 path for the
-    // identical scalars.
-    constexpr double R_FROM_V =  1.0 / kR;                                  //  1.139883
-    constexpr double G_FROM_U = -(0.114 * BLUE_DIFFERENCE_SCALE / 0.587) / kB;
-    constexpr double G_FROM_V = -(0.299 * RED_DIFFERENCE_SCALE  / 0.587) / kR;
-    constexpr double B_FROM_U =  1.0 / kB;                                  //  2.032062
-    const auto bounds = floatRGBBounds(config.clampMode);
+    // Composite-domain U/V → R'G'B'; the integer RGB48 path applies the same
+    // four scalars. The color-difference excursions 2*(1-kb) / 2*(1-kr) belong
+    // to the E'Cb/E'Cr normalization and cancel out of this matrix:
+    // E'B = E'Y + 2*(1-kb)*E'Cb = E'Y + U/uReduction, and likewise for E'R.
+    const auto bounds = floatRGBBounds(config.clampMode, conversion);
 
     for (int32_t y = 0; y < activeHeight; y++) {
         const int32_t inputLine = videoParameters.firstActiveFrameLine + y;
@@ -737,9 +743,9 @@ void OutputWriter::convertToFloatRGB(const ComponentFrame &componentFrame,
             const double rY = (inY[x] - yOffset) * eyScale;
             const double rU = inU[x] * uvScale;
             const double rV = inV[x] * uvScale;
-            outR[x] = std::clamp(static_cast<float>(rY                  + R_FROM_V * rV), bounds.rLo, bounds.rHi);
-            outG[x] = std::clamp(static_cast<float>(rY + G_FROM_U * rU + G_FROM_V * rV), bounds.gLo, bounds.gHi);
-            outB[x] = std::clamp(static_cast<float>(rY + B_FROM_U * rU                 ), bounds.bLo, bounds.bHi);
+            outR[x] = std::clamp(static_cast<float>(rY + conversion.rFromV * rV), bounds.rLo, bounds.rHi);
+            outG[x] = std::clamp(static_cast<float>(rY + conversion.gFromU * rU + conversion.gFromV * rV), bounds.gLo, bounds.gHi);
+            outB[x] = std::clamp(static_cast<float>(rY + conversion.bFromU * rU), bounds.bLo, bounds.bHi);
         }
     }
 }

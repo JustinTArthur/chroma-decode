@@ -22,6 +22,7 @@
 
 #include <fftw3.h>
 
+#include "../../common/color_conversion.h"
 #include "../decoder_base.h"
 
 namespace chd::decoders::secam {
@@ -45,6 +46,11 @@ public:
         double clickNrLevel = 1.0;
         double clickEnvDipDbOverride = 0.0;
         double clickFreqOvershootOverride = 0.0;
+        // The broadcast scaling here must match the OutputWriter's, which
+        // divides it back out; the luma coefficients are unused by SECAM.
+        chd::color::ColorConversion colorConversion = chd::color::resolveColorConversion(
+            chd::color::ColorDifferencePrecision::Modern,
+            chd::color::BroadcastScalingPrecision::Scientific);
     };
 
     explicit SecamDecoder(const SecamConfiguration &secamConfig);

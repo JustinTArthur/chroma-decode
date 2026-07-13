@@ -579,6 +579,8 @@ and any decoder-kind restriction.
 | `CHD_OPT_NN_CHROMA_BANDPASS`        | bool | ldzeug2 luma-sep chroma bandpass.                                                                                            |
 | `CHD_OPT_OUTPUT_FORMAT`             | str  | `"yuv444p16"`, `"yuv444ps"`, `"rgb48"`, `"rgbs"`, `"gray16"`, `"grays"`, `"yuv440p16"`, or `"yuv440ps"` (the 4:4:0 pair is SECAM-only; see [4:4:0 output](#440-output)). |
 | `CHD_OPT_OUTPUT_CLAMP`              | str  | `"none"` (default), `"legal_rgb_sdr"`, `"legal_rgb_hdr"`, or `"legal_ycbcr_bt601"`. See [Output clamping](#output-clamping). |
+| `CHD_OPT_COLOR_DIFFERENCE_PRECISION` | str | `"classic"` or `"modern"` (default). Precision of the luma matrix coefficients. See [Colour conversion precision](#colour-conversion-precision).   |
+| `CHD_OPT_BROADCAST_SCALING_PRECISION` | str | `"classic"`, `"modern"`, or `"scientific"` (default). Precision of the U/V reduction factors. See [Colour conversion precision](#colour-conversion-precision). |
 | `CHD_OPT_OUTPUT_Y4M_HEADERS`        | bool | Emit Y4M stream headers.                                                                                                     |
 | `CHD_OPT_THREAD_COUNT`              | i32  | Worker threads (`0` = auto).                                                                                                 |
 
@@ -1028,7 +1030,7 @@ are handled.
 | `none` (default)    | No signal-domain clamp. Integer formats still saturate at the bit-depth limits per ITU-T H.273 `Clip1` (`[0, 65535]` in 16-bit). Float formats emit raw values which may fall below `0` or above `1`. Most faithful to the decoded signal.                                                                                                                                                    |
 | `legal_rgb_sdr`     | Limit output to values that map between R′G′B′ black and white. Y′CbCr formats: `Y′` stays between black (`16·256`) and white (`235·256`); `Cb`/`Cr` stays within the standard `±112·256` excursion around neutral gray (`128·256`). RGB formats: components are clamped to `[black, white]` = `[0, 1]`. Suppresses super-white, sub-black, and over-saturated chroma.                        |
 | `legal_rgb_hdr`     | Map to positive-only R′G′B′ with unconstrained headroom past SDR white: components are floored at black (`0`) with no ceiling, preserving HDR highlights and removing negative excursion. Affects RGB formats (`rgbs`; `rgb48` already saturates at `0`); a **no-op** for Y′CbCr / GRAY formats, which have no clean per-component box for the positive-R′G′B′ region.                        |
-| `legal_ycbcr_bt601` | Clamp to values that map to ITU-R BT.601-7 §2.5.3 video-allowed codes `[1.00d, 254.75d]` scaled to output bit-depth. Useful before quantizing for downstream SD-SDI or DV transport. In RGBS, it clamps components to bounds achievable from BT.601-legal Y′CbCr (`R′∈[-0.863, +1.884]`, `G′∈[-0.667, +1.690]`, `B′∈[-1.073, +2.093]`). Doesn't affect integer RGB which is already stricter. |
+| `legal_ycbcr_bt601` | Clamp to values that map to ITU-R BT.601-7 §2.5.3 video-allowed codes `[1.00d, 254.75d]` scaled to output bit-depth. Useful before quantizing for downstream SD-SDI or DV transport. In RGBS, it clamps components to bounds achievable from BT.601-legal Y′CbCr (`R′∈[-0.863, +1.884]`, `G′∈[-0.667, +1.690]`, `B′∈[-1.073, +2.093]` at the default `modern` colour-difference precision; the box is projected through the selected matrix, so it shifts slightly under `classic`). Doesn't affect integer RGB which is already stricter. |
 
 For the GRAY formats (`gray16`, `grays`) the RGB-domain modes act on the luma
 axis only, because a luma sample alone cannot carry R′G′B′ legality — `grays`
@@ -1057,6 +1059,76 @@ void chd_frame_free(chd_frame_t *f);
 
 Release a frame and invalidate every plane pointer previously borrowed from
 it. Safe on `NULL`.
+
+---
+
+## Colour conversion precision { #colour-conversion-precision }
+
+Getting from a decoder's composite-domain Y/U/V to R′G′B′ or E′Y/E′Cb/E′Cr
+takes two independent sets of constants. They come from different standards,
+and both have been published at more than one precision, so each gets its own
+option. The defaults reproduce `ld-chroma-decoder`, so you only need these if
+you are chasing a specific standard's arithmetic.
+
+Careful: the literature spells both families with a K subscripted R and B. They
+are not the same constants.
+
+### Colour-difference precision
+
+`CHD_OPT_COLOR_DIFFERENCE_PRECISION` picks the precision of the luma matrix
+coefficients, the ones that say what fraction of E′Y each primary carries.
+
+| Token              | Luma equation                             | IEC 23091-2/ITU-T H.273 MatrixCoefficients |
+|--------------------|-------------------------------------------|--------------------------------------------|
+| `classic`          | `E′Y = 0.30 E′R + 0.59 E′G + 0.11 E′B`    | `4` (NTSC-1953, FCC 47 §73.682)            |
+| `modern` (default) | `E′Y = 0.299 E′R + 0.587 E′G + 0.114 E′B` | `5` (625-line), `6` (525-line)             |
+
+`classic` is the NTSC-1953 equation. `modern` from ITU-R BT.470, SMPTE ST 170,
+and ITU-R BT.1700.
+
+If you decode with `classic`, tag E′Y/E′Cb/E′Cr and Y′Cb′Cr′ results with
+`MatrixCoefficients` code point `4` instead of `5`or `6`.
+
+These coefficients reach the output in two places:
+
+- The **E′Cb / E′Cr** scaling, through the full-excursion colour-difference
+  spans `2(1 - KB)` and `2(1 - KR)`. Under `classic` those are `1.78` and
+  `1.40` rather than `1.772` and `1.402`.
+- The **green** row of the U/V → R′G′B′ matrix.
+
+### Broadcast scaling precision
+
+`CHD_OPT_BROADCAST_SCALING_PRECISION` picks the precision of reduction factors
+applied to the two color differences before they modulate the subcarrier,
+keeping the composite signal's excursion inside broadcast-safe transmission
+range.
+
+```
+U = uReduction × (E′B - E′Y)
+V = vReduction × (E′R - E′Y)
+```
+
+| Token                  | `uReduction`         | `vReduction`         | Source                                                |
+|------------------------|----------------------|----------------------|-------------------------------------------------------|
+| `classic`              | `0.493`              | `0.877`              | ITU-R BT.470-6 §2.5, ITU-R BT.1700 item 9             |
+| `modern`               | `0.492111`           | `0.877283`           | SMPTE ST 170 Annex A.3, eq 4 and 5                    |
+| `scientific` (default) | `0.4921110411224836` | `0.8772832199381787` | The closed forms ST 170's trailing ellipses stand for |
+
+`classic` and `modern` are not roundings of the same number. SMPTE ST 170 Annex
+A.3 records that the 1953 derivation of the reduction factors used a blue luma
+coefficient of `0.115` instead of the correct `0.114`, and `0.493`/`0.877` are
+the result. ST 170 redoes the derivation from the correct luma matrix, which is
+where `0.492111`/`0.877283` come from. So `classic` is a real difference: about
+`0.18%` on `uReduction`. `modern` and `scientific` agree to roughly `1e-7`, far
+below a 16-bit quantum, so that pair is a numerical no-op in most cases.
+
+Unlike color-difference precision, these factors reach *every* row of the
+U/V → R′G′B′ matrix, plus both chroma scalings.
+
+For SECAM this option is inert by construction. SECAM scaling follows
+BT.470/BT.1700 standards:
+`D′B = 1.505 (E′B - E′Y)`  
+`D′R = -1.902 (E′R - E′Y)`
 
 ---
 

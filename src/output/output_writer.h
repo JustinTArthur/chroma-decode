@@ -31,6 +31,7 @@
 #include <string>
 #include <vector>
 
+#include "../common/color_conversion.h"
 #include "../metadata/core.h"
 
 namespace chd::output {
@@ -76,6 +77,12 @@ public:
         PixelFormat pixelFormat = RGB48;
         ClampMode clampMode = CLAMP_NONE;
         bool outputY4m = false;
+        // Precision of the two coefficient families the conversions apply.
+        // The defaults reproduce ld-chroma-decoder.
+        chd::color::ColorDifferencePrecision colorDifferencePrecision =
+            chd::color::ColorDifferencePrecision::Modern;
+        chd::color::BroadcastScalingPrecision broadcastScalingPrecision =
+            chd::color::BroadcastScalingPrecision::Scientific;
     };
 
     // Set the output configuration, and adjust the VideoParameters to suit.
@@ -105,9 +112,8 @@ public:
 
     // For worker threads: convert a component frame to normalized float
     // R′G′B′ planes (E′R plane 0, E′G plane 1, E′B plane 2). Computed direct
-    // from the ComponentFrame via the BT.601/H.273 MatrixCoefficients=5/6
-    // matrix; no intermediate Y′CbCr integer quantization. Used by
-    // CHD_PIXEL_RGBS.
+    // from the ComponentFrame via the configured colour conversion; no
+    // intermediate Y′CbCr integer quantization. Used by CHD_PIXEL_RGBS.
     void convertToFloatRGB(const ComponentFrame &componentFrame,
                            std::vector<float> *outPlanes) const;
 
@@ -138,6 +144,12 @@ private:
     // Configuration parameters
     Configuration config;
     chd::metadata::LdDecodeMetaData::VideoParameters videoParameters;
+
+    // config's two precision selections, resolved to the scalars every
+    // convert path applies per sample. Rebuilt by updateConfiguration.
+    chd::color::ColorConversion conversion = chd::color::resolveColorConversion(
+        chd::color::ColorDifferencePrecision::Modern,
+        chd::color::BroadcastScalingPrecision::Scientific);
 
     // Number of blank lines to add at the top and bottom of the output
     int32_t topPadLines;

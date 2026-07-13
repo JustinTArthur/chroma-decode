@@ -28,6 +28,7 @@
 
 #include <cstdint>
 
+#include "../common/color_conversion.h"
 #include "../metadata/core.h"
 
 #include "component_frame.h"
@@ -39,7 +40,11 @@ class FrameCanvas {
 public:
     // componentFrame is the frame to draw upon, and videoParameters gives its parameters.
     // (Both parameters are captured by reference, not copied.)
-    FrameCanvas(ComponentFrame &componentFrame, const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters);
+    // colorConversion must be the one the OutputWriter will convert this frame with,
+    // so that a colour drawn as R'G'B' decodes back to the same R'G'B'.
+    FrameCanvas(ComponentFrame &componentFrame,
+                const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters,
+                const chd::color::ColorConversion &colorConversion);
 
     // Return the edges of the active area.
     int32_t top();
@@ -72,6 +77,7 @@ private:
     int32_t width, height;
     double ireRange, blackIre;
     const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters;
+    chd::color::ColorConversion colorConversion;
 };
 
 }  // namespace chd::output

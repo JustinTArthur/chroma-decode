@@ -54,7 +54,8 @@ public:
     // are meaningful, with higher values requiring signals to be more similar
     // to be considered chroma.
     void updateConfiguration(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters,
-                             double threshold, const std::vector<double> &thresholds);
+                             double threshold, const std::vector<double> &thresholds,
+                             const chd::color::ColorConversion &colorConversion);
 
     // Filter input fields.
     //
@@ -91,6 +92,7 @@ protected:
     // Configuration parameters
     bool configurationSet;
     chd::metadata::LdDecodeMetaData::VideoParameters videoParameters;
+    chd::color::ColorConversion colorConversion;
     std::vector<double> thresholds;
 };
 

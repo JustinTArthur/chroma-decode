@@ -27,11 +27,13 @@
 
 namespace chd::output {
 
-FrameCanvas::FrameCanvas(ComponentFrame &_componentFrame, const chd::metadata::LdDecodeMetaData::VideoParameters &_videoParameters)
+FrameCanvas::FrameCanvas(ComponentFrame &_componentFrame,
+                         const chd::metadata::LdDecodeMetaData::VideoParameters &_videoParameters,
+                         const chd::color::ColorConversion &_colorConversion)
     : yData(_componentFrame.y(0)), uData(_componentFrame.u(0)), vData(_componentFrame.v(0)),
       width(_componentFrame.getWidth()), height(_componentFrame.getHeight()),
       ireRange(_videoParameters.white16bIre - _videoParameters.black16bIre), blackIre(_videoParameters.black16bIre),
-      videoParameters(_videoParameters)
+      videoParameters(_videoParameters), colorConversion(_colorConversion)
 {
 }
 
@@ -62,11 +64,16 @@ FrameCanvas::Colour FrameCanvas::rgb(uint16_t r, uint16_t g, uint16_t b)
     const double sg = (g / 65535.0) * ireRange;
     const double sb = (b / 65535.0) * ireRange;
 
-    // Convert to Y'UV form [Poynton eq 28.5 p337]
+    // Convert to the composite-domain Y'UV the ComponentFrame holds: the luma
+    // equation [ITU-T H.273 eq 44], then the two colour differences reduced by
+    // the broadcast scaling. This is the forward direction of the matrix the
+    // OutputWriter will invert, so an overlay colour survives the round trip
+    // whatever precision the caller selected.
+    const double sy = (sr * colorConversion.kr) + (sg * colorConversion.kg) + (sb * colorConversion.kb);
     return Colour {
-        ((sr * 0.299)    + (sg * 0.587)     + (sb * 0.114))    + blackIre,
-        (sr * -0.147141) + (sg * -0.288869) + (sb * 0.436010),
-        (sr * 0.614975)  + (sg * -0.514965) + (sb * -0.100010)
+        sy + blackIre,
+        colorConversion.uReduction * (sb - sy),
+        colorConversion.vReduction * (sr - sy)
     };
 }
 

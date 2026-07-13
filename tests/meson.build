@@ -102,6 +102,13 @@ test_chroma_filter = executable('test_chroma_filter',
   dependencies: chromadec_internal_dep)
 test('chroma_filter', test_chroma_filter)
 
+# The colour-difference / broadcast-scaling precision options: the resolved
+# matrix for each pairing, and RGB48 vs RGBS agreement on a frame with chroma.
+test_color_conversion = executable('test_color_conversion',
+  'unit/test_color_conversion.cpp',
+  dependencies: chromadec_internal_dep)
+test('color_conversion', test_color_conversion)
+
 # CVBS reader end-to-end smoke tests. Uses the C ABI's
 # chd_video_open_composite / chd_video_open_yc entry points + reaches into the internal
 # CvbsCompositeSource / CvbsYcSource for sample-level assertions.

@@ -38,6 +38,7 @@
 
 #include "../../output/component_frame.h"
 #include "../../reader/source.h"
+#include "../../common/color_conversion.h"
 #include "../decoder_base.h"
 #include "../source_field.h"
 
@@ -82,6 +83,11 @@ public:
     struct Configuration {
         double chromaGain = 1.0;
         double chromaPhase = 0.0;
+        // Needed only by the show-map overlay, which draws R'G'B' colours that
+        // must survive the OutputWriter's inverse conversion.
+        chd::color::ColorConversion colorConversion = chd::color::resolveColorConversion(
+            chd::color::ColorDifferencePrecision::Modern,
+            chd::color::BroadcastScalingPrecision::Scientific);
         int32_t dimensions = 2;
         bool adaptive = true;
         bool showMap = false;

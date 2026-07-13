@@ -530,6 +530,32 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
         }
     }
     {
+        auto it = d->optionMaps.str.find(CHD_OPT_COLOR_DIFFERENCE_PRECISION);
+        if (it != d->optionMaps.str.end()) {
+            const auto p = chd::color::parseColorDifferencePrecision(it->second);
+            if (!p) {
+                chd::detail::set_last_error(
+                    "chd_decoder_commit: unknown color_difference_precision \""
+                    + it->second + "\"");
+                return CHD_E_INVALID_ARG;
+            }
+            outCfg.colorDifferencePrecision = *p;
+        }
+    }
+    {
+        auto it = d->optionMaps.str.find(CHD_OPT_BROADCAST_SCALING_PRECISION);
+        if (it != d->optionMaps.str.end()) {
+            const auto p = chd::color::parseBroadcastScalingPrecision(it->second);
+            if (!p) {
+                chd::detail::set_last_error(
+                    "chd_decoder_commit: unknown broadcast_scaling_precision \""
+                    + it->second + "\"");
+                return CHD_E_INVALID_ARG;
+            }
+            outCfg.broadcastScalingPrecision = *p;
+        }
+    }
+    {
         // SECAM's line-sequential chroma decodes to 4:4:0 (or luma-only).
         // Emitting full-height chroma or matrixed RGB would force the library
         // to pick a vertical chroma reconstruction kernel; that decision
