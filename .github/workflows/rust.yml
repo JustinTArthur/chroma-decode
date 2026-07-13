@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
   # Build libchromadec, then gate the first-party Rust bindings: rustfmt,
   # clippy (warnings = errors), and the test suite including the encode-orc
@@ -14,7 +17,7 @@ jobs:
   rust-bindings:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: System deps
         run: |
@@ -31,7 +34,7 @@ jobs:
 
       - name: Download ONNX Runtime (Microsoft release, Linux x64 CPU)
         run: |
-          ORT_VER=1.26.0
+          ORT_VER=1.27.1
           curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-x64-${ORT_VER}.tgz"
           mkdir -p ${HOME}/ort
           tar -xzf ort.tgz -C ${HOME}/ort --strip-components=1

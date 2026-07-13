@@ -27,16 +27,20 @@ Downloaded from Microsoft's official GitHub releases on every platform.
 
 | Job | Artifact | Pin |
 |---|---|---|
-| `linux` (x86_64) | `onnxruntime-linux-x64-${VER}.tgz` | 1.26.0 |
-| `linux` (arm64) | `onnxruntime-linux-aarch64-${VER}.tgz` | 1.26.0 |
-| `linux-asan-ubsan` | `onnxruntime-linux-x64-${VER}.tgz` | 1.26.0 |
-| `macos` (arm64) | `onnxruntime-osx-arm64-${VER}.tgz` | 1.26.0 |
+| `linux` (x86_64) | `onnxruntime-linux-x64-${VER}.tgz` | 1.27.1 |
+| `linux` (arm64) | `onnxruntime-linux-aarch64-${VER}.tgz` | 1.27.1 |
+| `linux-asan-ubsan` / `linux-tsan` | `onnxruntime-linux-x64-${VER}.tgz` | 1.27.1 |
+| `macos` (arm64) | `onnxruntime-osx-arm64-${VER}.tgz` | 1.27.1 |
 | `macos` (x86_64) | `onnxruntime-osx-x86_64-${VER}.tgz` | 1.23.2 |
+| `windows` | `onnxruntime-win-x64-${VER}.zip` | 1.27.1 |
+| `gpu-cuda` | `onnxruntime-linux-x64-gpu_cuda12-${VER}.tgz` | 1.27.1 |
+| `gpu-amd` | `onnxruntime-rocm` wheel from repo.radeon.com | 1.23.2 |
 
-The Linux CPU artifact is what these jobs need — GH-hosted runners have no
-GPU and `with_cuda=auto` falls back silently. CUDA / TensorRT require the
-separate `-gpu` artifact (1.26.0 ships both a default and a `gpu_cuda13`
-variant) and a self-hosted GPU runner.
+The CPU artifact is what the hosted jobs need — GH-hosted runners have no GPU
+and `with_cuda=auto` falls back silently. CUDA / TensorRT require the GPU
+artifact and a self-hosted GPU runner. The GPU artifact is published per CUDA
+major (`gpu_cuda12` / `gpu_cuda13`); we take `gpu_cuda12`, matching the CUDA
+on the deep-learning base AMI.
 
 macOS releases include the CoreML execution provider; do not use the
 Homebrew `onnxruntime` formula, which historically has shipped without

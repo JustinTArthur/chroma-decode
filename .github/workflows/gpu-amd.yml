@@ -30,10 +30,10 @@ jobs:
       instance_id: ${{ steps.launch.outputs.instance_id }}
       runner_label: ${{ env.RUNNER_LABEL }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_GPU_RUNNER_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -95,7 +95,7 @@ jobs:
           # group so jobs can talk to Docker without sudo.
           useradd -m -s /bin/bash -G docker ghrunner
           cd /home/ghrunner
-          RUNNER_VERSION=2.319.1
+          RUNNER_VERSION=2.335.1
           curl -sSL -o actions-runner.tar.gz \\
             https://github.com/actions/runner/releases/download/v\${RUNNER_VERSION}/actions-runner-linux-x64-\${RUNNER_VERSION}.tar.gz
           tar xzf actions-runner.tar.gz
@@ -165,7 +165,7 @@ jobs:
         --security-opt seccomp=unconfined
         --ipc=host
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: System info
         run: |
@@ -174,14 +174,26 @@ jobs:
           rocminfo 2>/dev/null | head -40 || echo "rocminfo not available in container"
           /opt/rocm/bin/migraphx-driver --version 2>/dev/null || true
 
+      # No apt `meson`: the packaged Meson in the ROCm image's Ubuntu base is
+      # below the project's floor. Meson comes from pip in a venv instead, as
+      # it does in build.yml. The ORT wheel below stays on the image's Python,
+      # since it is a runtime dependency the build only points at, not tooling
+      # the build runs.
       - name: System deps (image has rocm; add chromadec build deps)
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -qq
           apt-get install -y --no-install-recommends -qq \
-            ninja-build pkg-config meson cmake git file curl \
+            ninja-build pkg-config cmake git file curl \
             libsqlite3-dev libfftw3-dev \
-            build-essential python3-pip
+            build-essential python3-pip python3-venv
+
+      - name: Python venv (meson)
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install meson
 
       - name: Install AMD ORT-MIGraphX wheel
         run: |
@@ -200,12 +212,15 @@ jobs:
 
       - name: Configure (with_rocm=enabled)
         run: |
+          . .venv/bin/activate
           meson setup build \
             -Donnxruntime_root="$ORT_ROOT" \
             -Dwith_rocm=enabled
 
       - name: Build
-        run: meson compile -C build
+        run: |
+          . .venv/bin/activate
+          meson compile -C build
 
       - name: Set up encode-orc (drives integration fixtures)
         uses: ./.github/actions/setup-encode-orc
@@ -214,6 +229,7 @@ jobs:
         env:
           LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}
         run: |
+          . .venv/bin/activate
           meson test -C build --print-errorlogs
 
   cleanup:
@@ -222,7 +238,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_GPU_RUNNER_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}

@@ -13,7 +13,7 @@ runs:
   steps:
     - name: Cache encode-orc clone + build
       id: cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/encode-orc
         key: encode-orc-${{ runner.os }}-${{ runner.arch }}-${{ inputs.commit }}
@@ -38,7 +38,7 @@ runs:
 
     # pkg-config-lite provides the pkg-config tool that encode-orc's
     # CMakeLists uses to resolve the FFMPEG dependency. vcpkg is
-    # preinstalled on windows-2022.
+    # preinstalled on the hosted Windows images.
     - name: encode-orc deps (Windows)
       if: runner.os == 'Windows'
       shell: pwsh

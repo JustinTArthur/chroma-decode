@@ -29,10 +29,10 @@ jobs:
       instance_id: ${{ steps.launch.outputs.instance_id }}
       runner_label: ${{ env.RUNNER_LABEL }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_GPU_RUNNER_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -75,7 +75,7 @@ jobs:
           # Set up GH Actions runner under a non-root user.
           useradd -m -s /bin/bash ghrunner
           cd /home/ghrunner
-          RUNNER_VERSION=2.319.1
+          RUNNER_VERSION=2.335.1
           curl -sSL -o actions-runner.tar.gz \
             https://github.com/actions/runner/releases/download/v\${RUNNER_VERSION}/actions-runner-linux-x64-\${RUNNER_VERSION}.tar.gz
           tar xzf actions-runner.tar.gz
@@ -132,7 +132,7 @@ jobs:
     runs-on: [self-hosted, "${{ needs.launch-spot.outputs.runner_label }}"]
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: System info
         run: |
@@ -140,31 +140,47 @@ jobs:
           nvidia-smi
           ls /usr/local/cuda*/lib64/libcudart* 2>/dev/null || true
 
+      # No apt `meson` here: the AMI is Ubuntu 22.04, whose packaged Meson is
+      # far below the project's floor. Meson comes from pip in a venv instead,
+      # as it does in build.yml.
       - name: System deps
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends -qq \
-            ninja-build pkg-config meson cmake git file \
+            ninja-build pkg-config cmake git file \
+            python3-venv \
             libsqlite3-dev libfftw3-dev \
             build-essential
 
+      - name: Python venv (meson)
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install meson
+
       - name: Download ONNX Runtime (Linux x64 GPU — bundles CUDA + TensorRT EPs)
         run: |
-          ORT_VER=1.26.0
+          # The GPU build is published per CUDA major; cuda12 matches the CUDA
+          # the deep-learning base AMI carries.
+          ORT_VER=1.27.1
           curl -sSL -o ort.tgz \
-            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-x64-gpu-${ORT_VER}.tgz"
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-x64-gpu_cuda12-${ORT_VER}.tgz"
           mkdir -p $HOME/ort
           tar -xzf ort.tgz -C $HOME/ort --strip-components=1
           echo "ORT_ROOT=$HOME/ort" >> $GITHUB_ENV
 
       - name: Configure (with_cuda=enabled)
         run: |
+          . .venv/bin/activate
           meson setup build \
             -Donnxruntime_root="$ORT_ROOT" \
             -Dwith_cuda=enabled
 
       - name: Build
-        run: meson compile -C build
+        run: |
+          . .venv/bin/activate
+          meson compile -C build
 
       - name: Set up encode-orc (drives integration fixtures)
         uses: ./.github/actions/setup-encode-orc
@@ -173,6 +189,7 @@ jobs:
         env:
           LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib
         run: |
+          . .venv/bin/activate
           meson test -C build --print-errorlogs
 
   cleanup:
@@ -181,7 +198,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_GPU_RUNNER_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}

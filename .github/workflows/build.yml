@@ -2,9 +2,12 @@ name: build
 
 on:
   push:
-    branches: [ main, extract-base ]
+    branches: [ main ]
   pull_request:
     branches: [ main ]
+
+permissions:
+  contents: read
 
 jobs:
   linux:
@@ -21,7 +24,7 @@ jobs:
             ort_arch: aarch64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: System deps
         run: |
@@ -38,7 +41,7 @@ jobs:
 
       - name: Download ONNX Runtime (Microsoft release, Linux ${{ matrix.arch }} CPU)
         run: |
-          ORT_VER=1.26.0
+          ORT_VER=1.27.1
           curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-${{ matrix.ort_arch }}-${ORT_VER}.tgz"
           mkdir -p ${HOME}/ort
           tar -xzf ort.tgz -C ${HOME}/ort --strip-components=1
@@ -112,7 +115,7 @@ jobs:
   linux-asan-ubsan:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: System deps
         run: |
@@ -129,7 +132,7 @@ jobs:
 
       - name: Download ONNX Runtime (Microsoft release, Linux x64 CPU)
         run: |
-          ORT_VER=1.26.0
+          ORT_VER=1.27.1
           curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-x64-${ORT_VER}.tgz"
           mkdir -p ${HOME}/ort
           tar -xzf ort.tgz -C ${HOME}/ort --strip-components=1
@@ -166,7 +169,7 @@ jobs:
   linux-tsan:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: System deps
         run: |
@@ -183,7 +186,7 @@ jobs:
 
       - name: Download ONNX Runtime (Microsoft release, Linux x64 CPU)
         run: |
-          ORT_VER=1.26.0
+          ORT_VER=1.27.1
           curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-x64-${ORT_VER}.tgz"
           mkdir -p ${HOME}/ort
           tar -xzf ort.tgz -C ${HOME}/ort --strip-components=1
@@ -222,10 +225,10 @@ jobs:
           - arch: arm64
             runner: macos-latest
             ort_arch: arm64
-            # 1.26.0 is current; macOS arm64 has shipped every release.
-            ort_ver: '1.26.0'
+            # 1.27.1 is current; macOS arm64 has shipped every release.
+            ort_ver: '1.27.1'
           - arch: x86_64
-            runner: macos-13
+            runner: macos-15-intel
             ort_arch: x86_64
             # Microsoft dropped onnxruntime-osx-x86_64 after 1.23.2;
             # 1.24.0+ ships arm64 only. Pin to the last release that
@@ -233,7 +236,7 @@ jobs:
             ort_ver: '1.23.2'
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: System deps
         run: brew install ninja pkg-config sqlite fftw
@@ -289,14 +292,10 @@ jobs:
   # Windows MSVC. Skeleton — expected to need first-run iteration once
   # the repo lands on GitHub (vcpkg/meson/pkg-config/MSVC environment
   # interactions can't be fully validated locally on macOS/Linux).
-  # encode-orc is not wired in here yet: the composite action's Windows
-  # branch + a Windows-runnable encode-orc build are a separate
-  # follow-up. Without encode-orc the integration test
-  # self-skips with PASS, so the rest of the suite still gates.
   windows:
-    runs-on: windows-2022
+    runs-on: windows-2025
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up MSVC environment (x64)
         uses: ilammy/msvc-dev-cmd@v1
@@ -312,16 +311,22 @@ jobs:
           "CMAKE_PREFIX_PATH=$vcpkgInstalled" | Out-File -FilePath $env:GITHUB_ENV -Append
           "$vcpkgInstalled\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      - name: Python tools (meson + ninja)
+      # Prepending the venv's Scripts to PATH puts meson, ninja and python
+      # there for every later step, so the pwsh steps below need no explicit
+      # activation. It also means the interpreter Meson picks up for the
+      # .def-generating custom target is the venv one.
+      - name: Python venv (meson + ninja)
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          pip install meson ninja
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\pip.exe install meson ninja
+          "$env:GITHUB_WORKSPACE\.venv\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Download ONNX Runtime (Microsoft release, Windows x64 CPU)
         shell: pwsh
         run: |
-          $ORT_VER = "1.26.0"
+          $ORT_VER = "1.27.1"
           Invoke-WebRequest "https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VER/onnxruntime-win-x64-$ORT_VER.zip" -OutFile ort.zip
           Expand-Archive -Path ort.zip -DestinationPath "$env:USERPROFILE\ort_extract"
           $ortDir = (Get-ChildItem "$env:USERPROFILE\ort_extract" | Where-Object PSIsContainer | Select-Object -First 1).FullName
