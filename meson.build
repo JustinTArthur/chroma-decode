@@ -44,6 +44,7 @@ endif
 # are named here, where meson/ is a child of the source root.
 chromadec_map_in  = files('meson/chromadec.map.in')
 chromadec_exports = files('meson/chromadec.exports')
+chromadec_def_gen = files('meson/gen-module-def.py')
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 threads_dep = dependency('threads')

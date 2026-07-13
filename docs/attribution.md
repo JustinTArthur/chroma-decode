@@ -20,7 +20,9 @@ Particular contributors visible in that history (non-exhaustive):
 - **Adam Sampson**: Transform-PAL implementation, decoder pool, output writer
 - **Phillip Blucas**: PALcolour and PAL-M support
 - **Dani Funker**: chroma weight, NTSC 3D adaptive threshold options
-- many more: see `git log src/legacy/`
+- many more: run `git log --follow` on any ported source (say
+  `src/decoders/palcolour/palcolour.cpp`) to walk back through the extracted
+  history to its original authors
 
 ## nnTransform3D models and original harnesses
 

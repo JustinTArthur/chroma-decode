@@ -151,13 +151,20 @@ endif
 # - On macOS, restrict via -exported_symbols_list. Mach-O has no symbol
 #   versioning, so the plain symbol list needs no configuring; the ABI version
 #   reaches it through the install_name, which embeds the soversion.
-# - On Windows, a .def file will be added in a follow-up.
+# - On Windows, restrict via a .def file. Nothing is exported without one, since
+#   the sources carry no __declspec(dllexport). Both filters above glob chd_*;
+#   a .def has no wildcard, so its export set is generated from the public
+#   headers at build time instead of being hand-maintained beside them.
 #
 # The filter file is named inside a raw link_args string, which Meson does not
 # scan for filenames, so it is also passed as link_depends to make editing the
-# exported-symbol set relink the library.
+# exported-symbol set relink the library. (On Windows vs_module_defs already
+# tracks it, but passing it twice is harmless and keeps the branches uniform.)
 link_args = []
 symbol_filter = []
+# vs_module_defs rejects an empty value, so it is only passed at all on Windows,
+# via kwargs, rather than defaulted to something inert on the other platforms.
+def_kwarg = {}
 host_os = host_machine.system()
 if host_os == 'linux' or host_os.endswith('bsd')
   symbol_filter = configure_file(
@@ -170,6 +177,13 @@ elif host_os == 'darwin'
   symbol_filter = chromadec_exports
   link_args += ['-Wl,-exported_symbols_list,' +
                 meson.project_source_root() / 'meson/chromadec.exports']
+elif host_os == 'windows'
+  symbol_filter = custom_target('chromadec.def',
+    input:   [public_headers, version_h],
+    output:  'chromadec.def',
+    command: [find_program('python3', 'python'), chromadec_def_gen,
+              '@OUTPUT@', '@INPUT@'])
+  def_kwarg = {'vs_module_defs': symbol_filter}
 endif
 
 libchromadec = library('chromadec',
@@ -180,12 +194,13 @@ libchromadec = library('chromadec',
   cpp_args: chromadec_cpp_args,
   cuda_args: chromadec_cuda_args,
   objcpp_args: chromadec_objcpp_args,
-  # NOTE: do NOT add -fvisibility=hidden. The version script (ELF) /
-  # exports list (Mach-O) is the source of truth for what's exported.
+  # NOTE: do NOT add -fvisibility=hidden. The version script (ELF) / exports
+  # list (Mach-O) / .def (Windows) is the source of truth for what's exported.
   # -fvisibility=hidden would hide every internal symbol *and* the C ABI
   # before the linker filter even runs.
   link_args: link_args,
   link_depends: symbol_filter,
+  kwargs: def_kwarg,
   install: true,
   # Not the major: pre-1.0 the ABI breaks at the minor, so the SONAME has to
   # move with it. Collapses to plain major-tracking from 1.0 on.

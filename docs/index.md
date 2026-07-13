@@ -14,5 +14,6 @@ into component Y'CbCr output.
 - [NN model conventions](nn-models.md): model paths, magnitude scales,
   execution provider notes
 - [File formats](file-formats.md): TBC vs CVBS reader matrix
+- [Changelog](changelog.md): what each release added
 - [Attribution](attribution.md): original contributors whose work is
   preserved here
