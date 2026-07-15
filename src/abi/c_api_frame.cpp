@@ -71,7 +71,7 @@ chd_status_t chd_frame_get_plane_info(const chd_frame_t *f, chd_plane_t plane,
         return CHD_E_INVALID_ARG;
     }
 
-    out->width = f->activeWidth;
+    out->width = f->outputWidth;
     out->height = f->outputHeight;
     out->first_frame_row = 0;
     if (isFrame440(f) && plane == CHD_PLANE_CB) {
@@ -127,7 +127,7 @@ chd_status_t chd_frame_get_plane(const chd_frame_t *f, chd_plane_t plane,
     *out_data = nullptr;
     *out_stride_bytes = 0;
 
-    const int32_t w = f->activeWidth;
+    const int32_t w = f->outputWidth;
     const int32_t h = f->outputHeight;
 
     switch (f->format) {
@@ -246,7 +246,7 @@ chd_status_t chd_frame_get_plane_float(const chd_frame_t *f, chd_plane_t plane,
         }
     }
     *out_data = f->floatPlane[idx].data();
-    *out_stride_bytes = static_cast<ptrdiff_t>(f->activeWidth) * sizeof(float);
+    *out_stride_bytes = static_cast<ptrdiff_t>(f->outputWidth) * sizeof(float);
     return CHD_OK;
 }
 

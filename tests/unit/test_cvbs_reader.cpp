@@ -363,11 +363,12 @@ int testFrameNativeNtscConform() {
     REQUIRE(f2[263 * 910 - 1] == 240 * 64);
 
     // Synthetic data has no sync to measure, so the alignment falls back to
-    // sync-start and the windows are the ld-decode convention values.
+    // sync-start. Burst windows keep the ld-decode convention; the active-video
+    // crop is SMPTE ST 244's digital active line for a 0H row (125..892 incl).
     REQUIRE(src.parameters().colourBurstStart == 75);
     REQUIRE(src.parameters().colourBurstEnd   == 95);
-    REQUIRE(src.parameters().activeVideoStart == 134);
-    REQUIRE(src.parameters().activeVideoEnd   == 894);
+    REQUIRE(src.parameters().activeVideoStart == 125);
+    REQUIRE(src.parameters().activeVideoEnd   == 893);
 
     // Second frame's fields carry the +1 frame offset.
     REQUIRE(src.getVideoField(3)[0] == 1 * 64);
@@ -405,11 +406,12 @@ int testFrameNativePalConform() {
     REQUIRE(src.getNumberOfAvailableFields() == 4);
     REQUIRE(src.getFieldLength() == 1135 * 313);
 
-    // Synthetic data has no sync to measure: sync-start fallback windows.
+    // Synthetic data has no sync to measure: sync-start fallback. Active-video
+    // crop is EBU Tech 3280-E's digital active line for a 0H row (177..1124).
     REQUIRE(src.parameters().colourBurstStart == 98);
     REQUIRE(src.parameters().colourBurstEnd   == 138);
-    REQUIRE(src.parameters().activeVideoStart == 185);
-    REQUIRE(src.parameters().activeVideoEnd   == 1107);
+    REQUIRE(src.parameters().activeVideoStart == 177);
+    REQUIRE(src.parameters().activeVideoEnd   == 1125);
 
     // Flat cut: first field = temporal lines 0..312; second field = lines
     // 313..624, then the 4 leftover samples at the start of its final row
@@ -498,13 +500,16 @@ int testEncoderScLockedValidation() {
     REQUIRE(src.frameLayout() == FrameLayout::FRAME_NATIVE);
     REQUIRE(src.getNumberOfAvailableFields() == numFrames * 2);
     REQUIRE(src.parameters().isSubcarrierLocked == true);
-    // Derived windows must equal what the encoder wrote into its own
-    // sidecar for this very capture (verified: capture table has 109/149,
-    // 200/1122).
+    // The derived burst window equals what the encoder wrote into its own
+    // sidecar for this capture (capture table has 109/149). The active-video
+    // crop is now EBU Tech 3280-E's digital active line (187..1134, 948 wide),
+    // deliberately wider than the encoder's own 200..1121 picture crop: the
+    // synthesized default follows the standard's digital active line, not the
+    // encoder's tighter crop.
     REQUIRE(src.parameters().colourBurstStart == 109);
     REQUIRE(src.parameters().colourBurstEnd   == 149);
-    REQUIRE(src.parameters().activeVideoStart == 200);
-    REQUIRE(src.parameters().activeVideoEnd   == 1122);
+    REQUIRE(src.parameters().activeVideoStart == 187);
+    REQUIRE(src.parameters().activeVideoEnd   == 1135);
 
     int64_t compared = 0;
     for (int64_t f = 0; f < numFrames * 2; ++f) {
@@ -615,9 +620,10 @@ int testSubcarrierLockDerivationAndMerge() {
     REQUIRE(info.layout               == CHD_FRAME_LAYOUT_FIELD_RASTER);
     REQUIRE(info.is_subcarrier_locked == 0);
     REQUIRE(info.samples_per_frame    == 709379);
-    // Line-locked raster keeps the ld-decode sync-start windows.
-    REQUIRE(info.active_video_start   == 185);
-    REQUIRE(info.active_video_end     == 1107);
+    // Default crop is EBU Tech 3280-E's digital active line, positioned for a
+    // sync-start (0H) row: 177..1124 inclusive, 948 samples.
+    REQUIRE(info.first_active_sample  == 177);
+    REQUIRE(info.last_active_sample   == 1124);
     REQUIRE(info.is_first_field_first == 1);
     chd_video_free(v);
 
@@ -628,9 +634,11 @@ int testSubcarrierLockDerivationAndMerge() {
     REQUIRE(chd_video_get_info(v, &info) == CHD_OK);
     REQUIRE(info.layout               == CHD_FRAME_LAYOUT_FIELD_RASTER);
     REQUIRE(info.is_subcarrier_locked == 1);
-    // An encoder-style scLocked raster switches to blanking-start windows.
-    REQUIRE(info.active_video_start   == 200);
-    REQUIRE(info.active_video_end     == 1122);
+    // An encoder-style scLocked raster switches to blanking-start windows;
+    // the digital active line then runs from the first blanking sample to the
+    // row end: 187..1134 inclusive, 948 samples.
+    REQUIRE(info.first_active_sample  == 187);
+    REQUIRE(info.last_active_sample   == 1134);
     chd_video_free(v);
 
     // Field order merges from the override too (no `.meta` column exists).
@@ -715,8 +723,8 @@ int testFrameNativeSyncStartWindows() {
                      SampleEncoding::CVBS_U10_4FSC, SignalState::STANDARD_TBC_LOCKED));
     REQUIRE(src.frameLayout() == FrameLayout::FRAME_NATIVE);
     REQUIRE(src.parameters().colourBurstStart == 75);
-    REQUIRE(src.parameters().activeVideoStart == 134);
-    REQUIRE(src.parameters().activeVideoEnd   == 894);
+    REQUIRE(src.parameters().activeVideoStart == 125);
+    REQUIRE(src.parameters().activeVideoEnd   == 893);
     return 0;
 }
 
@@ -862,7 +870,7 @@ int testRealCompositeDiagnostics() {
               << " encoding=" << info.encoding
               << " frames=" << info.num_frames
               << " subcarrier_locked=" << info.is_subcarrier_locked
-              << " active=" << info.active_video_start << ".." << info.active_video_end
+              << " active=" << info.first_active_sample << ".." << info.last_active_sample
               << "\n";
 
     // Decode smoke: the capture must survive its system's default pipeline.

@@ -182,9 +182,10 @@ struct chd_frame {
     chd_pixel_format_t format = CHD_PIXEL_YUV444P16;
 
     // YUV444P16 / RGB48 / GRAY16: packed/planar as written by
-    // chd::output::OutputWriter::convert. activeWidth/outputHeight match
-    // info.width / info.height (post-padding). YUV440P16 appends the two
-    // subsampled chroma planes after the full-height Y plane.
+    // chd::output::OutputWriter::convert. outputWidth/outputHeight match
+    // info.width / info.height (the active crop plus any black pad border).
+    // YUV440P16 appends the two subsampled chroma planes after the full-height
+    // Y plane.
     chd::output::OutputFrame u16Plane;
 
     // YUV444PS / RGBS: three contiguous planes, each width*height floats.
@@ -192,7 +193,7 @@ struct chd_frame {
     // width*chroma440.{cb,cr}Height floats.
     std::vector<float> floatPlane[3];
 
-    int32_t activeWidth  = 0;
+    int32_t outputWidth  = 0;
     int32_t outputHeight = 0;
 
     // 4:4:0 frames: chroma plane geometry, the per-output-row component map

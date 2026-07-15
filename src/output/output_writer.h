@@ -73,7 +73,7 @@ public:
 
     // Output settings
     struct Configuration {
-        int32_t paddingAmount = 8;
+        int32_t paddingAmount = 1;
         PixelFormat pixelFormat = RGB48;
         ClampMode clampMode = CLAMP_NONE;
         bool outputY4m = false;
@@ -85,9 +85,10 @@ public:
             chd::color::BroadcastScalingPrecision::Scientific;
     };
 
-    // Set the output configuration, and adjust the VideoParameters to suit.
-    // (If usePadding is disabled, this will not change the VideoParameters.)
-    void updateConfiguration(chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters, const Configuration &config);
+    // Set the output configuration. The active crop in videoParameters selects
+    // the picture; padding surrounds it and never moves it, so this does not
+    // modify videoParameters.
+    void updateConfiguration(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters, const Configuration &config);
 
     // Print an info message about the output format
     void printOutputInfo() const;
@@ -131,12 +132,17 @@ public:
         return config.pixelFormat;
     }
 
-    // Committed output geometry (valid after updateConfiguration). These reflect
-    // any padding requested via Configuration::paddingAmount: activeWidth is the
-    // horizontally-expanded crop, outputHeight includes top/bottom pad lines.
+    // Committed output geometry (valid after updateConfiguration).
+    // activeWidth/activeHeight are the picture crop; outputWidth/outputHeight
+    // are the emitted frame, which is the crop surrounded by the black border
+    // Configuration::paddingAmount asks for. The picture sits at
+    // (leftPadSamples, topPadLines) within the frame.
     int32_t getActiveWidth() const { return activeWidth; }
     int32_t getActiveHeight() const { return activeHeight; }
+    int32_t getOutputWidth() const { return outputWidth; }
     int32_t getOutputHeight() const { return outputHeight; }
+    int32_t getLeftPadSamples() const { return leftPadSamples; }
+    int32_t getRightPadSamples() const { return rightPadSamples; }
     int32_t getTopPadLines() const { return topPadLines; }
     int32_t getBottomPadLines() const { return bottomPadLines; }
 
@@ -151,20 +157,30 @@ private:
         chd::color::ColorDifferencePrecision::Modern,
         chd::color::BroadcastScalingPrecision::Scientific);
 
-    // Number of blank lines to add at the top and bottom of the output
+    // Black border surrounding the active picture
+    int32_t leftPadSamples;
+    int32_t rightPadSamples;
     int32_t topPadLines;
     int32_t bottomPadLines;
 
-    // Output size
+    // Picture crop, and the padded frame that carries it
     int32_t activeWidth;
     int32_t activeHeight;
+    int32_t outputWidth;
     int32_t outputHeight;
+
+    // True when Configuration::paddingAmount grew the frame on any side
+    bool isPadded() const {
+        return leftPadSamples != 0 || rightPadSamples != 0
+            || topPadLines != 0 || bottomPadLines != 0;
+    }
 
     // Get a string representing the pixel format
     const char *getPixelName() const;
 
-    // Clear padding lines
-    void clearPadLines(int32_t firstLine, int32_t numLines, OutputFrame &outputFrame) const;
+    // Fill the whole output frame with black, before the active lines are
+    // written into its interior
+    void fillBlack(OutputFrame &outputFrame) const;
 
     // Convert one line
     void convertLine(int32_t lineNumber, const ComponentFrame &componentFrame, OutputFrame &outputFrame) const;

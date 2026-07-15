@@ -31,7 +31,7 @@ that heritage.
   backend that reaches the GPU for models the ORT CoreML provider pushes back to
   the CPU. Either backend builds without the other.
 - **CVBS file format support** (specification v1.1.0): `.composite` and `.y`/`.c`
-  sources, the `.meta` sidecar, the field-raster and frame-native container
+  sources, the `.meta` metadata sidecar file, the field-raster and frame-native container
   layouts, and the sample encodings for PAL, NTSC, and PAL-M. Field phase and row
   alignment are measured from the signal, since the sidecar schema records
   neither.

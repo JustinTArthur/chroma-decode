@@ -41,13 +41,16 @@ chd::color::ColorConversion colorConversionFor(const OptionMaps &o) {
     return chd::color::resolveColorConversion(cdp, bsp);
 }
 
-// Common option names that apply to most decoders.
-bool isLineLayoutOption(const std::string &name, OptionType type) {
+// Common option names that apply to most decoders. The six active-crop bounds
+// are inclusive on both axes.
+bool isCropOption(const std::string &name, OptionType type) {
     if (type != OptionType::I32) return false;
     return name == CHD_OPT_FIRST_ACTIVE_FIELD_LINE
         || name == CHD_OPT_LAST_ACTIVE_FIELD_LINE
         || name == CHD_OPT_FIRST_ACTIVE_FRAME_LINE
-        || name == CHD_OPT_LAST_ACTIVE_FRAME_LINE;
+        || name == CHD_OPT_LAST_ACTIVE_FRAME_LINE
+        || name == CHD_OPT_FIRST_ACTIVE_SAMPLE
+        || name == CHD_OPT_LAST_ACTIVE_SAMPLE;
 }
 
 bool isOutputOption(const std::string &name, OptionType type) {
@@ -110,7 +113,7 @@ bool optionApplies(chd_decoder_kind_t kind, const std::string &name, OptionType 
     // Output + pipeline-shape options apply to every kind (including AUTO so
     // setters can land before commit picks a concrete kind).
     if (isOutputOption(name, type)) return true;
-    if (isLineLayoutOption(name, type)) return true;
+    if (isCropOption(name, type)) return true;
 
     const bool comb   = isCombKind(kind) || kind == CHD_DEC_AUTO;
     const bool pal    = isPalKind(kind)  || kind == CHD_DEC_AUTO;

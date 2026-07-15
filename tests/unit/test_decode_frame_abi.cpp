@@ -179,15 +179,18 @@ bool writeTbcSidecar(const std::string &path, int32_t numFields,
     return true;
 }
 
-bool writeBlackTbc(const std::string &path, int32_t w, int32_t h, int32_t n) {
+bool writeUniformTbc(const std::string &path, int32_t w, int32_t h, int32_t n, uint16_t value) {
     std::ofstream f(path, std::ios::binary);
     if (!f) return false;
-    const uint16_t black = 17920;  // blackIre from the sidecar
-    const std::vector<uint16_t> buf(static_cast<size_t>(w) * h, black);
+    const std::vector<uint16_t> buf(static_cast<size_t>(w) * h, value);
     for (int32_t i = 0; i < n; i++) {
         f.write(reinterpret_cast<const char *>(buf.data()), buf.size() * 2);
     }
     return true;
+}
+
+bool writeBlackTbc(const std::string &path, int32_t w, int32_t h, int32_t n) {
+    return writeUniformTbc(path, w, h, n, 17920);  // blackIre from the sidecar
 }
 
 // Minimal CVBS .meta sidecar — one capture row in the cvbs_file table.
@@ -1114,6 +1117,162 @@ int testYcMergeDualTbc(const fs::path &dir) {
     return 0;
 }
 
+// Padding surrounds the picture with a black border and never moves or alters
+// it; the active-sample crop is the only thing that changes which signal
+// samples reach the picture.
+//
+// The fixture is a uniform white field, so picture samples and border samples
+// cannot be confused: a black fixture would decode to the very value the
+// border is filled with.
+int testPaddingAndSampleCrop(const fs::path &dir) {
+    const std::string tbc     = (dir / "pad.tbc").string();
+    const std::string sidecar = (dir / "pad.tbc.db").string();
+    constexpr int32_t fieldWidth  = 910;
+    constexpr int32_t fieldHeight = 263;
+    constexpr int32_t numFields   = 4;
+    constexpr uint16_t kWhite = 51200;  // white_16b_ire from the sidecar
+
+    // Y'CbCr black, the value the border is filled with.
+    constexpr uint16_t kYBlack = 16 * 256;
+    constexpr uint16_t kCZero  = 128 * 256;
+
+    REQUIRE(writeUniformTbc(tbc, fieldWidth, fieldHeight, numFields, kWhite));
+    REQUIRE(writeTbcSidecar(sidecar, numFields));
+
+    chd_video_t *video = nullptr;
+    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) == CHD_OK);
+
+    // The sidecar's crop is active_video_start=147, active_video_end=905, which
+    // it stores exclusive. The ABI reports both bounds inclusive, so the last
+    // active sample is 904.
+    chd_video_info_t vinfo;
+    REQUIRE(chd_video_get_info(video, &vinfo) == CHD_OK);
+    REQUIRE(vinfo.first_active_sample == 147);
+    REQUIRE(vinfo.last_active_sample  == 904);
+    REQUIRE(vinfo.field_width         == 910);
+
+    auto decodeWith = [&](const std::vector<std::pair<const char *, int32_t>> &opts,
+                          chd_frame_t **out) -> chd_status_t {
+        chd_decoder_t *dec = nullptr;
+        if (chd_status_t s = chd_decoder_create(video, CHD_DEC_MONO, &dec); s != CHD_OK) return s;
+        for (const auto &o : opts) {
+            if (chd_status_t s = chd_decoder_set_option_i32(dec, o.first, o.second); s != CHD_OK) {
+                chd_decoder_free(dec);
+                return s;
+            }
+        }
+        if (chd_status_t s = chd_decoder_set_option_str(dec, CHD_OPT_OUTPUT_FORMAT, "yuv444p16");
+            s != CHD_OK) { chd_decoder_free(dec); return s; }
+        if (chd_status_t s = chd_decoder_commit(dec); s != CHD_OK) {
+            chd_decoder_free(dec);
+            return s;
+        }
+        const chd_status_t s = chd_decode_frame(dec, 0, out);
+        chd_decoder_free(dec);
+        return s;
+    };
+
+    // The crop with no padding, as the reference picture.
+    chd_frame_t *plain = nullptr;
+    REQUIRE(decodeWith({{CHD_OPT_PADDING_MULTIPLE, 1}}, &plain) == CHD_OK);
+    chd_frame_info_t pinfo;
+    REQUIRE(chd_frame_get_info(plain, &pinfo) == CHD_OK);
+    REQUIRE(pinfo.width  == 758);   // 904 - 147 + 1
+    REQUIRE(pinfo.height == 486);
+
+    // The same decode padded to a multiple of 16: 758 -> 768 (5 left, 5 right)
+    // and 486 -> 496 (5 top, 5 bottom), the picture staying centred.
+    chd_frame_t *padded = nullptr;
+    REQUIRE(decodeWith({{CHD_OPT_PADDING_MULTIPLE, 16}}, &padded) == CHD_OK);
+    chd_frame_info_t qinfo;
+    REQUIRE(chd_frame_get_info(padded, &qinfo) == CHD_OK);
+    REQUIRE(qinfo.width  == 768);
+    REQUIRE(qinfo.height == 496);
+    constexpr int32_t kLeftPad = 5;
+    constexpr int32_t kTopPad  = 5;
+
+    const uint16_t *pY = nullptr;  ptrdiff_t pStride = 0;
+    const uint16_t *qY = nullptr;  ptrdiff_t qStride = 0;
+    const uint16_t *qCb = nullptr; ptrdiff_t qCbStride = 0;
+    REQUIRE(chd_frame_get_plane(plain,  CHD_PLANE_Y,  reinterpret_cast<const void **>(&pY),  &pStride) == CHD_OK);
+    REQUIRE(chd_frame_get_plane(padded, CHD_PLANE_Y,  reinterpret_cast<const void **>(&qY),  &qStride) == CHD_OK);
+    REQUIRE(chd_frame_get_plane(padded, CHD_PLANE_CB, reinterpret_cast<const void **>(&qCb), &qCbStride) == CHD_OK);
+    const ptrdiff_t pRow  = pStride / 2;
+    const ptrdiff_t qRow  = qStride / 2;
+    const ptrdiff_t qcRow = qCbStride / 2;
+
+    // The picture is white, so it cannot be mistaken for the black border.
+    REQUIRE(pY[0] > kYBlack + 1000);
+
+    // Every border sample is black luma and neutral chroma, on all four sides.
+    for (int32_t y = 0; y < qinfo.height; y++) {
+        const bool padRow = (y < kTopPad) || (y >= kTopPad + pinfo.height);
+        for (int32_t x = 0; x < qinfo.width; x++) {
+            const bool padCol = (x < kLeftPad) || (x >= kLeftPad + pinfo.width);
+            if (!padRow && !padCol) continue;
+            REQUIRE(qY[y * qRow + x] == kYBlack);
+            REQUIRE(qCb[y * qcRow + x] == kCZero);
+        }
+    }
+
+    // The picture inside the border is bit-identical to the unpadded decode:
+    // padding grew the frame without disturbing a single picture sample.
+    for (int32_t y = 0; y < pinfo.height; y++) {
+        for (int32_t x = 0; x < pinfo.width; x++) {
+            REQUIRE(qY[(y + kTopPad) * qRow + (x + kLeftPad)] == pY[y * pRow + x]);
+        }
+    }
+    chd_frame_free(padded);
+    chd_frame_free(plain);
+
+    // Widening the sample crop is what admits signal outside the default active
+    // window: it grows the picture itself, not the border. This sidecar's crop
+    // is the picture centred in SMPTE ST 244's digital active line, which on a
+    // 0H-aligned 910-sample row is samples 142-909; asking for those bounds
+    // exactly yields the standard's full 768-sample digital active line.
+    chd_frame_t *wide = nullptr;
+    REQUIRE(decodeWith({{CHD_OPT_PADDING_MULTIPLE, 1},
+                        {CHD_OPT_FIRST_ACTIVE_SAMPLE, 142},
+                        {CHD_OPT_LAST_ACTIVE_SAMPLE,  909}},
+                       &wide) == CHD_OK);
+    chd_frame_info_t winfo;
+    REQUIRE(chd_frame_get_info(wide, &winfo) == CHD_OK);
+    REQUIRE(winfo.width  == 768);   // the ST 244 digital active line
+    REQUIRE(winfo.height == 486);   // the other axis is untouched
+    chd_frame_free(wide);
+
+    // A bound read from chd_video_get_info and set straight back is a no-op:
+    // both are inclusive, so the round-trip needs no adjustment.
+    chd_frame_t *same = nullptr;
+    REQUIRE(decodeWith({{CHD_OPT_PADDING_MULTIPLE, 1},
+                        {CHD_OPT_FIRST_ACTIVE_SAMPLE, vinfo.first_active_sample},
+                        {CHD_OPT_LAST_ACTIVE_SAMPLE,  vinfo.last_active_sample}},
+                       &same) == CHD_OK);
+    chd_frame_info_t sinfo;
+    REQUIRE(chd_frame_get_info(same, &sinfo) == CHD_OK);
+    REQUIRE(sinfo.width == 758);
+    chd_frame_free(same);
+
+    // A crop that leaves the stored row, or selects nothing, is rejected at
+    // commit rather than reading past the end of a line.
+    chd_frame_t *bad = nullptr;
+    REQUIRE(decodeWith({{CHD_OPT_LAST_ACTIVE_SAMPLE, fieldWidth}}, &bad) == CHD_E_INVALID_ARG);
+    REQUIRE(decodeWith({{CHD_OPT_FIRST_ACTIVE_SAMPLE, -1}}, &bad) == CHD_E_INVALID_ARG);
+    REQUIRE(decodeWith({{CHD_OPT_FIRST_ACTIVE_SAMPLE, 500},
+                        {CHD_OPT_LAST_ACTIVE_SAMPLE,  499}}, &bad) == CHD_E_INVALID_ARG);
+
+    // A padding multiple large enough to overflow the frame size is rejected,
+    // as is a nonsensical one.
+    REQUIRE(decodeWith({{CHD_OPT_PADDING_MULTIPLE, 1 << 20}}, &bad) == CHD_E_INVALID_ARG);
+    REQUIRE(decodeWith({{CHD_OPT_PADDING_MULTIPLE, 0}}, &bad) == CHD_E_INVALID_ARG);
+    REQUIRE(decodeWith({{CHD_OPT_PADDING_MULTIPLE, -8}}, &bad) == CHD_E_INVALID_ARG);
+
+    chd_video_free(video);
+    fs::remove(tbc);
+    fs::remove(sidecar);
+    return 0;
+}
+
 int main() {
     const fs::path dir = fs::temp_directory_path() / "chd_phase_g_test";
     fs::create_directories(dir);
@@ -1128,6 +1287,7 @@ int main() {
     if (int rc = testRgbsOutputFormat(dir);           rc != 0) return rc;
     if (int rc = testOutputClampOption(dir);          rc != 0) return rc;
     if (int rc = testYcMergeDualTbc(dir);             rc != 0) return rc;
+    if (int rc = testPaddingAndSampleCrop(dir);       rc != 0) return rc;
 
     fs::remove(dir);
     std::cout << "test_decode_frame_abi: PASS\n";

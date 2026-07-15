@@ -66,7 +66,6 @@ static constexpr VideoStandardPreset PRESETS[] = {
         /*burstStartFromZeroH*/   5.6e-6 * PAL_SAMPLE_RATE,
         /*burstLengthSamples*/    10 * 4,
         /*digitalActiveSamples*/  948,
-        /*pictureWidthSamples*/   922,
         PAL_LEVELS,
     },
     // NTSC: 525 lines, exact 910 samples/line, 2-frame colour sequence.
@@ -81,7 +80,6 @@ static constexpr VideoStandardPreset PRESETS[] = {
         /*burstStartFromZeroH*/   19.0 * 4,
         /*burstLengthSamples*/    9 * 4,
         /*digitalActiveSamples*/  768,
-        /*pictureWidthSamples*/   758,
         ST244_LEVELS,
     },
     // PAL_M: 525 lines, exact 909 samples/line, 4-frame colour sequence.
@@ -98,7 +96,6 @@ static constexpr VideoStandardPreset PRESETS[] = {
         /*burstStartFromZeroH*/   19.0 * 4,
         /*burstLengthSamples*/    9 * 4,
         /*digitalActiveSamples*/  768,
-        /*pictureWidthSamples*/   758,
         ST244_LEVELS,
     },
 };
@@ -169,31 +166,36 @@ makeVideoParameters(const VideoStandardPreset &preset,
     }
 
     // Colour-burst and active-video windows are row positions, so they follow
-    // the horizontal alignment. SYNC_START keeps the ld-decode convention values
-    // (mirroring VIDEO_SYSTEM_DEFAULTS, the compatibility target for
-    // line-locked rasters). BLANKING_START derives them from the row-local 0H
-    // with the same arithmetic ld-chroma-encoder uses for its own sidecars,
-    // so they match encoder-written values exactly (PAL: burst 109..149,
-    // active 200..1122).
+    // the horizontal alignment. The default active-video crop is the digital
+    // active line of the interface standard (SMPTE ST 244 for 525-line, EBU
+    // Tech 3280-E for 625-line): digitalActiveSamples wide, positioned so it
+    // ends at the standard's 0H. This is wider than the analogue picture and
+    // includes the blanking transitions on each side; callers who want a
+    // tighter crop set CHD_OPT_FIRST/LAST_ACTIVE_SAMPLE. Burst windows are
+    // unchanged: SYNC_START keeps the ld-decode convention values, BLANKING_START
+    // derives them from the row-local 0H with the same arithmetic
+    // ld-chroma-encoder uses (PAL: burst 109..149).
     if (alignment == HorizontalAlignment::SYNC_START) {
-        vp.activeVideoStart =
-            (preset.standard == VideoStandard::PAL) ? 185 : 134;
-        vp.activeVideoEnd =
-            (preset.standard == VideoStandard::PAL) ? 1107 : 894;
+        // Row starts at 0H; the standard's own 0H sits digitalActiveSamples +
+        // zeroHBlankingStartRow into its digital line, so the digital active
+        // line ends that far before this row's end.
+        const double zeroHInRow = preset.digitalActiveSamples + preset.zeroHBlankingStartRow;
+        vp.activeVideoStart = samplesPerLine - static_cast<int32_t>(std::ceil(zeroHInRow));
         vp.colourBurstStart =
             (preset.standard == VideoStandard::PAL) ? 98 : 75;
         vp.colourBurstEnd =
             (preset.standard == VideoStandard::PAL) ? 138 : 95;
     } else {
+        // Row starts at the first digital blanking sample, so the digital
+        // active line follows it and runs to the row end.
         const double zeroH = preset.zeroHBlankingStartRow;
         vp.colourBurstStart = static_cast<int32_t>(
             std::lrint(zeroH + preset.burstStartFromZeroH));
         vp.colourBurstEnd = static_cast<int32_t>(
             std::lrint(zeroH + preset.burstStartFromZeroH + preset.burstLengthSamples));
-        vp.activeVideoStart = (samplesPerLine - preset.digitalActiveSamples) +
-                              (preset.digitalActiveSamples - preset.pictureWidthSamples) / 2;
-        vp.activeVideoEnd = vp.activeVideoStart + preset.pictureWidthSamples;
+        vp.activeVideoStart = samplesPerLine - preset.digitalActiveSamples;
     }
+    vp.activeVideoEnd = vp.activeVideoStart + preset.digitalActiveSamples;
 
     vp.isMapped = false;
     vp.isValid  = true;

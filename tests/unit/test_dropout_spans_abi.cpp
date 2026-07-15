@@ -225,7 +225,7 @@ int testDropoutSpansAndMask(const fs::path &dir) {
     // active-line convention (e.g. inclusive vs exclusive bounds).
     chd_video_info_t vinfo{};
     REQUIRE(chd_video_get_info(video, &vinfo) == CHD_OK);
-    const int32_t activeVideoStart = vinfo.active_video_start;
+    const int32_t activeVideoStart = vinfo.first_active_sample;
     const int32_t firstFrameLine   = vinfo.first_active_frame_line;
 
     chd_decoder_t *dec = nullptr;

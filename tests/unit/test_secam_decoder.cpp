@@ -825,13 +825,13 @@ int checkCvbsDecode(chd_video_t *video) {
 
     // Chroma: bar 1 (D'B = 0.8) at its centre, walking the Cb plane against
     // the row lattice. Bar positions are generator-absolute; the preset
-    // decides the active crop, so translate through active_video_start.
+    // decides the active crop, so translate through first_active_sample.
     chd_plane_info_t cbInfo{};
     REQUIRE(chd_frame_get_plane_info(frame, CHD_PLANE_CB, &cbInfo) == CHD_OK);
     const float *cbData = nullptr;
     REQUIRE(chd_frame_get_plane_float(frame, CHD_PLANE_CB, &cbData, &stride) == CHD_OK);
     const int32_t barWidth = (kActiveEnd - kActiveStart) / kNumBars;
-    const int32_t barX = kActiveStart + barWidth + barWidth / 2 - vinfo.active_video_start;
+    const int32_t barX = kActiveStart + barWidth + barWidth / 2 - vinfo.first_active_sample;
     REQUIRE(barX > 0 && barX < info.width);
     const double expectECb = 0.8 / (1.505 * 2.0 * (1.0 - 0.114));
     chd_chroma_row_component_t comp;

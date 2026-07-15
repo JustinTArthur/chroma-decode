@@ -266,7 +266,7 @@ metadata is absent or you need to force parameters.
 ### Which fields to set
 
 Per input variant, the override fields that matter (every variant also wants
-the matching open function and sidecar from the
+the matching open function and metadata sidecar file from the
 [reader matrix](file-formats.md#reader-matrix)):
 
 | Input                                                       | Sidecar                              | `chd_video_params_t` fields to set                                                                      |
@@ -311,6 +311,20 @@ chd_decoder_commit(dec);
 Setting an option that does not apply to the decoder kind returns
 `CHD_E_INVALID_ARG`; use
 [`chd_decoder_has_option`](api-reference.md#setting-options) to probe.
+
+Framing is two independent knobs, and each does one thing.
+
+`CHD_OPT_FIRST_ACTIVE_SAMPLE` / `CHD_OPT_LAST_ACTIVE_SAMPLE` and the four
+`*_ACTIVE_*_LINE` options are the crop: they choose which signal samples and
+lines become picture. All six are inclusive and are named after the fields
+[`chd_video_get_info`](api-reference.md#chd_video_info_t) reports, so you can
+read a bound, adjust it, and set it straight back. Widen them to admit overscan
+the default active window excludes.
+
+`CHD_OPT_PADDING_MULTIPLE` rounds both frame axes up to a multiple your codec
+wants, by adding a black border around the picture. It never moves or alters the
+crop, so switching it on cannot change a single picture sample; it only decides
+how much black surrounds them.
 
 ## Pixel formats and plane access
 
@@ -541,7 +555,7 @@ or as part of **your decode loop**.
 | `-t, --threads` | `CHD_OPT_THREAD_COUNT` (i32, `0` = auto) |
 | `--ffll / --lfll` (field lines) | `CHD_OPT_FIRST_ACTIVE_FIELD_LINE` / `CHD_OPT_LAST_ACTIVE_FIELD_LINE` (i32; **inclusive** — last line is included) |
 | `--ffrl / --lfrl` (frame lines) | `CHD_OPT_FIRST_ACTIVE_FRAME_LINE` / `CHD_OPT_LAST_ACTIVE_FRAME_LINE` (i32; **inclusive** — last line is included) |
-| `--input-metadata <file>` | the `sidecar_path` argument to [`chd_video_open_composite`](api-reference.md#chd_video_open_composite) |
+| `--input-metadata <file>` | the `metadata_path` argument to [`chd_video_open_composite`](api-reference.md#chd_video_open_composite) |
 | `-s, --start` / `-l, --length` | the frame **indices** you pass to [`chd_decode_frame`](api-reference.md#chd_decode_frame). There is no global start/length; you drive the range |
 | `--show-ffts` and other debug flags | not part of the stable ABI |
 
@@ -571,5 +585,27 @@ or as part of **your decode loop**.
 - **No output padding by default.** `CHD_OPT_PADDING_MULTIPLE` defaults to `1`
   (emit the active region as-is). decode-orc / tbc-tools pad the frame to a
   multiple of 8 unless told otherwise — set `CHD_OPT_PADDING_MULTIPLE`
-  explicitly if you need codec-friendly dimensions. Padding now applies
-  uniformly to every output format, including `yuv444ps` and `rgbs`.
+  explicitly if you need codec-friendly dimensions. Padding now adds a black
+  border rather than widening the crop, and applies uniformly to every output
+  format, including `yuv444ps` and `rgbs`.
+- **CVBS captures default to the full digital active line.** For `.tbc` inputs
+  the active-video crop comes from the sidecar, exactly as ld-chroma-decoder
+  used it, so the default width is unchanged (NTSC 760, PAL 922). For
+  CVBS-native captures libchromadec synthesizes the crop, and it now defaults to
+  the interface standard's digital active line (SMPTE ST 244: 768 samples for
+  525-line; EBU Tech 3280-E: 948 for 625-line) rather than the tighter analogue
+  picture crop. That is wider than ld-chroma-decoder's picture and deliberately
+  includes the blanking transition on each side. To reproduce the narrower
+  picture crop on a CVBS capture, set `CHD_OPT_FIRST_ACTIVE_SAMPLE` /
+  `CHD_OPT_LAST_ACTIVE_SAMPLE` — for a line-locked (0H) raster, NTSC `134`/`893`
+  and PAL `185`/`1106`.
+- **The crop options override a sidecar-provided span, per bound.** When a `.tbc`
+  sidecar spells out `active_video_start` / `active_video_end`, that is the
+  starting point, but any of the six `CHD_OPT_*_ACTIVE_SAMPLE` /
+  `CHD_OPT_*_ACTIVE_*_LINE` options you set replaces the corresponding bound;
+  bounds you leave unset keep the sidecar value. This is the same behaviour for a
+  synthesized CVBS default — by the time your options apply, sidecar-provided and
+  synthesized crops are indistinguishable. Setting only one end (say
+  `CHD_OPT_LAST_ACTIVE_SAMPLE`) is fine; the other keeps the sidecar's value.
+  Every resulting bound is validated against the field, so an out-of-range
+  override is reported at `chd_decoder_commit`, not silently dropped.

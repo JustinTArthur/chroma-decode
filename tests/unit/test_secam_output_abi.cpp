@@ -189,7 +189,7 @@ int testFrameAccessors() {
     chd_frame *frame = new chd_frame;
     frame->format = CHD_PIXEL_YUV440PS;
     frame->chroma440 = writer.convertToFloat440(cf, frame->floatPlane);
-    frame->activeWidth = writer.getActiveWidth();
+    frame->outputWidth = writer.getActiveWidth();
     frame->outputHeight = writer.getOutputHeight();
     frame->rowComponent.resize(frame->outputHeight);
     for (int32_t y = 0; y < frame->outputHeight; y++) {
@@ -203,14 +203,14 @@ int testFrameAccessors() {
         frame->rowComponent[0] == 1 ? CHD_CHROMA_ROW_DR : CHD_CHROMA_ROW_DB;
     frame->hasIdentReport = true;
     frame->info.format = frame->format;
-    frame->info.width = frame->activeWidth;
+    frame->info.width = frame->outputWidth;
     frame->info.height = frame->outputHeight;
     frame->info.num_planes = 3;
     frame->info.frame_index = 0;
 
     chd_plane_info_t pi{};
     REQUIRE(chd_frame_get_plane_info(frame, CHD_PLANE_Y, &pi) == CHD_OK);
-    REQUIRE(pi.width == frame->activeWidth);
+    REQUIRE(pi.width == frame->outputWidth);
     REQUIRE(pi.height == frame->outputHeight);
     REQUIRE(pi.first_frame_row == 0);
     REQUIRE(chd_frame_get_plane_info(frame, CHD_PLANE_CB, &pi) == CHD_OK);
@@ -256,7 +256,7 @@ int testFrameAccessors() {
     // A non-4:4:0 frame reports the accessors unsupported.
     chd_frame *plain = new chd_frame;
     plain->format = CHD_PIXEL_YUV444PS;
-    plain->activeWidth = 8;
+    plain->outputWidth = 8;
     plain->outputHeight = 4;
     REQUIRE(chd_frame_chroma_row_component(plain, 0, &comp) == CHD_E_UNSUPPORTED);
     REQUIRE(chd_frame_get_chroma_ident(plain, &report) == CHD_E_UNSUPPORTED);

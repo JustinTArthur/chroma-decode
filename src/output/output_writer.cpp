@@ -192,13 +192,15 @@ FloatRGBBounds floatRGBBounds(OutputWriter::ClampMode mode,
 }
 }  // namespace
 
-void OutputWriter::updateConfiguration(chd::metadata::LdDecodeMetaData::VideoParameters &_videoParameters,
+void OutputWriter::updateConfiguration(const chd::metadata::LdDecodeMetaData::VideoParameters &_videoParameters,
                                        const OutputWriter::Configuration &_config)
 {
     config = _config;
     videoParameters = _videoParameters;
     conversion = chd::color::resolveColorConversion(config.colorDifferencePrecision,
                                             config.broadcastScalingPrecision);
+    leftPadSamples = 0;
+    rightPadSamples = 0;
     topPadLines = 0;
     bottomPadLines = 0;
 
@@ -206,44 +208,33 @@ void OutputWriter::updateConfiguration(chd::metadata::LdDecodeMetaData::VideoPar
     // firstActiveFrameLine/lastActiveFrameLine are inclusive, so the active
     // region spans (last - first + 1) lines.
     activeHeight = (videoParameters.lastActiveFrameLine - videoParameters.firstActiveFrameLine) + 1;
+    outputWidth = activeWidth;
     outputHeight = activeHeight;
 
     if (config.paddingAmount > 1) {
-        // Some video codecs require the width and height of a video to be divisible by
-        // a given number of samples on each axis.
-        
-        // Expand horizontal active region so the width is divisible by the specified padding factor.
-        while (true) {
-            activeWidth = videoParameters.activeVideoEnd - videoParameters.activeVideoStart;
-            if ((activeWidth % config.paddingAmount) == 0) {
-                break;
-            }
-
-            // Add pixels to the right and left sides in turn, to keep the active area centred
-            if ((activeWidth % 2) == 0) {
-                videoParameters.activeVideoEnd++;
+        // Some video codecs require the width and height of a video to be
+        // divisible by a given number of samples on each axis. Grow the frame
+        // with black on all four sides; the crop that selects the picture is
+        // the caller's to set, and padding never disturbs it.
+        while ((outputWidth % config.paddingAmount) != 0) {
+            // Add samples to the right and left in turn, to keep the picture centred
+            if ((outputWidth % 2) == 0) {
+                rightPadSamples++;
             } else {
-                videoParameters.activeVideoStart--;
+                leftPadSamples++;
             }
+            outputWidth = leftPadSamples + activeWidth + rightPadSamples;
         }
 
-        // Insert empty padding lines so the height is divisible by by the specified padding factor.
-        while (true) {
-            outputHeight = topPadLines + activeHeight + bottomPadLines;
-            if ((outputHeight % config.paddingAmount) == 0) {
-                break;
-            }
-
-            // Add lines to the bottom and top in turn, to keep the active area centred
+        while ((outputHeight % config.paddingAmount) != 0) {
+            // Add lines to the bottom and top in turn, to keep the picture centred
             if ((outputHeight % 2) == 0) {
                 bottomPadLines++;
             } else {
                 topPadLines++;
             }
+            outputHeight = topPadLines + activeHeight + bottomPadLines;
         }
-
-        // Update the caller's copy, now we've adjusted the active area
-        _videoParameters = videoParameters;
     }
 }
 
@@ -268,7 +259,7 @@ void OutputWriter::printOutputInfo() const
     // Show output information to the user
     const int32_t frameHeight = (videoParameters.fieldHeight * 2) - 1;
     chd::log::info() << "Input video of" << videoParameters.fieldWidth << "x" << frameHeight
-            << "will be colourised and trimmed to" << activeWidth << "x" << outputHeight
+            << "will be colourised and trimmed to" << outputWidth << "x" << outputHeight
             << getPixelName() << "frames";
 }
 
@@ -284,7 +275,7 @@ std::string OutputWriter::getStreamHeader() const
     str << "YUV4MPEG2";
 
     // Frame size
-    str << " W" << activeWidth;
+    str << " W" << outputWidth;
     str << " H" << outputHeight;
 
     // Frame rate
@@ -349,7 +340,7 @@ std::string OutputWriter::getFrameHeader() const
 void OutputWriter::convert(const ComponentFrame &componentFrame, OutputFrame &outputFrame) const
 {
     // Work out the number of output values, and resize the vector accordingly
-    int32_t totalSize = activeWidth * outputHeight;
+    int32_t totalSize = outputWidth * outputHeight;
     switch (config.pixelFormat) {
     case RGB48:
     case YUV444P16:
@@ -364,9 +355,12 @@ void OutputWriter::convert(const ComponentFrame &componentFrame, OutputFrame &ou
     }
     outputFrame.resize(totalSize);
 
-    // Clear padding
-    clearPadLines(0, topPadLines, outputFrame);
-    clearPadLines(outputHeight - bottomPadLines, bottomPadLines, outputFrame);
+    // Lay down the black border, then write the picture into its interior.
+    // Padding rows and columns are the only samples the active lines leave
+    // untouched, so blacking the whole frame first covers all four sides.
+    if (outputWidth != activeWidth || outputHeight != activeHeight) {
+        fillBlack(outputFrame);
+    }
 
     // Convert active lines
     for (int32_t y = 0; y < activeHeight; y++) {
@@ -374,43 +368,31 @@ void OutputWriter::convert(const ComponentFrame &componentFrame, OutputFrame &ou
     }
 }
 
-void OutputWriter::clearPadLines(int32_t firstLine, int32_t numLines, OutputFrame &outputFrame) const
+void OutputWriter::fillBlack(OutputFrame &outputFrame) const
 {
+    const size_t planeSize = static_cast<size_t>(outputWidth) * outputHeight;
+
     switch (config.pixelFormat) {
-        case RGB48: {
-            // Fill with RGB black
-            uint16_t *out = outputFrame.data() + (activeWidth * firstLine * 3);
-
-            for (int32_t i = 0; i < numLines * activeWidth * 3; i++) {
-                out[i] = 0;
-            }
-
+        case RGB48:
+            // Interleaved R'G'B' black is zero on every component
+            std::fill(outputFrame.begin(), outputFrame.begin() + planeSize * 3, uint16_t{0});
             break;
-        }
+
         case YUV444P16: {
-            // Fill Y with black, no chroma
-            uint16_t *outY  = outputFrame.data() + (activeWidth * firstLine);
-            uint16_t *outCB = outY + (activeWidth * outputHeight);
-            uint16_t *outCR = outCB + (activeWidth * outputHeight);
-
-            for (int32_t i = 0; i < numLines * activeWidth; i++) {
-                outY[i]  = static_cast<uint16_t>(Y_DIGITAL_ZERO);
-                outCB[i] = static_cast<uint16_t>(C_DIGITAL_ZERO);
-                outCR[i] = static_cast<uint16_t>(C_DIGITAL_ZERO);
-            }
-
+            // Black luma, neutral chroma
+            auto y = outputFrame.begin();
+            auto cb = y + planeSize;
+            auto cr = cb + planeSize;
+            std::fill(y,  cb, static_cast<uint16_t>(Y_DIGITAL_ZERO));
+            std::fill(cb, cr, static_cast<uint16_t>(C_DIGITAL_ZERO));
+            std::fill(cr, cr + planeSize, static_cast<uint16_t>(C_DIGITAL_ZERO));
             break;
         }
-        case GRAY16: {
-            // Fill with black
-            uint16_t *out = outputFrame.data() + (activeWidth * firstLine);
-
-            for (int32_t i = 0; i < numLines * activeWidth; i++) {
-                out[i] = static_cast<uint16_t>(Y_DIGITAL_ZERO);
-            }
-
+        case GRAY16:
+            std::fill(outputFrame.begin(), outputFrame.begin() + planeSize,
+                      static_cast<uint16_t>(Y_DIGITAL_ZERO));
             break;
-        }
+
         case YUV440P16:
             // 4:4:0 output rejects padding (no padded chroma rows exist).
             break;
@@ -429,6 +411,9 @@ void OutputWriter::convertLine(int32_t lineNumber, const ComponentFrame &compone
                             componentFrame.v(inputLine) + videoParameters.activeVideoStart : nullptr;
 
     const int32_t outputLine = topPadLines + lineNumber;
+    // Start of this row's picture samples within the padded frame
+    const size_t rowOff = static_cast<size_t>(outputWidth) * outputLine + leftPadSamples;
+    const size_t planeSize = static_cast<size_t>(outputWidth) * outputHeight;
 
     const double yOffset = videoParameters.black16bIre;
     const double yRange = videoParameters.white16bIre - videoParameters.black16bIre;
@@ -445,7 +430,7 @@ void OutputWriter::convertLine(int32_t lineNumber, const ComponentFrame &compone
     switch (config.pixelFormat) {
         case RGB48: {
             // Convert Y'UV to full-range R'G'B' [Poynton eq 28.6 p337]
-            uint16_t *out = outputFrame.data() + (activeWidth * outputLine * 3);
+            uint16_t *out = outputFrame.data() + rowOff * 3;
 
             const double yScale = 65535.0 / yRange;
             const double uvScale = 65535.0 / uvRange;
@@ -469,9 +454,9 @@ void OutputWriter::convertLine(int32_t lineNumber, const ComponentFrame &compone
         case YUV444P16: {
             // Quantize the normalized E'Y/E'Cb/E'Cr signals to 16-bit narrow-range
             // Y'Cb'Cr' [ITU-T H.273 eq 30-32].
-            uint16_t *outY  = outputFrame.data() + (activeWidth * outputLine);
-            uint16_t *outCB = outY + (activeWidth * outputHeight);
-            uint16_t *outCR = outCB + (activeWidth * outputHeight);
+            uint16_t *outY  = outputFrame.data() + rowOff;
+            uint16_t *outCB = outY + planeSize;
+            uint16_t *outCR = outCB + planeSize;
             const auto b = intYCbCrBounds(config.clampMode);
 
             for (int32_t x = 0; x < activeWidth; x++) {
@@ -485,7 +470,7 @@ void OutputWriter::convertLine(int32_t lineNumber, const ComponentFrame &compone
         case GRAY16: {
             // Throw away chroma and quantize E'Y to the same narrow-range scale
             // as the Y' plane of Y'Cb'Cr'.
-            uint16_t *out = outputFrame.data() + (activeWidth * outputLine);
+            uint16_t *out = outputFrame.data() + rowOff;
             const auto b = intYCbCrBounds(config.clampMode);
 
             for (int32_t x = 0; x < activeWidth; x++) {
@@ -512,8 +497,8 @@ struct Rows440 {
 
 static Rows440 gather440Rows(const ComponentFrame &componentFrame,
                              int32_t firstActiveFrameLine, int32_t activeHeight,
-                             int32_t topPadLines, int32_t bottomPadLines) {
-    if (topPadLines != 0 || bottomPadLines != 0) {
+                             bool isPadded) {
+    if (isPadded) {
         throw std::runtime_error("4:4:0 output does not define padded chroma rows");
     }
     const auto &map = componentFrame.chromaRowComponents;
@@ -545,7 +530,7 @@ OutputWriter::Chroma440Geometry OutputWriter::convert440(const ComponentFrame &c
                                                          OutputFrame &outputFrame) const
 {
     const Rows440 rows = gather440Rows(componentFrame, videoParameters.firstActiveFrameLine,
-                                       activeHeight, topPadLines, bottomPadLines);
+                                       activeHeight, isPadded());
     const Chroma440Geometry g = geometryFor(rows);
 
     outputFrame.resize(static_cast<size_t>(activeWidth)
@@ -597,7 +582,7 @@ OutputWriter::Chroma440Geometry OutputWriter::convertToFloat440(
     const ComponentFrame &componentFrame, std::vector<float> *outPlanes) const
 {
     const Rows440 rows = gather440Rows(componentFrame, videoParameters.firstActiveFrameLine,
-                                       activeHeight, topPadLines, bottomPadLines);
+                                       activeHeight, isPadded());
     const Chroma440Geometry g = geometryFor(rows);
 
     outPlanes[0].assign(static_cast<size_t>(activeWidth) * outputHeight, 0.0f);
@@ -650,13 +635,15 @@ void OutputWriter::convertToFloat(const ComponentFrame &componentFrame,
 {
     // Produce the normalized colour-difference planes E'Y (and, when
     // includeChroma is set, E'Cb and E'Cr) [ITU-T H.273 eq 45-47] directly
-    // from the ComponentFrame, sharing the geometry (active crop + top/bottom
-    // padding) of the integer convert() path so float and integer frames are
+    // from the ComponentFrame, sharing the geometry (active crop inside a black
+    // pad border) of the integer convert() path so float and integer frames are
     // pixel-aligned. E'Y is in [0,1] (black to white); E'Cb/E'Cr are centred
-    // at 0.0 with a ±0.5 excursion. When includeChroma is false the chroma
-    // planes are left empty and the ComponentFrame's U/V are not read, matching
-    // GRAY16 and supporting mono ComponentFrames (which deallocate U/V).
-    const size_t planeSize = static_cast<size_t>(activeWidth) * outputHeight;
+    // at 0.0 with a ±0.5 excursion, so the zero-fill below is exactly the black
+    // border and the active lines overwrite its interior. When includeChroma is
+    // false the chroma planes are left empty and the ComponentFrame's U/V are
+    // not read, matching GRAY16 and supporting mono ComponentFrames (which
+    // deallocate U/V).
+    const size_t planeSize = static_cast<size_t>(outputWidth) * outputHeight;
     outPlanes[0].assign(planeSize, 0.0f);
     if (includeChroma) {
         outPlanes[1].assign(planeSize, 0.0f);
@@ -678,7 +665,8 @@ void OutputWriter::convertToFloat(const ComponentFrame &componentFrame,
         const int32_t inputLine = videoParameters.firstActiveFrameLine + y;
         const double *inY = componentFrame.y(inputLine) + videoParameters.activeVideoStart;
         const int32_t outputLine = topPadLines + y;
-        float *outY = outPlanes[0].data() + static_cast<size_t>(outputLine) * activeWidth;
+        const size_t rowOff = static_cast<size_t>(outputWidth) * outputLine + leftPadSamples;
+        float *outY = outPlanes[0].data() + rowOff;
 
         for (int32_t x = 0; x < activeWidth; x++) {
             outY[x] = std::clamp(static_cast<float>((inY[x] - yOffset) * eyScale),
@@ -689,8 +677,8 @@ void OutputWriter::convertToFloat(const ComponentFrame &componentFrame,
 
         const double *inU = componentFrame.u(inputLine) + videoParameters.activeVideoStart;
         const double *inV = componentFrame.v(inputLine) + videoParameters.activeVideoStart;
-        float *outCB = outPlanes[1].data() + static_cast<size_t>(outputLine) * activeWidth;
-        float *outCR = outPlanes[2].data() + static_cast<size_t>(outputLine) * activeWidth;
+        float *outCB = outPlanes[1].data() + rowOff;
+        float *outCR = outPlanes[2].data() + rowOff;
 
         for (int32_t x = 0; x < activeWidth; x++) {
             outCB[x] = std::clamp(static_cast<float>(inU[x] * ecbScale),
@@ -708,10 +696,11 @@ void OutputWriter::convertToFloatRGB(const ComponentFrame &componentFrame,
     // direct from the ComponentFrame's composite-domain Y/U/V via the
     // BT.601/H.273 MatrixCoefficients=5/6 Y'CbCr→R'G'B' matrix. Skips the
     // intermediate Y'CbCr integer quantization the YUV444P16 / RGB48 paths
-    // share. Geometry matches the integer convert() path (active crop +
-    // top/bottom padding) so the planes line up pixel-for-pixel with the
-    // other output formats.
-    const size_t planeSize = static_cast<size_t>(activeWidth) * outputHeight;
+    // share. Geometry matches the integer convert() path (active crop inside a
+    // black pad border) so the planes line up pixel-for-pixel with the other
+    // output formats; R'G'B' black is zero, so the zero-fill below is the
+    // border and the active lines overwrite its interior.
+    const size_t planeSize = static_cast<size_t>(outputWidth) * outputHeight;
     outPlanes[0].assign(planeSize, 0.0f);
     outPlanes[1].assign(planeSize, 0.0f);
     outPlanes[2].assign(planeSize, 0.0f);
@@ -734,7 +723,7 @@ void OutputWriter::convertToFloatRGB(const ComponentFrame &componentFrame,
         const double *inV = componentFrame.v(inputLine) + videoParameters.activeVideoStart;
 
         const int32_t outputLine = topPadLines + y;
-        const size_t rowOff = static_cast<size_t>(outputLine) * activeWidth;
+        const size_t rowOff = static_cast<size_t>(outputWidth) * outputLine + leftPadSamples;
         float *outR = outPlanes[0].data() + rowOff;
         float *outG = outPlanes[1].data() + rowOff;
         float *outB = outPlanes[2].data() + rowOff;

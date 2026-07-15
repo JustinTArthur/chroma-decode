@@ -89,6 +89,11 @@ typedef struct chd_video_params {
     int      is_second_field_first;
 } chd_video_params_t;
 
+/* Source geometry and levels, reported by chd_video_get_info. The four
+ * first_/last_ crop bounds are inclusive on both axes; sample bounds are row
+ * positions within a stored row, whose origin depends on the source's
+ * horizontal alignment and so need not match the sample numbering of EBU Tech
+ * 3280 or SMPTE ST 244. */
 typedef struct chd_video_info {
     chd_video_standard_t  standard;
     chd_sample_encoding_t encoding;
@@ -99,8 +104,8 @@ typedef struct chd_video_info {
     int32_t  samples_per_frame;
     double   sample_rate_hz;
     double   fsc_hz;
-    int32_t  active_video_start;
-    int32_t  active_video_end;
+    int32_t  first_active_sample;
+    int32_t  last_active_sample;
     int32_t  first_active_frame_line;
     int32_t  last_active_frame_line;
     int32_t  black_16b_ire;
@@ -158,9 +163,9 @@ typedef struct chd_chroma_ident_report {
 } chd_chroma_ident_report_t;
 
 /* Committed output framing, reported by chd_decoder_get_output_info. width and
- * height are the active picture region after crop and padding — the same
- * dimensions chd_decode_frame produces and the coordinate space dropout spans
- * are expressed in. */
+ * height are the active picture crop plus any black border CHD_OPT_PADDING_MULTIPLE
+ * adds around it: the same dimensions chd_decode_frame produces and the
+ * coordinate space dropout spans are expressed in. */
 typedef struct chd_output_info {
     chd_pixel_format_t format;
     int32_t  width;

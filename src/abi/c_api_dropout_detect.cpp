@@ -43,9 +43,11 @@ chd_status_t arg_error(const char *what) {
 // produces and dropout spans are expressed in.
 struct OutputGeometry {
     int32_t activeVideoStart;
-    int32_t width;
+    int32_t activeWidth;   // the picture crop
+    int32_t width;         // the emitted frame, crop plus black pad border
     int32_t height;
     int32_t firstActiveFrameLine;
+    int32_t leftPadSamples;
     int32_t topPadLines;
     int32_t fieldWidth;
 };
@@ -53,8 +55,10 @@ struct OutputGeometry {
 OutputGeometry committedGeometry(const chd_decoder_t *d) {
     OutputGeometry g;
     g.activeVideoStart     = d->videoParameters.activeVideoStart;
-    g.width                = d->outputWriter.getActiveWidth();
+    g.activeWidth          = d->outputWriter.getActiveWidth();
+    g.width                = d->outputWriter.getOutputWidth();
     g.firstActiveFrameLine = d->videoParameters.firstActiveFrameLine;
+    g.leftPadSamples       = d->outputWriter.getLeftPadSamples();
     g.topPadLines          = d->outputWriter.getTopPadLines();
     g.height               = d->outputWriter.getOutputHeight();
     g.fieldWidth           = d->videoParameters.fieldWidth;
@@ -91,7 +95,7 @@ void appendFieldSpans(const chd::decoders::SourceField &sf, const OutputGeometry
     const auto &dropOuts = sf.field.dropOuts;
     const int32_t offset = sf.getOffset();  // 0 top field, 1 bottom field
     const int32_t avs = g.activeVideoStart;
-    const int32_t ave = g.activeVideoStart + g.width;
+    const int32_t ave = g.activeVideoStart + g.activeWidth;
 
     for (int32_t i = 0; i < dropOuts.size(); i++) {
         const int32_t fieldLine = dropOuts.fieldLine(i);  // 1-based
@@ -113,10 +117,12 @@ void appendFieldSpans(const chd::decoders::SourceField &sf, const OutputGeometry
         if (x1 > ave) x1 = ave;
         if (x1 <= x0) continue;  // fully outside the active region horizontally
 
+        // Field sample positions land in the padded frame's coordinate space:
+        // shift past the left border, as the y above already shifts past the top.
         chd_dropout_span_t span;
         span.y       = y;
-        span.x_start = x0 - avs;
-        span.x_end   = x1 - avs;
+        span.x_start = x0 - avs + g.leftPadSamples;
+        span.x_end   = x1 - avs + g.leftPadSamples;
         span.origin  = CHD_DROPOUT_ORIGIN_SOURCE_METADATA;
         spans.push_back(span);
     }
@@ -257,7 +263,7 @@ chd_status_t chd_decode_dropout_mask(chd_decoder_t *d, int64_t frame_index,
 
     auto frame = std::make_unique<chd_frame>();
     frame->format       = maskFormat;
-    frame->activeWidth  = g.width;
+    frame->outputWidth  = g.width;
     frame->outputHeight = g.height;
 
     if (maskFormat == CHD_PIXEL_GRAYS) {

@@ -522,7 +522,7 @@ chd_status_t addCompositeExtra(const std::string &fn,
 extern "C" {
 
 chd_status_t chd_video_open_composite(const char *path,
-                                      const char *sidecar_path_or_null,
+                                      const char *metadata_path_or_null,
                                       const chd_video_params_t *override_or_null,
                                       chd_video_t **out) {
     if (path == nullptr || out == nullptr) {
@@ -535,7 +535,7 @@ chd_status_t chd_video_open_composite(const char *path,
 
     OpenedSource opened;
     const chd_status_t rc = openCompositeSource(
-        "chd_video_open_composite", path, sidecar_path_or_null, override_or_null, &opened);
+        "chd_video_open_composite", path, metadata_path_or_null, override_or_null, &opened);
     if (rc != CHD_OK) return rc;
 
     warn625ChromaSignatureMismatch(*opened.source, "chd_video_open_composite");
@@ -550,7 +550,7 @@ chd_status_t chd_video_open_composite(const char *path,
 }
 
 chd_status_t chd_video_open_yc(const char *luma_path, const char *chroma_path,
-                               const char *sidecar_path_or_null,
+                               const char *metadata_path_or_null,
                                const chd_video_params_t *override_or_null,
                                chd_video_t **out) {
     if (luma_path == nullptr || chroma_path == nullptr || out == nullptr) {
@@ -561,7 +561,7 @@ chd_status_t chd_video_open_yc(const char *luma_path, const char *chroma_path,
         return set_error("chd_video_open_yc: luma/chroma file does not exist");
     }
 
-    const SidecarResolution sc = resolveSidecarFlavour(luma_path, sidecar_path_or_null);
+    const SidecarResolution sc = resolveSidecarFlavour(luma_path, metadata_path_or_null);
     // A CVBS `.y`/`.c` pair (a `.meta` sidecar, or no sidecar + override) reads
     // through a single CvbsYcSource that reconstructs a composite from the
     // centred-chroma `.c`. A vhs-decode luma.tbc + chroma.tbc pair instead
@@ -600,7 +600,7 @@ chd_status_t chd_video_open_yc(const char *luma_path, const char *chroma_path,
 
     OpenedSource luma;
     chd_status_t rc = openCompositeSource(
-        "chd_video_open_yc (luma)", luma_path, sidecar_path_or_null, override_or_null, &luma);
+        "chd_video_open_yc (luma)", luma_path, metadata_path_or_null, override_or_null, &luma);
     if (rc != CHD_OK) return rc;
 
     // Prefer the chroma plane's own sidecar, but fall back to the luma sidecar:
@@ -658,8 +658,10 @@ chd_status_t chd_video_get_info(const chd_video_t *v, chd_video_info_t *out) {
     out->samples_per_frame      = nativeSamplesPerFrame(vp.system);
     out->sample_rate_hz         = vp.sampleRate;
     out->fsc_hz                 = vp.fSC;
-    out->active_video_start     = vp.activeVideoStart;
-    out->active_video_end       = vp.activeVideoEnd;
+    // VideoParameters carries the sample crop half-open; the ABI reports all
+    // four crop bounds inclusive, matching the CHD_OPT_*_ACTIVE_* options.
+    out->first_active_sample    = vp.activeVideoStart;
+    out->last_active_sample     = vp.activeVideoEnd - 1;
     out->first_active_frame_line = vp.firstActiveFrameLine;
     out->last_active_frame_line  = vp.lastActiveFrameLine;
     out->black_16b_ire          = vp.black16bIre;
@@ -676,17 +678,17 @@ chd_status_t chd_video_get_info(const chd_video_t *v, chd_video_info_t *out) {
 }
 
 chd_status_t chd_video_add_extra_source_composite(chd_video_t *v, const char *path,
-                                                  const char *sidecar_path_or_null) {
+                                                  const char *metadata_path_or_null) {
     if (v == nullptr || path == nullptr) {
         return set_error("chd_video_add_extra_source_composite: null argument");
     }
     return addCompositeExtra("chd_video_add_extra_source_composite",
-                             v->extraSources, path, sidecar_path_or_null);
+                             v->extraSources, path, metadata_path_or_null);
 }
 
 chd_status_t chd_video_add_extra_source_yc(chd_video_t *v, const char *luma_path,
                                            const char *chroma_path,
-                                           const char *sidecar_path_or_null) {
+                                           const char *metadata_path_or_null) {
     if (v == nullptr || luma_path == nullptr || chroma_path == nullptr) {
         return set_error("chd_video_add_extra_source_yc: null argument");
     }
@@ -694,13 +696,13 @@ chd_status_t chd_video_add_extra_source_yc(chd_video_t *v, const char *luma_path
         return set_error("chd_video_add_extra_source_yc: luma/chroma file does not exist");
     }
 
-    const SidecarResolution sc = resolveSidecarFlavour(luma_path, sidecar_path_or_null);
+    const SidecarResolution sc = resolveSidecarFlavour(luma_path, metadata_path_or_null);
     if (sc.found && !sc.isCvbs) {
         // vhs-decode pair: a luma extra corrects the luma plane and a chroma
         // extra corrects the separately-decoded chroma plane.
         chd_status_t rc = addCompositeExtra(
             "chd_video_add_extra_source_yc (luma)", v->extraSources,
-            luma_path, sidecar_path_or_null);
+            luma_path, metadata_path_or_null);
         if (rc != CHD_OK) return rc;
         // Chroma plane falls back to the shared luma sidecar (vhs-decode writes
         // one `.tbc.json` per pair).

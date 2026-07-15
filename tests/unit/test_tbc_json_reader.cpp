@@ -99,8 +99,8 @@ int main() {
     REQUIRE(info.encoding == CHD_ENC_CVBS_U16_4FSC);
     REQUIRE(info.field_width == 910);
     REQUIRE(info.field_height == 263);
-    REQUIRE(info.active_video_start == 192);
-    REQUIRE(info.active_video_end == 1791);
+    REQUIRE(info.first_active_sample == 192);
+    REQUIRE(info.last_active_sample == 1790);
     REQUIRE(info.is_widescreen == 0);
     REQUIRE(info.is_subcarrier_locked == 1);
     REQUIRE(info.num_frames == 2);

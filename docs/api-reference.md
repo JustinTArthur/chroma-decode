@@ -268,9 +268,16 @@ count, and `samples_per_frame`, the standard's native frame total (PAL
 709,379; NTSC 477,750; PAL-M 477,225) regardless of container layout, while
 `field_width` and `field_height` describe the served field raster. `layout`
 is always the resolved value, never `CHD_FRAME_LAYOUT_UNKNOWN`. For
-frame-native sources, `active_video_start` / `active_video_end` follow the
+frame-native sources, `first_active_sample` / `last_active_sample` follow the
 [horizontal alignment](file-formats.md#container-layouts) measured from the
 capture's own sync at open time.
+
+All four crop bounds are **inclusive**, and they name exactly the quantities the
+[`CHD_OPT_*_ACTIVE_*` options](#option-registry) set, so a bound read from this
+struct can be adjusted and set straight back with no off-by-one. Sample bounds
+are row positions in the source's own horizontal alignment, so they need not
+match the sample numbering of EBU Tech 3280-E or SMPTE ST 244 (see
+[active samples and the 4fsc standards](#active-samples-and-the-4fsc-standards)).
 
 ```c
 typedef struct chd_video_info {
@@ -283,8 +290,8 @@ typedef struct chd_video_info {
     int32_t  samples_per_frame;
     double   sample_rate_hz;
     double   fsc_hz;
-    int32_t  active_video_start;
-    int32_t  active_video_end;
+    int32_t  first_active_sample;
+    int32_t  last_active_sample;
     int32_t  first_active_frame_line;
     int32_t  last_active_frame_line;
     int32_t  black_16b_ire;
@@ -296,6 +303,76 @@ typedef struct chd_video_info {
     int      is_first_field_first;
 } chd_video_info_t;
 ```
+
+#### Sample numbering
+
+The crop sample positions — `first_active_sample` / `last_active_sample` and
+their [`CHD_OPT_*_ACTIVE_SAMPLE` options](#option-registry) — are row positions
+that count from **sample 0 = the first sampling instant at or after 0H**, where
+0H is the half-amplitude point of the falling edge of line sync. Sync and colour
+burst occupy the start of the row and the picture follows. This is the
+ld-decode/vhs-decode TBC convention, and it is the same origin for every input
+the library reads:
+
+- **Line-locked field rasters** (`.tbc`, and CVBS field rasters): every row
+  starts at its own 0H.
+- **Frame-native CVBS files**: 0H-aligned per the CVBS spec. For orthogonal
+  systems (NTSC, PAL-M) every row starts at 0H; for PAL the alignment is exact
+  only at the frame's first line, and 0H then drifts by 4/625 of a sample per
+  line across the frame (the non-orthogonal 4fsc lattice, stored on a uniform
+  1135-sample row). The reader measures 0H from the sync edges at open and
+  resolves such a capture to the same sync-start origin.
+- **Encoder-style (subcarrier-locked) cuts** are the one exception: their rows
+  begin at the first digital blanking sample instead of 0H, so sample 0 sits a
+  few samples ahead of 0H. The reader detects this and the reported crop
+  reflects it.
+
+This origin **differs from the 4fsc interface standards.** SMPTE ST 244 and EBU
+Tech 3280-E number a row from the start of the digital active line, with 0H
+falling *late* in the row (between samples 784 and 785 for NTSC; 957 and 958 for
+PAL). Translating a standard's sample number to ours is a fixed rotation — add
+125 (NTSC), 177 (PAL), or 124 (PAL-M) and wrap at the row width — so a region ST
+244 calls samples 0..767 is samples 125..892 here. Do not read a
+`first_active_sample` value as an ST 244 / EBU 3280 sample index.
+
+This origin describes source-row positions only. The `x_start` / `x_end` of a
+[`chd_dropout_span_t`](#chd_decoder_get_dropout_spans) are a different
+coordinate: columns within the emitted frame, where `0` is the frame's left
+edge (the crop's `first_active_sample`, plus any left padding), not 0H.
+
+#### Active samples and the 4fsc standards
+
+For a CVBS-native capture the default active-video crop is the **digital active
+line** of the interface standard: EBU Tech 3280-E's 948 samples for 625-line
+(PAL), SMPTE ST 244's 768 samples (its samples 0 to 767) for 525-line
+(NTSC/PAL-M). Those standards number a row from the start of the digital active
+line with 0H late in the row, while our rows start at 0H (line-locked) or at the
+first digital blanking sample (encoder-style), so the digital active line is
+walked round to where each alignment puts it. The synthesized default lands
+exactly on it:
+
+|System|Alignment|Default crop = digital active line|Width|
+|-|-|-|-|
+|PAL|sync-start|177..1124|948|
+|PAL|blanking-start|187..1134|948|
+|NTSC|sync-start|125..892|768|
+|NTSC|blanking-start|142..909|768|
+|PAL-M|sync-start|124..891|768|
+|PAL-M|blanking-start|141..908|768|
+
+This is wider than the analogue picture; it includes the blanking transition on
+each side. Two common tighter crops, set via `CHD_OPT_FIRST_ACTIVE_SAMPLE` /
+`CHD_OPT_LAST_ACTIVE_SAMPLE` (inclusive, in these same stored row coordinates):
+
+- **Analogue active line** (~52.0 µs PAL, ~52.66 µs NTSC/PAL-M): line-locked PAL
+  `184`/`1105` (922); line-locked NTSC `134`/`887` (754). These are nominal
+  (line-blanking tolerance is a few samples).
+- **ld-chroma-decoder's picture crop**: line-locked NTSC `134`/`893` (760), PAL
+  `185`/`1106` (922). This is what a `.tbc` sidecar carries, so `.tbc` inputs
+  already decode to it by default; these values reproduce it on a CVBS capture.
+
+`.tbc` inputs take their crop from the sidecar and are not affected by this
+default; `chd_video_get_info` reports whichever crop is in effect.
 
 ### chd_frame_info_t
 
@@ -355,23 +432,30 @@ typedef struct chd_output_info {
 ```
 
 The committed output framing, filled by
-[`chd_decoder_get_output_info`](#chd_decoder_get_output_info): the active-picture
-`width` and `height` after crop and padding (the dimensions a decoded frame or a
-dropout mask fills), the pixel `format` and its `num_planes`, and the source
-`num_frames`.
+[`chd_decoder_get_output_info`](#chd_decoder_get_output_info): the `width` and
+`height` of an emitted frame (the dimensions a decoded frame or a dropout mask
+fills), the pixel `format` and its `num_planes`, and the source `num_frames`.
+
+A frame is the active-picture crop surrounded by whatever black border
+[`CHD_OPT_PADDING_MULTIPLE`](#option-registry) adds. The two knobs are
+independent, and each does one thing: the crop chooses which signal samples and
+lines become picture, and padding grows the frame around that picture without
+moving or altering it. To bring in real signal from outside the default active
+window, widen the crop; padding will never do it for you.
 
 ---
 
 ## Video sources
 
 Declared in `<chromadec/video.h>`. A `chd_video_t` is an opened input plus its
-metadata; it is the argument you pass to [`chd_decoder_create`](#chd_decoder_create).
+metadata, read from a **metadata sidecar file** next to the data; it is the
+argument you pass to [`chd_decoder_create`](#chd_decoder_create).
 
 ### chd_video_open_composite
 
 ```c
 chd_status_t chd_video_open_composite(const char *path,
-                                      const char *sidecar_path_or_null,
+                                      const char *metadata_path_or_null,
                                       const chd_video_params_t *override_or_null,
                                       chd_video_t **out);
 ```
@@ -379,7 +463,7 @@ chd_status_t chd_video_open_composite(const char *path,
 Open a single-file composite capture: an ld-decode `.tbc` or a CVBS
 `.composite`. The sidecar flavour is detected automatically.
 
-- `sidecar_path_or_null`: `NULL` auto-locates the sidecar next to the data
+- `metadata_path_or_null`: `NULL` auto-locates the sidecar next to the data
   file: an ld-decode `<path>.db` (SQLite) / `<path>.json`, else a CVBS
   `<basename>.meta`. A `const char *` is an explicit path to a `.db`, `.json`,
   or `.meta` sidecar.
@@ -401,7 +485,7 @@ four-field sequence position from its colour burst. See
 ```c
 chd_status_t chd_video_open_yc(const char *luma_path,
                                const char *chroma_path,
-                               const char *sidecar_path_or_null,
+                               const char *metadata_path_or_null,
                                const chd_video_params_t *override_or_null,
                                chd_video_t **out);
 ```
@@ -409,7 +493,7 @@ chd_status_t chd_video_open_yc(const char *luma_path,
 Open a dual-file Y/C capture: a CVBS `.y` + `.c` pair, or a vhs-decode luma
 `.tbc` + chroma `.tbc` pair. Sidecar resolution and flavour detection follow
 [`chd_video_open_composite`](#chd_video_open_composite); the
-`sidecar_path_or_null` applies to the luma plane, and the chroma plane uses its
+`metadata_path_or_null` applies to the luma plane, and the chroma plane uses its
 own sidecar if present, else falls back to the luma sidecar (vhs-decode writes a
 single shared `<base>.tbc.json` for the pair).
 
@@ -434,11 +518,11 @@ decoder's `reverse_field_order` option can change the decodable frame count
 ```c
 chd_status_t chd_video_add_extra_source_composite(chd_video_t *v,
                                                   const char *path,
-                                                  const char *sidecar_path_or_null);
+                                                  const char *metadata_path_or_null);
 chd_status_t chd_video_add_extra_source_yc(chd_video_t *v,
                                            const char *luma_path,
                                            const char *chroma_path,
-                                           const char *sidecar_path_or_null);
+                                           const char *metadata_path_or_null);
 ```
 
 Register additional captures of the same content as replacement candidates for
@@ -556,7 +640,7 @@ and any decoder-kind restriction.
 | `CHD_OPT_CHROMA_PHASE_DEG`          | f64  | Chroma phase, degrees.                                                                                                       |
 | `CHD_OPT_CHROMA_NR_LEVEL`           | f64  | Chroma noise reduction.                                                                                                      |
 | `CHD_OPT_LUMA_NR_LEVEL`             | f64  | Luma noise reduction.                                                                                                        |
-| `CHD_OPT_PADDING_MULTIPLE`          | i32  | Output padding multiple (default `1` = no padding).                                                                          |
+| `CHD_OPT_PADDING_MULTIPLE`          | i32  | Round both frame axes up to this multiple with a black border (default `1` = no padding). Never moves the crop.               |
 | `CHD_OPT_REVERSE_FIELD_ORDER`       | bool | Swap field order (matches `ld-chroma-decoder -r`).                                                                           |
 | `CHD_OPT_PHASE_COMPENSATION`        | bool | NTSC phase compensation.                                                                                                     |
 | `CHD_OPT_COMB_ADAPT_THRESHOLD`      | f64  | Adaptive 3D candidate threshold; `CHD_DEC_NTSC_3D` only.                                                                     |
@@ -571,6 +655,8 @@ and any decoder-kind restriction.
 | `CHD_OPT_CHROMA_CLICK_FREQ_OVERSHOOT` | f64 | Expert absolute override of the adaptive deviation-overshoot threshold (max-deviation multiples); needs `chroma_click_nr_level` > 0. |
 | `CHD_OPT_TRANSFORM_THRESHOLD`       | f64  | Transform-decoder threshold.                                                                                                 |
 | `CHD_OPT_TRANSFORM_THRESHOLDS_FILE` | str  | Per-bin thresholds file.                                                                                                     |
+| `CHD_OPT_FIRST_ACTIVE_SAMPLE`       | i32  | First active sample (inclusive).                                                                                             |
+| `CHD_OPT_LAST_ACTIVE_SAMPLE`        | i32  | Last active sample (inclusive).                                                                                              |
 | `CHD_OPT_FIRST_ACTIVE_FIELD_LINE`   | i32  | First active field line (inclusive).                                                                                         |
 | `CHD_OPT_LAST_ACTIVE_FIELD_LINE`    | i32  | Last active field line (inclusive).                                                                                          |
 | `CHD_OPT_FIRST_ACTIVE_FRAME_LINE`   | i32  | First active frame line (inclusive).                                                                                         |

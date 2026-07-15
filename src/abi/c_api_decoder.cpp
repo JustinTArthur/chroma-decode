@@ -6,7 +6,7 @@
 // The handle stores caller options uncommitted until chd_decoder_commit,
 // at which point the registry builds the concrete IDecoder, the
 // OutputWriter is configured, and the decoder is configured against the
-// post-padding VideoParameters. From that point chd_decode_frame is
+// committed active crop. From that point chd_decode_frame is
 // callable until chd_decoder_free.
 
 #include <chromadec/decoder.h>
@@ -86,23 +86,48 @@ int parseClampMode(const std::string &name) {
     return -1;
 }
 
-// Apply caller-supplied first/last_active_*_line overrides to the
-// VideoParameters before the decoder configures itself. Mirrors
-// LineParameters::applyTo with the i32 option-map as the source.
-void applyLineOverrides(chd::metadata::LdDecodeMetaData::VideoParameters &vp,
+// Apply caller-supplied active-crop overrides to the VideoParameters before the
+// decoder configures itself. Mirrors LineParameters::applyTo with the i32
+// option-map as the source. The options are inclusive on both axes; the sample
+// crop is half-open inside VideoParameters, so the last sample converts here.
+void applyCropOverrides(chd::metadata::LdDecodeMetaData::VideoParameters &vp,
                         const chd::decoders::registry::OptionMaps &o) {
-    auto get = [&](const char *k, int32_t fallback) -> int32_t {
+    // Whether the caller set a bound is the option's presence in the map, not a
+    // sentinel value, so an out-of-range bound reaches validateCrop and is
+    // reported rather than silently ignored.
+    auto apply = [&](const char *k, int32_t &dst, int32_t bias = 0) {
         auto it = o.i32.find(k);
-        return it == o.i32.end() ? fallback : it->second;
+        if (it != o.i32.end()) dst = it->second + bias;
     };
-    const int32_t a = get(CHD_OPT_FIRST_ACTIVE_FIELD_LINE, -1);
-    const int32_t b = get(CHD_OPT_LAST_ACTIVE_FIELD_LINE,  -1);
-    const int32_t c = get(CHD_OPT_FIRST_ACTIVE_FRAME_LINE, -1);
-    const int32_t e = get(CHD_OPT_LAST_ACTIVE_FRAME_LINE,  -1);
-    if (a >= 0) vp.firstActiveFieldLine = a;
-    if (b >= 0) vp.lastActiveFieldLine  = b;
-    if (c >= 0) vp.firstActiveFrameLine = c;
-    if (e >= 0) vp.lastActiveFrameLine  = e;
+    apply(CHD_OPT_FIRST_ACTIVE_FIELD_LINE, vp.firstActiveFieldLine);
+    apply(CHD_OPT_LAST_ACTIVE_FIELD_LINE,  vp.lastActiveFieldLine);
+    apply(CHD_OPT_FIRST_ACTIVE_FRAME_LINE, vp.firstActiveFrameLine);
+    apply(CHD_OPT_LAST_ACTIVE_FRAME_LINE,  vp.lastActiveFrameLine);
+    apply(CHD_OPT_FIRST_ACTIVE_SAMPLE,     vp.activeVideoStart);
+    // The sample crop is inclusive on the ABI and half-open in VideoParameters.
+    apply(CHD_OPT_LAST_ACTIVE_SAMPLE,      vp.activeVideoEnd, 1);
+}
+
+// Reject a crop that leaves the stored row, or that selects nothing. The
+// widened-crop escape hatch is the only way to reach samples outside the
+// default active window, so it is also the only place the bound can go bad.
+chd_status_t validateCrop(const chd::metadata::LdDecodeMetaData::VideoParameters &vp) {
+    if (vp.activeVideoStart < 0 || vp.activeVideoEnd > vp.fieldWidth
+        || vp.activeVideoEnd <= vp.activeVideoStart) {
+        chd::detail::set_last_error(
+            "chd_decoder_commit: active sample crop must satisfy 0 <= first_active_sample "
+            "<= last_active_sample < field_width");
+        return CHD_E_INVALID_ARG;
+    }
+    if (vp.firstActiveFrameLine < 0
+        || vp.lastActiveFrameLine >= (vp.fieldHeight * 2)
+        || vp.lastActiveFrameLine < vp.firstActiveFrameLine) {
+        chd::detail::set_last_error(
+            "chd_decoder_commit: active frame-line crop must satisfy 0 <= "
+            "first_active_frame_line <= last_active_frame_line < 2 * field_height");
+        return CHD_E_INVALID_ARG;
+    }
+    return CHD_OK;
 }
 
 template <typename T>
@@ -281,8 +306,11 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
     auto frame = std::make_unique<chd_frame>();
     frame->format = d->outputPixelFormat;
 
-    const int32_t activeWidth =
-        d->videoParameters.activeVideoEnd - d->videoParameters.activeVideoStart;
+    // Emitted frame: the active crop inside whatever black border padding added.
+    const int32_t activeWidth  = d->outputWriter.getActiveWidth();
+    const int32_t outputWidth  = d->outputWriter.getOutputWidth();
+    const int32_t leftPad      = d->outputWriter.getLeftPadSamples();
+    const int32_t topPad       = d->outputWriter.getTopPadLines();
 
     // Publish click-concealment results: spans mapped into the committed
     // active-output framing (cached per frame for the unified dropout-span
@@ -295,10 +323,10 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
         const int32_t avs = d->videoParameters.activeVideoStart;
         for (const auto &span : primaryCF.chromaConcealedSpans) {
             if (span.frameRow < firstLine || span.frameRow > lastLine) continue;
-            const int32_t xs = std::clamp(span.xStart - avs, 0, activeWidth);
-            const int32_t xe = std::clamp(span.xEnd - avs, 0, activeWidth);
+            const int32_t xs = std::clamp(span.xStart - avs, 0, activeWidth) + leftPad;
+            const int32_t xe = std::clamp(span.xEnd - avs, 0, activeWidth) + leftPad;
             if (xe <= xs) continue;
-            concealed.push_back({span.frameRow - firstLine, xs, xe,
+            concealed.push_back({span.frameRow - firstLine + topPad, xs, xe,
                                  CHD_DROPOUT_ORIGIN_DECODER_CONCEALMENT});
         }
         std::lock_guard<std::mutex> sl(d->statsMutex);
@@ -343,10 +371,10 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
                 (frame->rowComponent[0] == 1) ? CHD_CHROMA_ROW_DR : CHD_CHROMA_ROW_DB;
             frame->hasIdentReport = true;
         }
-        frame->activeWidth = activeWidth;
+        frame->outputWidth = outputWidth;
         frame->outputHeight = outputHeight;
         frame->info.format = frame->format;
-        frame->info.width  = activeWidth;
+        frame->info.width  = outputWidth;
         frame->info.height = outputHeight;
         frame->info.num_planes = 3;
     } else if (frame->format == CHD_PIXEL_YUV444PS || frame->format == CHD_PIXEL_GRAYS) {
@@ -356,10 +384,10 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
         const bool includeChroma = (frame->format == CHD_PIXEL_YUV444PS);
         const int32_t outputHeight = d->outputWriter.getOutputHeight();
         d->outputWriter.convertToFloat(primaryCF, frame->floatPlane, includeChroma);
-        frame->activeWidth = activeWidth;
+        frame->outputWidth = outputWidth;
         frame->outputHeight = outputHeight;
         frame->info.format = frame->format;
-        frame->info.width  = activeWidth;
+        frame->info.width  = outputWidth;
         frame->info.height = outputHeight;
         frame->info.num_planes = includeChroma ? 3 : 1;
     } else if (frame->format == CHD_PIXEL_RGBS) {
@@ -367,10 +395,10 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
         // intermediate. Same geometry as the integer convert() path.
         const int32_t outputHeight = d->outputWriter.getOutputHeight();
         d->outputWriter.convertToFloatRGB(primaryCF, frame->floatPlane);
-        frame->activeWidth = activeWidth;
+        frame->outputWidth = outputWidth;
         frame->outputHeight = outputHeight;
         frame->info.format = frame->format;
-        frame->info.width  = activeWidth;
+        frame->info.width  = outputWidth;
         frame->info.height = outputHeight;
         frame->info.num_planes = 3;
     } else {
@@ -378,11 +406,11 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
         const int32_t planes =
             (d->outputConfig.pixelFormat == chd::output::OutputWriter::GRAY16) ? 1 : 3;
         const int32_t outputHeight = static_cast<int32_t>(
-            frame->u16Plane.size() / static_cast<size_t>(activeWidth) / planes);
-        frame->activeWidth  = activeWidth;
+            frame->u16Plane.size() / static_cast<size_t>(outputWidth) / planes);
+        frame->outputWidth  = outputWidth;
         frame->outputHeight = outputHeight;
         frame->info.format  = d->outputPixelFormat;
-        frame->info.width   = activeWidth;
+        frame->info.width   = outputWidth;
         frame->info.height  = outputHeight;
         frame->info.num_planes = planes;
     }
@@ -487,12 +515,21 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
     const chd_decoder_kind_t resolved = chd::decoders::registry::resolveAuto(d->kind, system);
 
     chd::output::OutputWriter::Configuration outCfg;
-    // Default to no padding (1 = output the active region as-is). Consumers that
+    // Default to no padding (1 = output the active crop as-is). Consumers that
     // need codec-friendly dimensions can opt in via CHD_OPT_PADDING_MULTIPLE.
     outCfg.paddingAmount = 1;
     {
         auto it = d->optionMaps.i32.find(CHD_OPT_PADDING_MULTIPLE);
         if (it != d->optionMaps.i32.end()) outCfg.paddingAmount = it->second;
+        // The border grows the frame by up to paddingAmount on each axis, and
+        // the frame is sized in int32, so an unbounded multiple overflows it.
+        // The cap sits far above any codec or model alignment.
+        constexpr int32_t kMaxPaddingMultiple = 1024;
+        if (outCfg.paddingAmount < 1 || outCfg.paddingAmount > kMaxPaddingMultiple) {
+            chd::detail::set_last_error(
+                "chd_decoder_commit: padding_multiple must be between 1 (no padding) and 1024");
+            return CHD_E_INVALID_ARG;
+        }
     }
     outCfg.outputY4m = false;
     {
@@ -735,7 +772,8 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
         return CHD_E_METADATA_MISSING;
     }
     chd::metadata::LdDecodeMetaData::VideoParameters vp = meta->getVideoParameters();
-    applyLineOverrides(vp, d->optionMaps);
+    applyCropOverrides(vp, d->optionMaps);
+    if (const chd_status_t s = validateCrop(vp); s != CHD_OK) return s;
 
     // Apply REVERSE_FIELD_ORDER. Matches upstream ld-chroma-decoder `-r`
     // flag: flips the metadata-wide isFirstFieldFirst flag, which
@@ -749,8 +787,9 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
         meta->setIsFirstFieldFirst(!reverse);
     }
 
-    // OutputWriter::updateConfiguration mutates vp (active region padding);
-    // every per-worker decoder configures against the same post-padding vp.
+    // Padding surrounds the crop rather than widening it, so vp is final here:
+    // every per-worker decoder configures against the same crop the output
+    // writer frames.
     d->outputWriter.updateConfiguration(vp, outCfg);
 
     if (d->kind == CHD_DEC_NONE) {

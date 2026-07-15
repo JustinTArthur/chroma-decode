@@ -5,6 +5,7 @@
 // rows as lookup by enum, and that the spec-normative sample counts /
 // sample-level mappings made it into the table.
 
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <string>
@@ -152,6 +153,91 @@ int testMakeVideoParameters() {
     return 0;
 }
 
+// The digital active line of the 4fsc interface standards (EBU Tech 3280-E for
+// PAL, SMPTE ST 244 for NTSC/PAL_M), expressed in the stored row coordinates of
+// a given horizontal alignment. Those standards number a row from the start of
+// the digital active line, with 0H falling late in the row; our rows start
+// either at 0H (line-locked TBC) or at the first digital blanking sample, so
+// the digital active line has to be walked round to where our rows put it.
+struct DigitalActiveLine {
+    int32_t first;  // inclusive
+    int32_t last;   // inclusive
+};
+
+DigitalActiveLine digitalActiveLine(const chd::format::VideoStandardPreset &preset,
+                                    chd::format::HorizontalAlignment alignment) {
+    const int32_t samplesPerLine = static_cast<int32_t>(std::lround(preset.samplesPerLineAvg));
+    int32_t first;
+    if (alignment == chd::format::HorizontalAlignment::SYNC_START) {
+        // Stored sample 0 is the first sampling instant at or after 0H, so the
+        // standard's sample 0 lands that many samples before the row's end.
+        // 0H is quoted relative to the start of digital blanking, which itself
+        // starts digitalActiveSamples into the standard's row.
+        const double zeroH = preset.digitalActiveSamples + preset.zeroHBlankingStartRow;
+        first = samplesPerLine - static_cast<int32_t>(std::ceil(zeroH));
+    } else {
+        // Rows start with digital blanking, so the digital active line follows it.
+        first = samplesPerLine - preset.digitalActiveSamples;
+    }
+    return {first, first + preset.digitalActiveSamples - 1};
+}
+
+int testActiveSamplesAgainstStandards() {
+    using namespace chd::format;
+
+    // Anchor the walk against the one mapping the CVBS spec states outright:
+    // SMPTE ST 244 puts NTSC's digital active line at its samples 0-767 with 0H
+    // between samples 784 and 785, which in our 0H-aligned rows is stored
+    // samples 125-892. PAL's 948-sample line lands at stored 177-1124 by the
+    // same walk from EBU Tech 3280-E's 0H at sample 957.5.
+    const auto ntscSync = digitalActiveLine(getVideoStandard(VideoStandard::NTSC),
+                                            HorizontalAlignment::SYNC_START);
+    REQUIRE(ntscSync.first == 125);
+    REQUIRE(ntscSync.last  == 892);
+    const auto palSync = digitalActiveLine(getVideoStandard(VideoStandard::PAL),
+                                           HorizontalAlignment::SYNC_START);
+    REQUIRE(palSync.first == 177);
+    REQUIRE(palSync.last  == 1124);
+
+    // The default synthesized crop IS the digital active line, on both
+    // alignments, for every preset. These bounds are the standards' own sample
+    // counts (768 / 948 wide) walked into our stored row coordinates; they are
+    // hardcoded here rather than recomputed so a drift in either the helper or
+    // makeVideoParameters is caught against fixed, standards-derived numbers.
+    struct Expected {
+        VideoStandard standard;
+        HorizontalAlignment alignment;
+        int32_t first;  // inclusive
+        int32_t last;   // inclusive
+    };
+    static constexpr Expected EXPECTED[] = {
+        {VideoStandard::PAL,   HorizontalAlignment::SYNC_START,     177, 1124},
+        {VideoStandard::PAL,   HorizontalAlignment::BLANKING_START, 187, 1134},
+        {VideoStandard::NTSC,  HorizontalAlignment::SYNC_START,     125,  892},
+        {VideoStandard::NTSC,  HorizontalAlignment::BLANKING_START, 142,  909},
+        {VideoStandard::PAL_M, HorizontalAlignment::SYNC_START,     124,  891},
+        {VideoStandard::PAL_M, HorizontalAlignment::BLANKING_START, 141,  908},
+    };
+
+    for (const auto &e : EXPECTED) {
+        const auto &preset = getVideoStandard(e.standard);
+        const auto vp = makeVideoParameters(preset, true, e.alignment);
+        // VideoParameters carries the crop half-open; the ABI reports it
+        // inclusive, and inclusive is what compares against the standards.
+        const int32_t firstActiveSample = vp.activeVideoStart;
+        const int32_t lastActiveSample  = vp.activeVideoEnd - 1;
+        REQUIRE(firstActiveSample == e.first);
+        REQUIRE(lastActiveSample  == e.last);
+        REQUIRE(lastActiveSample - firstActiveSample + 1 == preset.digitalActiveSamples);
+
+        // And it matches the independently-walked digital active line helper.
+        const auto dal = digitalActiveLine(preset, e.alignment);
+        REQUIRE(firstActiveSample == dal.first);
+        REQUIRE(lastActiveSample  == dal.last);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -160,6 +246,7 @@ int main() {
     if (testSampleConversion() != 0) return 1;
     if (testSignalStateLookup() != 0) return 1;
     if (testMakeVideoParameters() != 0) return 1;
+    if (testActiveSamplesAgainstStandards() != 0) return 1;
     std::cout << "All format-preset tests passed.\n";
     return 0;
 }

@@ -17,8 +17,9 @@ ld-decode `.tbc` and a CVBS `.composite` both open with `chd_video_open_composit
 
 In every case the **sample data and the metadata live in separate files**: the
 data file is a bare stream of samples with no header, and all the information
-needed to interpret it (geometry, levels, standard, field order) comes from the
-sidecar. A `.tbc` without its sidecar cannot be decoded; for CVBS files a
+needed to interpret it (geometry, levels, standard, field order) comes from a
+**metadata sidecar file** next to the data. A `.tbc` without its sidecar cannot
+be decoded; for CVBS files a
 [`chd_video_params_t`](api-reference.md#chd_video_params_t) override can stand
 in for a missing `.meta`.
 
@@ -257,11 +258,14 @@ mark an encoder-style subcarrier-locked raster. Frame-native PAL implies a
 subcarrier-locked lattice.
 
 The burst-gate and active-video windows follow the rows' horizontal
-alignment (where 0H sits within a stored row). Field rasters are declared:
-plain ones keep the ld-decode sync-start values, and the
-`is_subcarrier_locked` override selects the encoder-style blanking-start
-values, identical to what ld-chroma-encoder writes into its own scLocked
-sidecars (PAL: burst 109-149, active 200-1122). Frame-native files are
+alignment (where 0H sits within a stored row; see
+[Sample numbering](api-reference.md#sample-numbering) for the sample-0
+origin). Field rasters are declared: plain ones use the sync-start (0H)
+cut, and the `is_subcarrier_locked` override selects the encoder-style
+blanking-start cut, whose burst gate matches what ld-chroma-encoder writes
+into its own scLocked sidecars (PAL burst 109-149). The default active-video
+crop is the interface standard's digital active line (SMPTE ST 244 / EBU
+Tech 3280-E), positioned for the row's alignment. Frame-native files are
 measured: the reader locates 0H from the sync edges of fifty early lines
 and selects the matching cut. Real hardware captures (Snell and Wilcox
 TPG21 references) measure as sync-start, their rows beginning at 0H of

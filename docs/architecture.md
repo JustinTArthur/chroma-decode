@@ -24,7 +24,7 @@ is no Qt anywhere.
 Module layout under `src/`:
 
 - `reader/`: source readers behind a single `ISource` interface: ld-decode
-  `.tbc` (with `.tbc.db` / `.tbc.json` sidecars), CVBS `.composite`, and
+  `.tbc` (with `.tbc.db` / `.tbc.json` metadata sidecars), CVBS `.composite`, and
   dual-file YC (`.y` + `.c`, or luma + chroma `.tbc`).
 - `metadata/`, `format/`: sidecar parsing and source-format detection.
 - `decoders/`: the decoder implementations, the decoder registry, the

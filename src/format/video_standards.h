@@ -111,10 +111,10 @@ struct VideoStandardPreset {
     double  burstStartFromZeroH;
     int32_t burstLengthSamples;
 
-    // Digital active samples per line and the picture width centred in them
-    // (PAL 922 in 948; NTSC/PAL_M 758 in 768).
+    // Digital active samples per line, per the interface standard (EBU Tech
+    // 3280-E PAL 948; SMPTE ST 244 NTSC/PAL_M 768). This is the default
+    // active-video crop width; see makeVideoParameters.
     int32_t digitalActiveSamples;
-    int32_t pictureWidthSamples;
 
     // Sample level table in the 10-bit domain.
     SampleLevels10b levels;

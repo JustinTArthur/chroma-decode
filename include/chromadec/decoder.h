@@ -61,7 +61,7 @@ chd_status_t chd_decoder_get_output_info(const chd_decoder_t *d, chd_output_info
 #define CHD_OPT_CHROMA_PHASE_DEG            "chroma_phase_deg"          /* f64 */
 #define CHD_OPT_CHROMA_NR_LEVEL             "chroma_nr_level"           /* f64 */
 #define CHD_OPT_LUMA_NR_LEVEL               "luma_nr_level"             /* f64 */
-#define CHD_OPT_PADDING_MULTIPLE            "padding_multiple"          /* i32, default 1 (no padding) */
+#define CHD_OPT_PADDING_MULTIPLE            "padding_multiple"          /* i32, default 1 (no padding); black border, both axes */
 #define CHD_OPT_REVERSE_FIELD_ORDER         "reverse_field_order"       /* bool */
 #define CHD_OPT_PHASE_COMPENSATION          "phase_compensation"        /* bool, NTSC */
 #define CHD_OPT_COMB_ADAPT_THRESHOLD        "comb_adapt_threshold"      /* f64, NTSC 3D */
@@ -76,6 +76,8 @@ chd_status_t chd_decoder_get_output_info(const chd_decoder_t *d, chd_output_info
 #define CHD_OPT_CHROMA_UPPER_SIDEBAND_HZ    "chroma_upper_sideband_hz"  /* f64, equiband_vsb only: upper-sideband room +X above fSC */
 #define CHD_OPT_TRANSFORM_THRESHOLD         "transform_threshold"       /* f64 */
 #define CHD_OPT_TRANSFORM_THRESHOLDS_FILE   "transform_thresholds_file" /* str */
+#define CHD_OPT_FIRST_ACTIVE_SAMPLE         "first_active_sample"       /* i32, inclusive */
+#define CHD_OPT_LAST_ACTIVE_SAMPLE          "last_active_sample"        /* i32, inclusive */
 #define CHD_OPT_FIRST_ACTIVE_FIELD_LINE     "first_active_field_line"   /* i32, inclusive */
 #define CHD_OPT_LAST_ACTIVE_FIELD_LINE      "last_active_field_line"    /* i32, inclusive */
 #define CHD_OPT_FIRST_ACTIVE_FRAME_LINE     "first_active_frame_line"   /* i32, inclusive */
