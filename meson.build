@@ -246,7 +246,7 @@ endif
 pkg = import('pkgconfig')
 pkg.generate(libchromadec,
              name: 'chromadec',
-             description: 'Composite video chroma decoding library',
+             description: 'chroma-decode: composite video chroma decoding library',
              version: meson.project_version(),
              url: 'https://github.com/JustinTArthur/chroma-decode',
              libraries_private: cxx_runtime_libs,
