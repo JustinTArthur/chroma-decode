@@ -154,8 +154,8 @@ async fn stream_decodes_match_sync_and_respect_order() {
 
     // Indexed: must arrive strictly in requested-index order, bit-identical to
     // the sync reference.
-    let video =
-        Video::open_composite(&fixture.tbc, Some(fixture.sidecar.as_path()), None).expect("open tbc (indexed)");
+    let video = Video::open_composite(&fixture.tbc, Some(fixture.sidecar.as_path()), None)
+        .expect("open tbc (indexed)");
     let mut stream = decode_frames_stream(
         video,
         DecoderKind::Ntsc2d,

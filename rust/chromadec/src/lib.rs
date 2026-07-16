@@ -33,8 +33,8 @@ pub use stream::{
 };
 pub use types::{
     ChromaIdentMechanism, ChromaIdentReport, ChromaRowComponent, DecoderKind, FrameInfo,
-    FrameLayout, OutputInfo, PixelFormat, Plane, PlaneInfo, SampleEncoding, SignalState,
-    VideoInfo, VideoParams, VideoStandard,
+    FrameLayout, OutputInfo, PixelFormat, Plane, PlaneInfo, SampleEncoding, SignalState, VideoInfo,
+    VideoParams, VideoStandard,
 };
 pub use video::Video;
 

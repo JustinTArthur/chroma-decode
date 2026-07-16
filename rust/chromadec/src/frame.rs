@@ -115,9 +115,7 @@ impl Frame {
             check(sys::chd_frame_get_chroma_ident(self.raw.as_ptr(), &mut raw))?;
         }
         let mechanism = match raw.mechanism {
-            sys::chd_chroma_ident_mechanism::CHD_CHROMA_IDENT_PORCH => {
-                ChromaIdentMechanism::Porch
-            }
+            sys::chd_chroma_ident_mechanism::CHD_CHROMA_IDENT_PORCH => ChromaIdentMechanism::Porch,
             sys::chd_chroma_ident_mechanism::CHD_CHROMA_IDENT_BOTTLES => {
                 ChromaIdentMechanism::Bottles
             }
