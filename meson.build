@@ -26,6 +26,13 @@ project('chromadec', 'cpp', 'c',
 cpp = meson.get_compiler('cpp')
 cc  = meson.get_compiler('c')
 
+# MSVC's <cmath> hides M_PI and the other POSIX math constants behind
+# _USE_MATH_DEFINES; the decoders rely on M_PI throughout. Define it project-wide
+# so every translation unit sees the constants, rather than guarding each file.
+if cpp.get_id() == 'msvc'
+  add_project_arguments('-D_USE_MATH_DEFINES', language: ['c', 'cpp'])
+endif
+
 # ── ABI version ───────────────────────────────────────────────────────────────
 # The version at which the ABI is allowed to break: the minor before 1.0, the
 # major from 1.0 on (docs/abi-stability.md). Both the shared library's soversion

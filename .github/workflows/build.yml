@@ -229,11 +229,12 @@ jobs:
             ort_ver: '1.27.1'
           - arch: x86_64
             runner: macos-15-intel
-            ort_arch: x86_64
-            # Microsoft dropped onnxruntime-osx-x86_64 after 1.23.2;
-            # 1.24.0+ ships arm64 only. Pin to the last release that
-            # included an Intel-Mac asset.
-            ort_ver: '1.23.2'
+            # Microsoft froze onnxruntime-osx-x86_64 at 1.23.2 (1.24.0+ ships
+            # arm64 only), and that frozen build isn't reliably discoverable on
+            # the retiring macos-15-intel runner. Intel Macs are EOL, so this job
+            # validates the C core + native CoreML backend with the ORT backend
+            # off; arm64 covers the full ORT-backed build.
+            no_ort: true
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
@@ -249,6 +250,7 @@ jobs:
           pip install meson
 
       - name: Download ONNX Runtime (Microsoft release, macOS ${{ matrix.arch }} with CoreML)
+        if: ${{ !matrix.no_ort }}
         run: |
           ORT_VER=${{ matrix.ort_ver }}
           curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-osx-${{ matrix.ort_arch }}-${ORT_VER}.tgz"
@@ -259,7 +261,11 @@ jobs:
       - name: Configure
         run: |
           . .venv/bin/activate
-          meson setup build -Donnxruntime_root="${ORT_ROOT}"
+          if [ "${{ matrix.no_ort }}" = "true" ]; then
+            meson setup build -Dwith_onnxruntime=false
+          else
+            meson setup build -Donnxruntime_root="${ORT_ROOT}"
+          fi
 
       - name: Build
         run: |
@@ -278,8 +284,9 @@ jobs:
 
       - name: Verify exported chd_* symbols
         run: |
-          LIB="build/src/libchromadec.0.dylib"
-          test -f "$LIB" || (echo "no built dylib at $LIB" >&2; exit 1)
+          # Dylib name is libchromadec.0.x.y.dylib; resolve the actual file.
+          LIB=$(ls build/src/libchromadec.0.*.dylib 2>/dev/null | head -1)
+          test -n "$LIB" && test -f "$LIB" || (echo "no built dylib under build/src" >&2; exit 1)
           nm -g "$LIB" | awk '$2 == "T" && $3 ~ /^_chd_/ { print substr($3,2) }' > /tmp/exports.txt
           wc -l /tmp/exports.txt
           test "$(wc -l < /tmp/exports.txt)" -ge 40

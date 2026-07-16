@@ -61,7 +61,9 @@ test('secam_output_abi', test_secam_output_abi)
 test_secam_decoder = executable('test_secam_decoder',
   'unit/test_secam_decoder.cpp',
   dependencies: chromadec_internal_dep)
-test('secam_decoder', test_secam_decoder)
+# The SECAM decode is the heaviest test; under ASan/TSan/UBSan instrumentation
+# it runs several times longer than the 30s meson default and was timing out.
+test('secam_decoder', test_secam_decoder, timeout: 300)
 
 # End-to-end pipeline sanity test.  Reaches into internal headers (the C ABI
 # for decode isn't wired up yet).
@@ -86,7 +88,9 @@ test('ntsc_chroma_ssb', test_ntsc_chroma_ssb)
 test_ntsc1953_calibration = executable('test_ntsc1953_calibration',
   'unit/test_ntsc1953_calibration.cpp',
   dependencies: chromadec_internal_dep)
-test('ntsc1953_calibration', test_ntsc1953_calibration)
+# Sits close to the 30s default under sanitizer instrumentation; give it the
+# same headroom as the SECAM decode so instrumented runs don't flake out.
+test('ntsc1953_calibration', test_ntsc1953_calibration, timeout: 300)
 
 # format/ DATA-table sanity tests (preset lookup, sample conversion, signal-state
 # mappings).
