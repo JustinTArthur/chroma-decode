@@ -92,7 +92,7 @@ pub fn version_string() -> &'static str {
 }
 
 /// Whether a feature (e.g. `"nn"`, `"onnxruntime"`, `"coreml"`, `"cuda"`,
-/// `"fftw"`, `"sqlite"`) was compiled into the library.
+/// `"rocm"`, `"fftw"`, `"sqlite"`) was compiled into the library.
 pub fn has_feature(feature: &str) -> bool {
     let Ok(feature) = CString::new(feature) else {
         return false;

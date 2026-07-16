@@ -10,6 +10,8 @@ into component Y'CbCr output.
   output; includes migrating from ld-chroma-decoder
 - [C API reference](api-reference.md): every public `chd_*` function, type,
   and option, with ownership and threading rules
+- [Rust bindings](rust-bindings.md): the first-party `chromadec` and
+  `chromadec-sys` crates
 - [ABI stability](abi-stability.md): versioning and compatibility rules
 - [NN model conventions](nn-models.md): model paths, magnitude scales,
   execution provider notes

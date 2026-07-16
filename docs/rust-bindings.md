@@ -177,9 +177,9 @@ error that produced an empty stream.
 `NnModel::load_from_file` / `load_from_memory` mirror the C loaders;
 `SessionOpts` mirrors `chd_nn_session_opts_t` with `Default` matching
 `chd_nn_session_opts_default()`. Bind a model with `Decoder::set_nn_model`
-before `commit`. The decoder takes its own reference to the model, so the
-`NnModel` handle may be dropped once bound. Backend availability in the current
-build/host is queryable with `chromadec::backend_is_available`.
+before `commit`. The decoder borrows the model and does not take ownership, so
+keep the `NnModel` alive for the bound decoder's lifetime. Backend availability
+in the current build/host is queryable with `chromadec::backend_is_available`.
 
 [`Status`]: https://docs.rs/chromadec/latest/chromadec/enum.Status.html
 [`Cancel`]: https://docs.rs/chromadec/latest/chromadec/struct.Cancel.html

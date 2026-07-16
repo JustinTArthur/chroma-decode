@@ -84,4 +84,4 @@ integration:
 - ONNX Runtime, enabled by default, backing the neural decoders. Optional:
   disable with `-Dwith_onnxruntime=false`, or on macOS build the neural decoders
   against native CoreML alone.
-- FFTW3, optional, gating Transform PAL.
+- FFTW3, optional, gating Transform PAL and the nnTransform3D FFT front-end.

@@ -171,8 +171,9 @@ impl<'v> Decoder<'v> {
         rc == sys::chd_status::CHD_OK
     }
 
-    /// Binds an NN model (`chd_decoder_set_nn_model`). The decoder takes its
-    /// own reference; the model handle may be dropped afterwards.
+    /// Binds an NN model (`chd_decoder_set_nn_model`). The decoder borrows the
+    /// model and does not take ownership; keep it alive for the decoder's
+    /// lifetime.
     pub fn set_nn_model(&mut self, model: &NnModel) -> Result<()> {
         unsafe {
             check(sys::chd_decoder_set_nn_model(

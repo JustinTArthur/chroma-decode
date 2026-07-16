@@ -164,9 +164,9 @@ impl SessionOpts {
     }
 }
 
-/// A loaded NN model (`chd_nn_model_t`). Decoders take an internal reference
-/// at [`crate::Decoder::set_nn_model`] time, so the handle may be dropped
-/// once it has been bound.
+/// A loaded NN model (`chd_nn_model_t`). A decoder that binds it with
+/// [`crate::Decoder::set_nn_model`] borrows it without taking ownership, so the
+/// handle must outlive every decoder it is bound to.
 #[derive(Debug)]
 pub struct NnModel {
     raw: NonNull<sys::chd_nn_model>,

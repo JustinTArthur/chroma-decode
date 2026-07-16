@@ -119,8 +119,8 @@ int chd_has_feature(const char *feature);   /* 1 = compiled in, 0 = not */
 ```
 
 Query optional build features. Recognised names: `"nn"`, `"onnxruntime"`,
-`"coreml"`, `"cuda"`, `"fftw"`, `"sqlite"`. Returns `0` for `NULL` or any unknown
-name.
+`"coreml"`, `"cuda"`, `"rocm"`, `"fftw"`, `"sqlite"`. Returns `0` for `NULL` or
+any unknown name.
 
 `"nn"` reports whether the neural-decoder framework is present — true when *any*
 inference backend is built. The individual backends have their own flags:
@@ -1106,6 +1106,15 @@ colour-difference signals `E′Y E′Cb E′Cr` of ITU-R BT.601 / ITU-T H.273; t
 integer formats are narrow-range quantizations of the same signals, so float
 output preserves full precision before quantization.
 
+### chd_frame_free
+
+```c
+void chd_frame_free(chd_frame_t *f);
+```
+
+Release a frame and invalidate every plane pointer previously borrowed from
+it. Safe on `NULL`.
+
 ## Output clamping
 
 `CHD_OPT_OUTPUT_CLAMP` controls how out-of-range or sync-reserved sample codes
@@ -1136,15 +1145,6 @@ For example, `CHD_OPT_OUTPUT_CLAMP=none` with "yuv444p16" will *not* result in
 
 The `legal_ycbcr_bt601` clamp matches the default behavior of tools like
 decode-orc and `ld-chroma-decoder`.
-
-### chd_frame_free
-
-```c
-void chd_frame_free(chd_frame_t *f);
-```
-
-Release a frame and invalidate every plane pointer previously borrowed from
-it. Safe on `NULL`.
 
 ---
 
@@ -1229,6 +1229,7 @@ typedef struct chd_dropout_opts {
     int enabled;
     int overcorrect;        /* extend dropout boundaries by ±24 samples */
     int intra_field_only;   /* skip cross-field replacement candidates */
+    void *reserved[4];      /* zero-initialised; do not repurpose */
 } chd_dropout_opts_t;
 
 typedef struct chd_dropout_stats {

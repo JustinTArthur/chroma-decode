@@ -55,6 +55,13 @@ int chd_has_feature(const char *feature) {
         return 0;
 #endif
     }
+    if (std::strcmp(feature, "rocm") == 0) {
+#if defined(CHD_WITH_ROCM)
+        return 1;
+#else
+        return 0;
+#endif
+    }
     if (std::strcmp(feature, "coreml") == 0) {
 #if defined(CHD_WITH_COREML)
         return 1;
