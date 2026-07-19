@@ -587,7 +587,8 @@ or as part of **your decode loop**.
   multiple of 8 unless told otherwise — set `CHD_OPT_PADDING_MULTIPLE`
   explicitly if you need codec-friendly dimensions. Padding now adds a black
   border rather than widening the crop, and applies uniformly to every output
-  format, including `yuv444ps` and `rgbs`.
+  format, including `yuv444ps`, `rgbs`, and the 4:4:0 SECAM formats (whose
+  chroma planes take only the side border and never gain rows).
 - **CVBS captures default to the full digital active line.** For `.tbc` inputs
   the active-video crop comes from the sidecar, exactly as ld-chroma-decoder
   used it, so the default width is unchanged (NTSC 760, PAL 922). For

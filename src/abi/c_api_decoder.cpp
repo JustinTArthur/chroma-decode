@@ -355,10 +355,13 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
                 std::string("chd_decode_frame: 4:4:0 conversion failed: ") + e.what());
             return CHD_E_INTERNAL;
         }
+        // Border rows carry no chroma and stay -1; the active rows sit below
+        // whatever top border padding added.
         frame->rowComponent.assign(static_cast<size_t>(outputHeight), -1);
         const int32_t firstLine = d->videoParameters.firstActiveFrameLine;
-        for (int32_t y = 0; y < outputHeight; y++) {
-            frame->rowComponent[static_cast<size_t>(y)] =
+        const int32_t activeHeight = d->outputWriter.getActiveHeight();
+        for (int32_t y = 0; y < activeHeight; y++) {
+            frame->rowComponent[static_cast<size_t>(topPad + y)] =
                 primaryCF.chromaRowComponents[static_cast<size_t>(firstLine + y)];
         }
         if (primaryCF.chromaIdent.valid) {
@@ -368,7 +371,8 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
             frame->identReport.field_confidence[0] = primaryCF.chromaIdent.fieldConfidence[0];
             frame->identReport.field_confidence[1] = primaryCF.chromaIdent.fieldConfidence[1];
             frame->identReport.first_row_component =
-                (frame->rowComponent[0] == 1) ? CHD_CHROMA_ROW_DR : CHD_CHROMA_ROW_DB;
+                (frame->rowComponent[static_cast<size_t>(topPad)] == 1)
+                    ? CHD_CHROMA_ROW_DR : CHD_CHROMA_ROW_DB;
             frame->hasIdentReport = true;
         }
         frame->outputWidth = outputWidth;
@@ -613,12 +617,6 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
             chd::detail::set_last_error(
                 "chd_decoder_commit: 4:4:0 output is produced only by "
                 "line-sequential (SECAM) decodes");
-            return CHD_E_INVALID_ARG;
-        }
-        if (is440 && outCfg.paddingAmount > 1) {
-            chd::detail::set_last_error(
-                "chd_decoder_commit: padding_multiple does not apply to 4:4:0 "
-                "output (no padded chroma rows exist)");
             return CHD_E_INVALID_ARG;
         }
         if (is440 && outCfg.outputY4m) {

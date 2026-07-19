@@ -54,8 +54,9 @@ public:
     };
 
     // Geometry of the two 4:4:0 chroma planes produced by the convert440
-    // paths, in output-frame rows. Heights differ by at most one; each
-    // plane's rows keep the frame's top-to-bottom order.
+    // paths, in output-frame rows (so the first rows include any top pad
+    // border). Heights differ by at most one; each plane's rows keep the
+    // frame's top-to-bottom order.
     struct Chroma440Geometry {
         int32_t cbHeight = 0;
         int32_t crHeight = 0;
@@ -123,6 +124,9 @@ public:
     // component, in frame order. The integer form appends [Y | Cb | Cr]
     // into outputFrame; the float form fills outPlanes[0..2]. Both require
     // a populated chromaRowComponents map covering the active region.
+    // Padding pads the Y plane on both axes; the chroma planes share the
+    // padded width (neutral side border) but never gain rows, so every
+    // chroma plane row stays a real decoded line.
     Chroma440Geometry convert440(const ComponentFrame &componentFrame,
                                  OutputFrame &outputFrame) const;
     Chroma440Geometry convertToFloat440(const ComponentFrame &componentFrame,

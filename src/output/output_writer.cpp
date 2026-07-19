@@ -394,7 +394,7 @@ void OutputWriter::fillBlack(OutputFrame &outputFrame) const
             break;
 
         case YUV440P16:
-            // 4:4:0 output rejects padding (no padded chroma rows exist).
+            // Whole-frame path only (convert440 lays down its own border).
             break;
     }
 }
@@ -496,11 +496,7 @@ struct Rows440 {
 }  // namespace
 
 static Rows440 gather440Rows(const ComponentFrame &componentFrame,
-                             int32_t firstActiveFrameLine, int32_t activeHeight,
-                             bool isPadded) {
-    if (isPadded) {
-        throw std::runtime_error("4:4:0 output does not define padded chroma rows");
-    }
+                             int32_t firstActiveFrameLine, int32_t activeHeight) {
     const auto &map = componentFrame.chromaRowComponents;
     if (static_cast<int32_t>(map.size()) < firstActiveFrameLine + activeHeight) {
         throw std::runtime_error("4:4:0 output requires a chroma row component map");
@@ -517,12 +513,12 @@ static Rows440 gather440Rows(const ComponentFrame &componentFrame,
     return rows;
 }
 
-static OutputWriter::Chroma440Geometry geometryFor(const Rows440 &rows) {
+static OutputWriter::Chroma440Geometry geometryFor(const Rows440 &rows, int32_t topPadLines) {
     OutputWriter::Chroma440Geometry g;
     g.cbHeight   = static_cast<int32_t>(rows.cb.size());
     g.crHeight   = static_cast<int32_t>(rows.cr.size());
-    g.cbFirstRow = rows.cb.empty() ? 0 : rows.cb.front();
-    g.crFirstRow = rows.cr.empty() ? 0 : rows.cr.front();
+    g.cbFirstRow = rows.cb.empty() ? 0 : rows.cb.front() + topPadLines;
+    g.crFirstRow = rows.cr.empty() ? 0 : rows.cr.front() + topPadLines;
     return g;
 }
 
@@ -530,10 +526,10 @@ OutputWriter::Chroma440Geometry OutputWriter::convert440(const ComponentFrame &c
                                                          OutputFrame &outputFrame) const
 {
     const Rows440 rows = gather440Rows(componentFrame, videoParameters.firstActiveFrameLine,
-                                       activeHeight, isPadded());
-    const Chroma440Geometry g = geometryFor(rows);
+                                       activeHeight);
+    const Chroma440Geometry g = geometryFor(rows, topPadLines);
 
-    outputFrame.resize(static_cast<size_t>(activeWidth)
+    outputFrame.resize(static_cast<size_t>(outputWidth)
                        * (outputHeight + g.cbHeight + g.crHeight));
 
     const double yOffset = videoParameters.black16bIre;
@@ -545,13 +541,21 @@ OutputWriter::Chroma440Geometry OutputWriter::convert440(const ComponentFrame &c
     const auto b = intYCbCrBounds(config.clampMode);
 
     uint16_t *outY  = outputFrame.data();
-    uint16_t *outCB = outY + static_cast<size_t>(activeWidth) * outputHeight;
-    uint16_t *outCR = outCB + static_cast<size_t>(activeWidth) * g.cbHeight;
+    uint16_t *outCB = outY + static_cast<size_t>(outputWidth) * outputHeight;
+    uint16_t *outCR = outCB + static_cast<size_t>(outputWidth) * g.cbHeight;
+
+    // Black Y border and neutral-chroma side borders; the picture and the
+    // decoded chroma rows overwrite the interior.
+    if (isPadded()) {
+        std::fill(outY, outCB, static_cast<uint16_t>(Y_DIGITAL_ZERO));
+        std::fill(outCB, outputFrame.data() + outputFrame.size(),
+                  static_cast<uint16_t>(C_DIGITAL_ZERO));
+    }
 
     for (int32_t y = 0; y < activeHeight; y++) {
         const int32_t inputLine = videoParameters.firstActiveFrameLine + y;
         const double *inY = componentFrame.y(inputLine) + videoParameters.activeVideoStart;
-        uint16_t *out = outY + static_cast<size_t>(y) * activeWidth;
+        uint16_t *out = outY + static_cast<size_t>(topPadLines + y) * outputWidth + leftPadSamples;
         for (int32_t x = 0; x < activeWidth; x++) {
             out[x] = quantizeLuma((inY[x] - yOffset) * eyScale, b.yLo, b.yHi);
         }
@@ -560,7 +564,7 @@ OutputWriter::Chroma440Geometry OutputWriter::convert440(const ComponentFrame &c
     for (size_t k = 0; k < rows.cb.size(); k++) {
         const int32_t inputLine = videoParameters.firstActiveFrameLine + rows.cb[k];
         const double *inU = componentFrame.u(inputLine) + videoParameters.activeVideoStart;
-        uint16_t *out = outCB + k * activeWidth;
+        uint16_t *out = outCB + k * outputWidth + leftPadSamples;
         for (int32_t x = 0; x < activeWidth; x++) {
             out[x] = quantizeChroma(inU[x] * ecbScale, b.cLo, b.cHi);
         }
@@ -569,7 +573,7 @@ OutputWriter::Chroma440Geometry OutputWriter::convert440(const ComponentFrame &c
     for (size_t k = 0; k < rows.cr.size(); k++) {
         const int32_t inputLine = videoParameters.firstActiveFrameLine + rows.cr[k];
         const double *inV = componentFrame.v(inputLine) + videoParameters.activeVideoStart;
-        uint16_t *out = outCR + k * activeWidth;
+        uint16_t *out = outCR + k * outputWidth + leftPadSamples;
         for (int32_t x = 0; x < activeWidth; x++) {
             out[x] = quantizeChroma(inV[x] * ecrScale, b.cLo, b.cHi);
         }
@@ -582,12 +586,14 @@ OutputWriter::Chroma440Geometry OutputWriter::convertToFloat440(
     const ComponentFrame &componentFrame, std::vector<float> *outPlanes) const
 {
     const Rows440 rows = gather440Rows(componentFrame, videoParameters.firstActiveFrameLine,
-                                       activeHeight, isPadded());
-    const Chroma440Geometry g = geometryFor(rows);
+                                       activeHeight);
+    const Chroma440Geometry g = geometryFor(rows, topPadLines);
 
-    outPlanes[0].assign(static_cast<size_t>(activeWidth) * outputHeight, 0.0f);
-    outPlanes[1].assign(static_cast<size_t>(activeWidth) * g.cbHeight, 0.0f);
-    outPlanes[2].assign(static_cast<size_t>(activeWidth) * g.crHeight, 0.0f);
+    // The zero fill is the border: E'Y black and neutral E'Cb/E'Cr are all
+    // 0.0, so the active samples below overwrite its interior.
+    outPlanes[0].assign(static_cast<size_t>(outputWidth) * outputHeight, 0.0f);
+    outPlanes[1].assign(static_cast<size_t>(outputWidth) * g.cbHeight, 0.0f);
+    outPlanes[2].assign(static_cast<size_t>(outputWidth) * g.crHeight, 0.0f);
 
     const double yOffset = videoParameters.black16bIre;
     const double yRange = videoParameters.white16bIre - videoParameters.black16bIre;
@@ -600,7 +606,8 @@ OutputWriter::Chroma440Geometry OutputWriter::convertToFloat440(
     for (int32_t y = 0; y < activeHeight; y++) {
         const int32_t inputLine = videoParameters.firstActiveFrameLine + y;
         const double *inY = componentFrame.y(inputLine) + videoParameters.activeVideoStart;
-        float *outY = outPlanes[0].data() + static_cast<size_t>(y) * activeWidth;
+        float *outY = outPlanes[0].data()
+                      + static_cast<size_t>(topPadLines + y) * outputWidth + leftPadSamples;
         for (int32_t x = 0; x < activeWidth; x++) {
             outY[x] = std::clamp(static_cast<float>((inY[x] - yOffset) * eyScale),
                                  bounds.eyLo, bounds.eyHi);
@@ -610,7 +617,7 @@ OutputWriter::Chroma440Geometry OutputWriter::convertToFloat440(
     for (size_t k = 0; k < rows.cb.size(); k++) {
         const int32_t inputLine = videoParameters.firstActiveFrameLine + rows.cb[k];
         const double *inU = componentFrame.u(inputLine) + videoParameters.activeVideoStart;
-        float *outCB = outPlanes[1].data() + k * activeWidth;
+        float *outCB = outPlanes[1].data() + k * outputWidth + leftPadSamples;
         for (int32_t x = 0; x < activeWidth; x++) {
             outCB[x] = std::clamp(static_cast<float>(inU[x] * ecbScale),
                                   bounds.ecLo, bounds.ecHi);
@@ -620,7 +627,7 @@ OutputWriter::Chroma440Geometry OutputWriter::convertToFloat440(
     for (size_t k = 0; k < rows.cr.size(); k++) {
         const int32_t inputLine = videoParameters.firstActiveFrameLine + rows.cr[k];
         const double *inV = componentFrame.v(inputLine) + videoParameters.activeVideoStart;
-        float *outCR = outPlanes[2].data() + k * activeWidth;
+        float *outCR = outPlanes[2].data() + k * outputWidth + leftPadSamples;
         for (int32_t x = 0; x < activeWidth; x++) {
             outCR[x] = std::clamp(static_cast<float>(inV[x] * ecrScale),
                                   bounds.ecLo, bounds.ecHi);

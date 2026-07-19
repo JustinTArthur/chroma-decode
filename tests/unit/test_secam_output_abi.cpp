@@ -175,6 +175,116 @@ int testWriter440() {
     return 0;
 }
 
+// Padding pads the frame and the Y plane; the chroma planes share the padded
+// width (neutral side border) and shift with the top border, but never gain
+// rows.
+int testWriter440Padded() {
+    auto vp = testParams();
+    const auto cf = makeFrame(vp);
+
+    chd::output::OutputWriter writer;
+    chd::output::OutputWriter::Configuration cfg;
+    cfg.paddingAmount = 5;
+    cfg.pixelFormat = chd::output::OutputWriter::YUV440P16;
+    cfg.clampMode = chd::output::OutputWriter::CLAMP_NONE;
+    writer.updateConfiguration(vp, cfg);
+
+    // The 56x16 active picture rounds up to 60x20, centred: a two-sample /
+    // two-line border on every side.
+    const int32_t activeHeight = writer.getActiveHeight();
+    const int32_t outputWidth = writer.getOutputWidth();
+    const int32_t outputHeight = writer.getOutputHeight();
+    const int32_t leftPad = writer.getLeftPadSamples();
+    const int32_t topPad = writer.getTopPadLines();
+    REQUIRE(outputWidth == 60);
+    REQUIRE(outputHeight == 20);
+    REQUIRE(leftPad == 2);
+    REQUIRE(topPad == 2);
+
+    std::vector<int32_t> cbRows, crRows;
+    for (int32_t y = 0; y < activeHeight; y++) {
+        if (pairLatticeComponent(vp.firstActiveFrameLine + y) == 0) cbRows.push_back(y);
+        else crRows.push_back(y);
+    }
+
+    chd::output::OutputFrame out;
+    const auto g = writer.convert440(cf, out);
+    REQUIRE(g.cbHeight == static_cast<int32_t>(cbRows.size()));
+    REQUIRE(g.crHeight == static_cast<int32_t>(crRows.size()));
+    REQUIRE(g.cbFirstRow == cbRows.front() + topPad);
+    REQUIRE(g.crFirstRow == crRows.front() + topPad);
+    REQUIRE(out.size() == static_cast<size_t>(outputWidth)
+                              * (outputHeight + g.cbHeight + g.crHeight));
+
+    const uint16_t yBlack = 16 * 256;
+    const uint16_t cNeutral = 128 * 256;
+    const uint16_t *outY = out.data();
+    const uint16_t *outCb = outY + static_cast<size_t>(outputWidth) * outputHeight;
+    const uint16_t *outCr = outCb + static_cast<size_t>(outputWidth) * g.cbHeight;
+
+    // Y plane: black border rows and columns around a picture whose samples
+    // match the unpadded quantization.
+    const double yRange = vp.white16bIre - vp.black16bIre;
+    for (int32_t x = 0; x < outputWidth; x++) {
+        REQUIRE(outY[x] == yBlack);
+        REQUIRE(outY[static_cast<size_t>(outputWidth) * (outputHeight - 1) + x] == yBlack);
+    }
+    for (int32_t y = 0; y < activeHeight; y++) {
+        const uint16_t *row = outY + static_cast<size_t>(outputWidth) * (topPad + y);
+        REQUIRE(row[0] == yBlack);
+        REQUIRE(row[leftPad - 1] == yBlack);
+        REQUIRE(row[outputWidth - 1] == yBlack);
+        const int32_t sourceLine = vp.firstActiveFrameLine + y;
+        const double eY = (sourceLine * 64.0 + vp.activeVideoStart) / yRange;
+        const double code = std::round(219.0 * 256.0 * eY + 16.0 * 256.0);
+        REQUIRE(std::abs(row[leftPad] - code) <= 1.0);
+    }
+
+    // Chroma planes: neutral side borders, and every row is still the real
+    // decoded line the lattice assigns it.
+    const double uvRange = yRange;
+    for (size_t k = 0; k < cbRows.size(); k++) {
+        const uint16_t *row = outCb + k * outputWidth;
+        REQUIRE(row[0] == cNeutral);
+        REQUIRE(row[leftPad - 1] == cNeutral);
+        REQUIRE(row[outputWidth - 1] == cNeutral);
+        const int32_t sourceLine = vp.firstActiveFrameLine + cbRows[k];
+        const double code = std::round(
+            224.0 * 256.0 * expectedECb(uValueFor(sourceLine), uvRange) + 128.0 * 256.0);
+        REQUIRE(std::abs(row[leftPad] - code) <= 1.0);
+    }
+    for (size_t k = 0; k < crRows.size(); k++) {
+        const uint16_t *row = outCr + k * outputWidth;
+        REQUIRE(row[0] == cNeutral);
+        REQUIRE(row[outputWidth - 1] == cNeutral);
+        const int32_t sourceLine = vp.firstActiveFrameLine + crRows[k];
+        const double code = std::round(
+            224.0 * 256.0 * expectedECr(vValueFor(sourceLine), uvRange) + 128.0 * 256.0);
+        REQUIRE(std::abs(row[leftPad] - code) <= 1.0);
+    }
+
+    // Float path: same geometry, zero-valued border (E'Y black and neutral
+    // E'Cb/E'Cr are all 0.0), pixel-aligned active samples.
+    std::vector<float> planes[3];
+    const auto gf = writer.convertToFloat440(cf, planes);
+    REQUIRE(gf.cbHeight == g.cbHeight);
+    REQUIRE(gf.crHeight == g.crHeight);
+    REQUIRE(gf.cbFirstRow == g.cbFirstRow);
+    REQUIRE(gf.crFirstRow == g.crFirstRow);
+    REQUIRE(planes[0].size() == static_cast<size_t>(outputWidth) * outputHeight);
+    REQUIRE(planes[1].size() == static_cast<size_t>(outputWidth) * g.cbHeight);
+    REQUIRE(planes[2].size() == static_cast<size_t>(outputWidth) * g.crHeight);
+    REQUIRE(planes[0][0] == 0.0f);
+    REQUIRE(planes[1][0] == 0.0f);
+    REQUIRE(planes[2][0] == 0.0f);
+    const double eY0 = (vp.firstActiveFrameLine * 64.0 + vp.activeVideoStart) / yRange;
+    REQUIRE(std::abs(planes[0][static_cast<size_t>(topPad) * outputWidth + leftPad] - eY0)
+            < 1e-6);
+    const double eCb0 = expectedECb(uValueFor(vp.firstActiveFrameLine + cbRows.front()), uvRange);
+    REQUIRE(std::abs(planes[1][leftPad] - eCb0) < 1e-6);
+    return 0;
+}
+
 int testFrameAccessors() {
     auto vp = testParams();
     const auto cf = makeFrame(vp);
@@ -264,6 +374,61 @@ int testFrameAccessors() {
     return 0;
 }
 
+// Accessor behavior on a padded 4:4:0 frame, assembled the way
+// decodeFrameLocked does: border rows carry no chroma component.
+int testFrameAccessorsPadded() {
+    auto vp = testParams();
+    const auto cf = makeFrame(vp);
+
+    chd::output::OutputWriter writer;
+    chd::output::OutputWriter::Configuration cfg;
+    cfg.paddingAmount = 5;
+    cfg.pixelFormat = chd::output::OutputWriter::YUV440P16;
+    writer.updateConfiguration(vp, cfg);
+    const int32_t topPad = writer.getTopPadLines();
+    const int32_t activeHeight = writer.getActiveHeight();
+
+    chd_frame *frame = new chd_frame;
+    frame->format = CHD_PIXEL_YUV440PS;
+    frame->chroma440 = writer.convertToFloat440(cf, frame->floatPlane);
+    frame->outputWidth = writer.getOutputWidth();
+    frame->outputHeight = writer.getOutputHeight();
+    frame->rowComponent.assign(frame->outputHeight, -1);
+    for (int32_t y = 0; y < activeHeight; y++) {
+        frame->rowComponent[topPad + y] =
+            cf.chromaRowComponents[vp.firstActiveFrameLine + y];
+    }
+    frame->info.format = frame->format;
+    frame->info.width = frame->outputWidth;
+    frame->info.height = frame->outputHeight;
+    frame->info.num_planes = 3;
+    frame->info.frame_index = 0;
+
+    chd_plane_info_t pi{};
+    REQUIRE(chd_frame_get_plane_info(frame, CHD_PLANE_Y, &pi) == CHD_OK);
+    REQUIRE(pi.width == frame->outputWidth);
+    REQUIRE(pi.height == frame->outputHeight);
+    REQUIRE(chd_frame_get_plane_info(frame, CHD_PLANE_CB, &pi) == CHD_OK);
+    REQUIRE(pi.height == frame->chroma440.cbHeight);
+    REQUIRE(pi.first_frame_row == frame->chroma440.cbFirstRow);
+    REQUIRE(pi.first_frame_row >= topPad);
+
+    // Border rows report no decoded chroma; active rows keep the lattice.
+    chd_chroma_row_component_t comp;
+    REQUIRE(chd_frame_chroma_row_component(frame, 0, &comp) == CHD_E_OUT_OF_RANGE);
+    REQUIRE(chd_frame_chroma_row_component(frame, frame->outputHeight - 1, &comp)
+            == CHD_E_OUT_OF_RANGE);
+    for (int32_t y = 0; y < activeHeight; y++) {
+        REQUIRE(chd_frame_chroma_row_component(frame, topPad + y, &comp) == CHD_OK);
+        const auto expected = pairLatticeComponent(vp.firstActiveFrameLine + y) == 0
+                                  ? CHD_CHROMA_ROW_DB
+                                  : CHD_CHROMA_ROW_DR;
+        REQUIRE(comp == expected);
+    }
+    chd_frame_free(frame);
+    return 0;
+}
+
 // ── Commit-time gating through the public ABI ────────────────────────────────
 
 const char *kPalJsonSidecar = R"({
@@ -347,9 +512,9 @@ int testCommitGating(const fs::path &dir) {
     REQUIRE(st == CHD_OK);
     REQUIRE(commitWithFormat(secam, "grays", 1, &st) == 0);
     REQUIRE(st == CHD_OK);
-    // Padding has no 4:4:0 chroma definition.
+    // Padding applies to 4:4:0 like any other format.
     REQUIRE(commitWithFormat(secam, "yuv440ps", 8, &st) == 0);
-    REQUIRE(st != CHD_OK);
+    REQUIRE(st == CHD_OK);
     chd_video_free(secam);
 
     // 4:4:0 is rejected off-SECAM (the sidecar's PAL declaration stands).
@@ -371,7 +536,9 @@ int main() {
     fs::create_directories(dir);
 
     int rc = testWriter440();
+    if (rc == 0) rc = testWriter440Padded();
     if (rc == 0) rc = testFrameAccessors();
+    if (rc == 0) rc = testFrameAccessorsPadded();
     if (rc == 0) rc = testCommitGating(dir);
 
     fs::remove_all(dir);

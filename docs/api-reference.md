@@ -1025,8 +1025,15 @@ first, the components pair up in interlaced frame-row order
 SECAM sources decode only to these formats or to luma-only `gray16`/`grays`;
 `chd_decoder_commit` rejects full-height chroma and RGB formats because any
 line-repeat or resample decision belongs to the consuming application.
-`padding_multiple` > 1 and `output_y4m_headers` are likewise rejected for
-4:4:0 output.
+`output_y4m_headers` is likewise rejected for 4:4:0 output.
+
+`padding_multiple` pads 4:4:0 frames the same way it pads every other format:
+the frame and its full-height Y plane round up on both axes with a black
+border. The chroma planes take the side border (neutral chroma) so all three
+planes share the frame width, but they never gain rows. Every chroma plane row
+stays a real decoded line; each plane's `first_frame_row` shifts down with the
+top border, and border rows report no component from
+[`chd_frame_chroma_row_component`](#chd_frame_chroma_row_component).
 
 ### chd_frame_get_plane_info
 
