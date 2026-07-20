@@ -29,6 +29,7 @@ chromadec_sources = files(
   'reader/tbc_source.cpp',
   'decoders/registry.cpp',
   'decoders/chroma_filter.cpp',
+  'decoders/ntsc_burst.cpp',
   'decoders/source_field.cpp',
   'decoders/mono/mono_decoder.cpp',
   'decoders/palcolour/palcolour.cpp',

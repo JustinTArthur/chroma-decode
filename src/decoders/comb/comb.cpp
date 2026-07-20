@@ -30,6 +30,8 @@
 
 #include "beta_calibration.h"
 
+#include "../ntsc_burst.h"
+
 #include "../../output/frame_canvas.h"
 
 #include "../filter/deemp.h"
@@ -102,21 +104,6 @@ static constexpr uint32_t CANDIDATE_SHADES[] = {
     0x8080FF, // CAND_PREV_FRAME - blue
     0xFF80FF, // CAND_NEXT_FRAME - purple
 };
-
-// Since we are at exactly 4fsc, calculating the value of a in-phase sine wave at a specific position
-// is very simple.
-static constexpr double sin4fsc_data[] = {1.0, 0.0, -1.0, 0.0};
-
-// 4fsc sine wave
-constexpr double sin4fsc(const int32_t i) {
-    return sin4fsc_data[i % 4];
-}
-
-// 4fsc cos wave
-constexpr double cos4fsc(const int32_t i) {
-    // cos(rad) is just sin(rad + pi/2) and we are at 4 fsc.
-    return sin4fsc(i + 1);
-}
 
 // Public methods -----------------------------------------------------------------------------------------------------
 
@@ -672,43 +659,10 @@ Comb::FrameBuffer::Candidate Comb::FrameBuffer::getCandidate(int32_t refLineNumb
 }
 
 namespace {
-    // Information about a line we're decoding.
-    struct BurstInfo {
-        double bsin, bcos;
-    };
-
     // Rotate the burst angle to get the correct values.
     // We do the 33 degree rotation here to avoid computing it for every pixel.
     constexpr double ROTATE_SIN = 0.5446390350150271;
     constexpr double ROTATE_COS = 0.838670567945424;
-
-    BurstInfo detectBurst(const uint16_t* lineData,
-                          const chd::metadata::LdDecodeMetaData::VideoParameters& videoParameters)
-    {
-        double bsin = 0, bcos = 0;
-
-        // Find absolute burst phase relative to the reference carrier by
-        // product detection.
-        // For now we just use the burst on the current line, but we could possibly do some averaging with
-        // neighbouring lines later if needed.
-        for (int32_t i = videoParameters.colourBurstStart; i < videoParameters.colourBurstEnd; i++) {
-            bsin += lineData[i] * sin4fsc(i);
-            bcos += lineData[i] * cos4fsc(i);
-        }
-
-        // Normalise the sums above
-        const int32_t colourBurstLength = videoParameters.colourBurstEnd - videoParameters.colourBurstStart;
-        bsin /= colourBurstLength;
-        bcos /= colourBurstLength;
-
-        const double burstNorm = qMax(sqrt(bsin * bsin + bcos * bcos), 130000.0 / 128);
-
-        bsin /= burstNorm;
-        bcos /= burstNorm;
-
-        const BurstInfo info{bsin, bcos};
-        return info;
-    }
 }
 
 // Split I and Q, taking burst phase into account.
