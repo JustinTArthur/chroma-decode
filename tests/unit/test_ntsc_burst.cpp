@@ -104,10 +104,10 @@ std::vector<uint16_t> makeLine(const chd::metadata::LdDecodeMetaData::VideoParam
     return line;
 }
 
-// Demodulate one sample against the *nominal* carriers only, as the luma_sep
-// quadrature switch does. That switch negates both axes relative to the
-// carrier table; an overall sign commutes with the rotation under test, so
-// this keeps the carriers' own signs.
+// Demodulate one sample against the *nominal* carriers only. With `sign` set
+// to the line's modulation carrier sign this is exactly what the luma_sep
+// quadrature switch computes: its linePhase negation cancels against the
+// negations in its case table, leaving carrier-signed products.
 void nominalDemod(const std::vector<uint16_t> &line, int32_t x, double sign,
                   double pedestal, double *i, double *q)
 {
@@ -196,6 +196,58 @@ int testIQCorrection()
     return 0;
 }
 
+// The luma_sep decoder measures the deviation with the carrier sign of the
+// line (+1 on positive-phase lines), not with the sign its quadrature switch
+// applies to the composite, which is the opposite. The distinction matters
+// because the nominal burst phasor is odd in the carrier sign: measuring
+// against the wrong one reports a spurious extra 180 degrees and the
+// correction then negates every chroma vector on the line. This mirrors the
+// decoder's switch verbatim, feeds the deviation the carrier sign as the
+// decoder does, and requires the corrected output to match the transmitted
+// chroma on both line parities, deviated and conformant alike.
+int testSwitchCarrierSignConvention()
+{
+    const auto vp = makeVideoParameters();
+    const double pedestal = BLACK + 40.0 * IRE;
+    const double chromaI = 30.0 * IRE;
+    const double chromaQ = -18.0 * IRE;
+
+    for (const bool linePhase : {true, false}) {
+        const double carrierSign = linePhase ? 1.0 : -1.0;
+        for (const double deltaDeg : {0.0, 22.0, -40.0}) {
+            const auto line = makeLine(vp, carrierSign, deltaDeg, chromaI, chromaQ);
+            const auto dev = chd::decoders::detectBurstDeviation(line.data(), vp, carrierSign);
+            REQUIRE(dev.valid);
+            if (deltaDeg == 0.0) {
+                // Conformant line: compensation must be a no-op.
+                REQUIRE_NEAR(dev.cosDelta, 1.0, 2e-3);
+                REQUIRE_NEAR(dev.sinDelta, 0.0, 2e-3);
+            }
+
+            // demodChromaRow's quadrature switch, verbatim.
+            double si = 0.0, sq = 0.0;
+            for (int32_t h = vp.activeVideoStart; h < vp.activeVideoStart + 20; h++) {
+                const double C    = static_cast<double>(line[h]) - pedestal;
+                const double cavg = linePhase ? -C : C;
+                switch (h % 4) {
+                    case 0: sq =  cavg; break;
+                    case 1: si = -cavg; break;
+                    case 2: sq = -cavg; break;
+                    case 3: si =  cavg; break;
+                    default: break;
+                }
+                if (h < vp.activeVideoStart + 2) continue;  // both axes seeded
+
+                double i = si, q = sq;
+                chd::decoders::correctDemodulatedIQ(dev, &i, &q);
+                REQUIRE_NEAR(i, chromaI, 0.02 * std::fabs(chromaI) + 1.0);
+                REQUIRE_NEAR(q, chromaQ, 0.02 * std::fabs(chromaQ) + 1.0);
+            }
+        }
+    }
+    return 0;
+}
+
 // A conformant line must come back with an identity rotation, so turning
 // phase compensation on cannot disturb already-correct material.
 int testNominalIsIdentity()
@@ -247,6 +299,7 @@ int main()
     if (testDeviationRecovery()   != 0) return 1;
     if (testCarrierReconstruction() != 0) return 1;
     if (testIQCorrection()        != 0) return 1;
+    if (testSwitchCarrierSignConvention() != 0) return 1;
     if (testNominalIsIdentity()   != 0) return 1;
     if (testWeakBurstFallsBack()  != 0) return 1;
 

@@ -189,10 +189,12 @@ void LdzeugLumaSepDecoder::decodeFrames(
             const int32_t hEnd   = inActive ? activeEnd   : 0;
             chd::decoders::BurstDeviation burstDev;
             if (phaseCompensation_ && inActive) {
-                // The quadrature switch below already applies the nominal
-                // carrier sign, so the deviation is measured against it.
+                // The deviation is measured against the carrier sign the line
+                // was modulated with: +1 on positive-phase lines. The switch's
+                // negation of those lines is a demodulator convention and must
+                // not flip the burst's expected orientation.
                 const double nominalSign =
-                    getLinePhase(frameLine, phaseIDs.first, phaseIDs.second) ? -1.0 : 1.0;
+                    getLinePhase(frameLine, phaseIDs.first, phaseIDs.second) ? 1.0 : -1.0;
                 burstDev = chd::decoders::detectBurstDeviation(cvbsRow, vp, nominalSign);
             }
             demodChromaRow(cvbsRow, yNormRow, fieldWidth, hStart, hEnd,
