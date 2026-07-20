@@ -28,19 +28,13 @@ constexpr double IQ_BASE_ANGLE_DEG = 33.0;
 // where 16bIre 0..65535 → 0..1 directly, so ×65535 is the inverse.
 constexpr double FROM_NORMALIZED = 65535.0;
 
-// Phase compensation feeds the network carrier planes rotated onto each
-// line's measured burst, rather than rotating the network's I/Q output.
-// The weights were trained on carriers that were themselves the modulating
-// carriers of the synthesized composite (ldzeug2's modulate_fields returns
-// mod1/mod2 as both), so "carrier plane matches the signal's actual
-// subcarrier phase" is the invariant the network learned; a measured burst
-// upholds it where the nominal table does not. The reference decoder
-// exposes the same seam as the optional iq_cariers override.
-//
-// The tradeoff is that a rotated carrier takes values off the {0, ±1}
-// lattice that training only ever sampled. Rotations stay small for real
-// captures, and a line whose burst can't be measured falls back to the
-// nominal lattice.
+// Phase compensation rotates the network's demodulated I/Q onto each
+// line's measured burst phase; the carrier planes stay on the nominal
+// {0, ±1} lattice. The network tolerates a signal sitting off the carrier
+// phase (its output comes back cleanly rotated) but attenuates chroma when
+// handed carrier values off the lattice its training sampled, so the
+// correction belongs on the output side. A line whose burst can't be
+// measured keeps the nominal phase.
 //
 // fieldPhase {1,2,3,4} → carrier sign, matching the table in
 // ldzeug2.colordecoder.input_for_color_cnn.
@@ -114,6 +108,11 @@ void LdzeugColorCnnDecoder::decodeFrames(
     const int32_t inputCount = static_cast<int32_t>(inputFields.size());
     const int32_t outFrameCap = static_cast<int32_t>(componentFrames.size());
 
+    // Per-output-row burst deviation, measured while the input planes are
+    // packed and applied to the network's I/Q output. Indexed by frame line
+    // in frame mode, field row in field mode.
+    std::vector<chd::decoders::BurstDeviation> rowDev(modelHeight);
+
     for (int32_t frameIdx = startIndex;
          frameIdx + 1 < endIndex && frameIdx + 1 < inputCount;
          frameIdx += 2) {
@@ -141,19 +140,16 @@ void LdzeugColorCnnDecoder::decodeFrames(
                     if (frameLine >= frameHeight) break;
                     const double rowSign = (y % 2 == 1 ? -1.0 : 1.0) * phaseSign;
                     const uint16_t *cvbsRow = src + y * fieldWidth;
-                    chd::decoders::BurstDeviation burstDev;
-                    if (phaseCompensation_) {
-                        burstDev = chd::decoders::detectBurstDeviation(cvbsRow, vp, rowSign);
-                    }
+                    rowDev[frameLine] = phaseCompensation_
+                        ? chd::decoders::detectBurstDeviation(cvbsRow, vp, rowSign)
+                        : chd::decoders::BurstDeviation{};
                     float *cv = cvbsPlane + frameLine * fieldWidth;
                     float *ic = iCarPlane + frameLine * fieldWidth;
                     float *qc = qCarPlane + frameLine * fieldWidth;
                     for (int32_t x = 0; x < fieldWidth; ++x) {
                         cv[x] = static_cast<float>(cvbsRow[x]) * scale;
-                        double iCar, qCar;
-                        chd::decoders::burstLockedCarrier(x, burstDev, rowSign, &iCar, &qCar);
-                        ic[x] = static_cast<float>(iCar);
-                        qc[x] = static_cast<float>(qCar);
+                        ic[x] = static_cast<float>(chd::decoders::kNtscCarrierI[x % 4] * rowSign);
+                        qc[x] = static_cast<float>(chd::decoders::kNtscCarrierQ[x % 4] * rowSign);
                     }
                 }
             }
@@ -166,12 +162,14 @@ void LdzeugColorCnnDecoder::decodeFrames(
             const float *qPlane  = outData + 2 * frameStride;
 
             for (int32_t fy = 0; fy < frameHeight; ++fy) {
+                const chd::decoders::BurstDeviation &dev = rowDev[fy];
                 double *yRow = out.y(fy);
                 double *uRow = out.u(fy);
                 double *vRow = out.v(fy);
                 for (int32_t x = 0; x < fieldWidth; ++x) {
-                    const double iVal = static_cast<double>(iPlane[fy * fieldWidth + x]) * FROM_NORMALIZED;
-                    const double qVal = static_cast<double>(qPlane[fy * fieldWidth + x]) * FROM_NORMALIZED;
+                    double iVal = static_cast<double>(iPlane[fy * fieldWidth + x]) * FROM_NORMALIZED;
+                    double qVal = static_cast<double>(qPlane[fy * fieldWidth + x]) * FROM_NORMALIZED;
+                    if (dev.valid) chd::decoders::correctDemodulatedIQ(dev, &iVal, &qVal);
                     double u, v;
                     applyUvFromIq(iVal, qVal, bp, bq, &u, &v);
                     yRow[x] = static_cast<double>(yPlane[fy * fieldWidth + x]) * FROM_NORMALIZED;
@@ -198,19 +196,16 @@ void LdzeugColorCnnDecoder::decodeFrames(
             for (int32_t y = 0; y < fieldHeight; ++y) {
                 const double rowSign = (y % 2 == 1 ? -1.0 : 1.0) * phaseSign;
                 const uint16_t *cvbsRow = src + y * fieldWidth;
-                chd::decoders::BurstDeviation burstDev;
-                if (phaseCompensation_) {
-                    burstDev = chd::decoders::detectBurstDeviation(cvbsRow, vp, rowSign);
-                }
+                rowDev[y] = phaseCompensation_
+                    ? chd::decoders::detectBurstDeviation(cvbsRow, vp, rowSign)
+                    : chd::decoders::BurstDeviation{};
                 float *cv = cvbsPlane + y * fieldWidth;
                 float *ic = iCarPlane + y * fieldWidth;
                 float *qc = qCarPlane + y * fieldWidth;
                 for (int32_t x = 0; x < fieldWidth; ++x) {
                     cv[x] = static_cast<float>(cvbsRow[x]) * scale;
-                    double iCar, qCar;
-                    chd::decoders::burstLockedCarrier(x, burstDev, rowSign, &iCar, &qCar);
-                    ic[x] = static_cast<float>(iCar);
-                    qc[x] = static_cast<float>(qCar);
+                    ic[x] = static_cast<float>(chd::decoders::kNtscCarrierI[x % 4] * rowSign);
+                    qc[x] = static_cast<float>(chd::decoders::kNtscCarrierQ[x % 4] * rowSign);
                 }
             }
 
@@ -224,12 +219,14 @@ void LdzeugColorCnnDecoder::decodeFrames(
             for (int32_t y = 0; y < fieldHeight; ++y) {
                 const int32_t frameLine = y * 2 + yOffset;
                 if (frameLine >= frameHeight) break;
+                const chd::decoders::BurstDeviation &dev = rowDev[y];
                 double *yRow = out.y(frameLine);
                 double *uRow = out.u(frameLine);
                 double *vRow = out.v(frameLine);
                 for (int32_t x = 0; x < fieldWidth; ++x) {
-                    const double iVal = static_cast<double>(iPlane[y * fieldWidth + x]) * FROM_NORMALIZED;
-                    const double qVal = static_cast<double>(qPlane[y * fieldWidth + x]) * FROM_NORMALIZED;
+                    double iVal = static_cast<double>(iPlane[y * fieldWidth + x]) * FROM_NORMALIZED;
+                    double qVal = static_cast<double>(qPlane[y * fieldWidth + x]) * FROM_NORMALIZED;
+                    if (dev.valid) chd::decoders::correctDemodulatedIQ(dev, &iVal, &qVal);
                     double u, v;
                     applyUvFromIq(iVal, qVal, bp, bq, &u, &v);
                     yRow[x] = static_cast<double>(yPlane[y * fieldWidth + x]) * FROM_NORMALIZED;

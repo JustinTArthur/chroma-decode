@@ -881,17 +881,11 @@ Each decoder applies the measurement where its pipeline allows:
 |---|---|
 | Comb kinds | Demodulation runs on the burst-locked axes directly (`splitIQlocked`). |
 | `CHD_DEC_LDZEUG_LUMA_SEP`, `..._FRAME` | The chroma demodulation is ours, after the network's luma; the demodulated I/Q are rotated onto the measured phase before the bandpass. |
-| `CHD_DEC_LDZEUG_COLOR_CNN` | The network demodulates, so the correction moves to its input: the I/Q carrier reference planes are synthesized on the measured phase instead of the nominal one. |
+| `CHD_DEC_LDZEUG_COLOR_CNN` | The network demodulates against the nominal carrier planes; its I/Q output is rotated onto the measured phase. |
 
 The measurement is per line from a single burst, so it corrects line-to-line
 phase error but not drift within a line. A line whose burst is too weak to
 measure keeps the nominal phase for that line.
-
-For the ldzeug2 colour CNN specifically, feeding burst-locked carrier planes
-preserves the relationship the published weights were trained on (the carrier
-planes and the composite's own modulation carrier were the same signal), but it
-does present the network with carrier values off the ±1 lattice that training
-sampled. See [Colour CNN](nn-models.md#color-cnn).
 
 ### chd_chroma_sideband_calibrate
 

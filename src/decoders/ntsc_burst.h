@@ -98,22 +98,10 @@ BurstDeviation detectBurstDeviation(const uint16_t *lineData,
                                     const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters,
                                     double nominalSign);
 
-// Carrier pair at sample x, rotated by dev and signed by the line's nominal
-// carrier sign. With the identity rotation this reproduces the nominal
-// lattice carriers exactly.
-inline void burstLockedCarrier(const int32_t x, const BurstDeviation &dev, const double sign,
-                               double *ic, double *qc) {
-    const double i0 = kNtscCarrierI[x % 4];
-    const double q0 = kNtscCarrierQ[x % 4];
-    *ic = (i0 * dev.cosDelta - q0 * dev.sinDelta) * sign;
-    *qc = (q0 * dev.cosDelta + i0 * dev.sinDelta) * sign;
-}
-
-// The output-side equivalent: correct an I/Q pair that was demodulated
-// against the nominal carriers when the signal actually sat at the measured
-// phase. Demodulating that way yields the chroma vector rotated by -delta,
-// so recovering it takes the same +delta rotation burstLockedCarrier applies
-// to the carriers. Decoders can use whichever side they have access to.
+// Correct an I/Q pair that was demodulated against the nominal carriers
+// when the signal actually sat at the measured phase. Demodulating that way
+// yields the chroma vector rotated by -delta, so recovery applies a +delta
+// rotation, the same direction the signal's carrier is rotated.
 inline void correctDemodulatedIQ(const BurstDeviation &dev, double *i, double *q) {
     const double i0 = *i;
     const double q0 = *q;

@@ -1048,8 +1048,8 @@ int testOutputClampOption(const fs::path &dir) {
 
 // ─── Test: phase_compensation is accepted by the kinds that implement it. ──
 //
-// The comb kinds decode on the burst-locked axes; the ldzeug2 kinds correct
-// their carriers (color_cnn) or their demodulated output (luma_sep). Kinds
+// The comb kinds decode on the burst-locked axes; the ldzeug2 kinds rotate
+// their demodulated output onto the measured phase. Kinds
 // with no NTSC subcarrier to lock to must still refuse it. The ldzeug2 kinds
 // need NN support compiled in, and reject the option along with everything
 // else when they are unavailable, so only assert on them when the build has

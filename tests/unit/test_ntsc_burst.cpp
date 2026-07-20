@@ -6,13 +6,10 @@
 //
 //   1. detectBurstDeviation recovers that rotation, for both nominal carrier
 //      signs, and reports invalid when the burst is too weak to measure.
-//   2. burstLockedCarrier rebuilds the carrier pair that actually modulated
-//      the line — the input-side correction the ldzeug2 color_cnn decoder
-//      feeds the network.
-//   3. correctDemodulatedIQ recovers the transmitted chroma vector from a nominal-axis
-//      demodulation — the output-side correction the luma_sep decoder
-//      applies after its quadrature switch.
-//   4. Both corrections collapse to the uncompensated behaviour when the
+//   2. correctDemodulatedIQ recovers the transmitted chroma vector from a
+//      nominal-axis demodulation — the correction both ldzeug2 decoders
+//      apply to their demodulated output.
+//   3. The correction collapses to the uncompensated behaviour when the
 //      signal is already at nominal phase, so enabling phase compensation on
 //      conformant material changes nothing.
 
@@ -68,6 +65,18 @@ chd::metadata::LdDecodeMetaData::VideoParameters makeVideoParameters()
     return vp;
 }
 
+// The signed carrier pair at sample x, rotated `delta` away from the nominal
+// lattice: the modulation model for a line whose subcarrier drifted off the
+// phase the field/line table implies.
+void rotatedCarrier(int32_t x, double cosDelta, double sinDelta, double sign,
+                    double *ic, double *qc)
+{
+    const double i0 = chd::decoders::kNtscCarrierI[x % 4];
+    const double q0 = chd::decoders::kNtscCarrierQ[x % 4];
+    *ic = (i0 * cosDelta - q0 * sinDelta) * sign;
+    *qc = (q0 * cosDelta + i0 * sinDelta) * sign;
+}
+
 // A line carrying burst plus a constant chroma vector, all modulated on
 // carriers rotated `deltaDeg` away from the nominal phase for `sign`.
 // burstAmpIre == 0 synthesizes a line with no burst at all.
@@ -77,10 +86,8 @@ std::vector<uint16_t> makeLine(const chd::metadata::LdDecodeMetaData::VideoParam
                                double burstAmpIre = 20.0)
 {
     const double delta = deltaDeg * M_PI / 180.0;
-    chd::decoders::BurstDeviation dev;
-    dev.cosDelta = std::cos(delta);
-    dev.sinDelta = std::sin(delta);
-    dev.valid = true;
+    const double cosDelta = std::cos(delta);
+    const double sinDelta = std::sin(delta);
 
     // Burst is the -U axis at burstAmp; convert to the I/Q pair that the
     // carriers below modulate (the inverse of ldzeug2's uv_from_iq).
@@ -91,7 +98,7 @@ std::vector<uint16_t> makeLine(const chd::metadata::LdDecodeMetaData::VideoParam
     std::vector<uint16_t> line(vp.fieldWidth, static_cast<uint16_t>(BLACK));
     for (int32_t x = 0; x < vp.fieldWidth; x++) {
         double ic, qc;
-        chd::decoders::burstLockedCarrier(x, dev, sign, &ic, &qc);
+        rotatedCarrier(x, cosDelta, sinDelta, sign, &ic, &qc);
 
         double v = BLACK;
         if (x >= vp.colourBurstStart && x < vp.colourBurstEnd) {
@@ -132,34 +139,6 @@ int testDeviationRecovery()
             REQUIRE_NEAR(dev.cosDelta, std::cos(delta), 2e-3);
             REQUIRE_NEAR(dev.sinDelta, std::sin(delta), 2e-3);
         }
-    }
-    return 0;
-}
-
-int testCarrierReconstruction()
-{
-    const auto vp = makeVideoParameters();
-    const double sign = 1.0;
-    const double deltaDeg = 18.0;
-    const double delta = deltaDeg * M_PI / 180.0;
-
-    const auto line = makeLine(vp, sign, deltaDeg, 30.0 * IRE, -18.0 * IRE);
-    const auto dev = chd::decoders::detectBurstDeviation(line.data(), vp, sign);
-    REQUIRE(dev.valid);
-
-    // The rebuilt carriers must match the ones makeLine actually modulated
-    // with, which is what the network is trained to expect.
-    chd::decoders::BurstDeviation truth;
-    truth.cosDelta = std::cos(delta);
-    truth.sinDelta = std::sin(delta);
-    truth.valid = true;
-
-    for (int32_t x = 0; x < 16; x++) {
-        double icTruth, qcTruth, icMeasured, qcMeasured;
-        chd::decoders::burstLockedCarrier(x, truth, sign, &icTruth, &qcTruth);
-        chd::decoders::burstLockedCarrier(x, dev,   sign, &icMeasured, &qcMeasured);
-        REQUIRE_NEAR(icMeasured, icTruth, 5e-3);
-        REQUIRE_NEAR(qcMeasured, qcTruth, 5e-3);
     }
     return 0;
 }
@@ -260,19 +239,12 @@ int testNominalIsIdentity()
         REQUIRE(dev.valid);
         REQUIRE_NEAR(dev.cosDelta, 1.0, 2e-3);
         REQUIRE_NEAR(dev.sinDelta, 0.0, 2e-3);
-
-        for (int32_t x = 0; x < 16; x++) {
-            double ic, qc;
-            chd::decoders::burstLockedCarrier(x, dev, sign, &ic, &qc);
-            REQUIRE_NEAR(ic, chd::decoders::kNtscCarrierI[x % 4] * sign, 5e-3);
-            REQUIRE_NEAR(qc, chd::decoders::kNtscCarrierQ[x % 4] * sign, 5e-3);
-        }
     }
     return 0;
 }
 
 // Too little burst to measure: the deviation is invalid and its identity
-// default leaves callers on the nominal carriers.
+// default makes the output correction a no-op for that line.
 int testWeakBurstFallsBack()
 {
     const auto vp = makeVideoParameters();
@@ -283,12 +255,10 @@ int testWeakBurstFallsBack()
     REQUIRE_NEAR(dev.cosDelta, 1.0, 1e-12);
     REQUIRE_NEAR(dev.sinDelta, 0.0, 1e-12);
 
-    for (int32_t x = 0; x < 8; x++) {
-        double ic, qc;
-        chd::decoders::burstLockedCarrier(x, dev, 1.0, &ic, &qc);
-        REQUIRE_NEAR(ic, chd::decoders::kNtscCarrierI[x % 4], 1e-12);
-        REQUIRE_NEAR(qc, chd::decoders::kNtscCarrierQ[x % 4], 1e-12);
-    }
+    double i = 123.0, q = -45.0;
+    chd::decoders::correctDemodulatedIQ(dev, &i, &q);
+    REQUIRE_NEAR(i, 123.0, 1e-12);
+    REQUIRE_NEAR(q, -45.0, 1e-12);
     return 0;
 }
 
@@ -297,7 +267,6 @@ int testWeakBurstFallsBack()
 int main()
 {
     if (testDeviationRecovery()   != 0) return 1;
-    if (testCarrierReconstruction() != 0) return 1;
     if (testIQCorrection()        != 0) return 1;
     if (testSwitchCarrierSignConvention() != 0) return 1;
     if (testNominalIsIdentity()   != 0) return 1;

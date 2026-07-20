@@ -130,7 +130,8 @@ bool optionApplies(chd_decoder_kind_t kind, const std::string &name, OptionType 
     if (type == OptionType::F64 && name == CHD_OPT_CHROMA_NR_LEVEL) return comb;
 
     // Burst-locked demodulation: the comb decodes on the burst-locked axes,
-    // the ldzeug2 kinds correct their carriers or demodulated output.
+    // the ldzeug2 kinds rotate their demodulated output onto the measured
+    // phase.
     if (type == OptionType::Bool && name == CHD_OPT_PHASE_COMPENSATION) return comb || ldzeug;
 
     // Adaptive-3D knobs: the 3D candidate penalties they tune only run on the

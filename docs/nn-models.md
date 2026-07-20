@@ -267,16 +267,14 @@ come in two groups; the canonical source of truth is the ldzeug2 project itself.
 
 Published variants include `color_cnn` v1 and v2 and a denoising variant.
 
-The carrier planes are keyed to the nominal field/line phase by default. With
-[`CHD_OPT_PHASE_COMPENSATION`](api-reference.md#phase-compensation) they are
-instead synthesized on each line's measured burst phase. This is the input side
-of the same correction the luma-separation kinds apply to their demodulated
-output, and it keeps the property the published weights were trained under: the
-carrier planes the network sees are the carriers the composite was actually
-modulated with, which a nominal table cannot guarantee on a source whose phase
-drifts. The tradeoff is that a rotated carrier takes fractional values, whereas
-training only ever presented the ±1 lattice, so it is worth checking against a
-known-good decode of the same source before adopting it wholesale.
+The carrier planes are always keyed to the nominal field/line phase. With
+[`CHD_OPT_PHASE_COMPENSATION`](api-reference.md#phase-compensation) the
+network's I/Q output is rotated onto each line's measured burst phase, the
+same correction the luma-separation kinds apply to their demodulated output.
+The correction stays on the output side because the network handles a
+composite sitting off the carrier phase as a clean rotation of its output,
+whereas carrier planes rotated off the ±1 lattice that training presented
+measurably desaturate the decoded chroma.
 
 ### Luma separation
 
