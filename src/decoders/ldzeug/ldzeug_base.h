@@ -56,10 +56,17 @@ public:
     void setMode(Mode mode) { mode_ = mode; }
     Mode mode() const { return mode_; }
 
+    // Derive each line's subcarrier phase from its measured colour burst
+    // rather than from the nominal field-phase table alone. Off by default,
+    // matching both the comb decoder and the ldzeug2 reference.
+    void setPhaseCompensation(bool enable) { phaseCompensation_ = enable; }
+    bool phaseCompensation() const { return phaseCompensation_; }
+
 protected:
     chd::metadata::LdDecodeMetaData::VideoParameters videoParameters{};
     std::shared_ptr<chd::nn::InferenceEngine>        session_;
     Mode                                             mode_ = Mode::Field;
+    bool                                             phaseCompensation_ = false;
 };
 
 }  // namespace chd::decoders::ldzeug

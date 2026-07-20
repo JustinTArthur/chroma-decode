@@ -1046,6 +1046,68 @@ int testOutputClampOption(const fs::path &dir) {
     return 0;
 }
 
+// ─── Test: phase_compensation is accepted by the kinds that implement it. ──
+//
+// The comb kinds decode on the burst-locked axes; the ldzeug2 kinds correct
+// their carriers (color_cnn) or their demodulated output (luma_sep). Kinds
+// with no NTSC subcarrier to lock to must still refuse it. The ldzeug2 kinds
+// need NN support compiled in, and reject the option along with everything
+// else when they are unavailable, so only assert on them when the build has
+// them.
+int testPhaseCompensationOptionScope(const fs::path &dir) {
+    const std::string tbc     = (dir / "phasecomp.tbc").string();
+    const std::string sidecar = (dir / "phasecomp.tbc.db").string();
+    constexpr int32_t fieldWidth  = 910;
+    constexpr int32_t fieldHeight = 263;
+    constexpr int32_t numFields   = 4;
+
+    REQUIRE(writeBlackTbc(tbc, fieldWidth, fieldHeight, numFields));
+    REQUIRE(writeTbcSidecar(sidecar, numFields));
+
+    auto accepts = [&](chd_decoder_kind_t kind, chd_status_t *setStatus) -> bool {
+        chd_video_t *video = nullptr;
+        if (chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) != CHD_OK) {
+            return false;
+        }
+        chd_decoder_t *dec = nullptr;
+        if (chd_decoder_create(video, kind, &dec) != CHD_OK) {
+            chd_video_free(video);
+            return false;
+        }
+        *setStatus = chd_decoder_set_option_bool(dec, CHD_OPT_PHASE_COMPENSATION, 1);
+        chd_decoder_free(dec);
+        chd_video_free(video);
+        return true;
+    };
+
+    chd_status_t st = CHD_OK;
+
+    REQUIRE(accepts(CHD_DEC_NTSC_2D, &st));
+    REQUIRE(st == CHD_OK);
+
+    // Mono has no chroma to phase-correct.
+    REQUIRE(accepts(CHD_DEC_MONO, &st));
+    REQUIRE(st != CHD_OK);
+
+    // PAL's line-alternating V handles the same errors differently; this
+    // option is NTSC-only.
+    REQUIRE(accepts(CHD_DEC_PAL_2D, &st));
+    REQUIRE(st != CHD_OK);
+
+#if defined(CHD_WITH_NN)
+    for (const chd_decoder_kind_t kind : {CHD_DEC_LDZEUG_COLOR_CNN,
+                                          CHD_DEC_LDZEUG_LUMA_SEP,
+                                          CHD_DEC_LDZEUG_LUMA_SEP_FRAME}) {
+        REQUIRE(accepts(kind, &st));
+        REQUIRE(st == CHD_OK);
+    }
+#endif
+
+    fs::remove(tbc);
+    fs::remove(sidecar);
+    return 0;
+}
+
 // ─── Test: decode-level Y/C merge from a luma.tbc + chroma.tbc pair. ───────
 //
 // chd_video_open_yc on an ld-decode luma + chroma .tbc pair takes the
@@ -1286,6 +1348,7 @@ int main() {
     if (int rc = testFloatOutputFormats(dir);         rc != 0) return rc;
     if (int rc = testRgbsOutputFormat(dir);           rc != 0) return rc;
     if (int rc = testOutputClampOption(dir);          rc != 0) return rc;
+    if (int rc = testPhaseCompensationOptionScope(dir); rc != 0) return rc;
     if (int rc = testYcMergeDualTbc(dir);             rc != 0) return rc;
     if (int rc = testPaddingAndSampleCrop(dir);       rc != 0) return rc;
 

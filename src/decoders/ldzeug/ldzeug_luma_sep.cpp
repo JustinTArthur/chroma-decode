@@ -12,6 +12,7 @@
 #include "../../nn/inference_engine.h"
 #include "../filter/deemp.h"
 #include "../filter/firfilter.h"
+#include "../ntsc_burst.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -56,6 +57,10 @@ FramePhaseIDs framePhaseIDs(const chd::decoders::SourceField &fa,
 // is written for every pixel; U/V are zero outside the horizontal active
 // range. Mirrors Comb::FrameBuffer::splitIQ but operates on `cvbs − Y`
 // rather than raw composite.
+//
+// `burstDev` rotates the demodulated I/Q to undo the line's measured
+// departure from the nominal subcarrier phase. The default identity
+// rotation leaves the nominal-phase result untouched.
 void demodChromaRow(const uint16_t *cvbsRow,
                     const float    *yNormRow,
                     int32_t fieldWidth,
@@ -63,6 +68,7 @@ void demodChromaRow(const uint16_t *cvbsRow,
                     int32_t frameLine,
                     int32_t firstFieldPhaseID, int32_t secondFieldPhaseID,
                     bool chromaBandpass,
+                    const chd::decoders::BurstDeviation &burstDev,
                     double bp, double bq,
                     std::vector<double> &iWork,
                     std::vector<double> &qWork,
@@ -103,6 +109,14 @@ void demodChromaRow(const uint16_t *cvbsRow,
         }
         iWork[h - activeStart] = si;
         qWork[h - activeStart] = sq;
+    }
+
+    // Undo the line's measured phase error before the bandpass, so the FIR
+    // sees the same burst-locked axes the rotation targets.
+    if (burstDev.valid) {
+        for (int32_t idx = 0; idx < activeLen; ++idx) {
+            chd::decoders::correctDemodulatedIQ(burstDev, &iWork[idx], &qWork[idx]);
+        }
     }
 
     const double *iSrc = iWork.data();
@@ -173,9 +187,17 @@ void LdzeugLumaSepDecoder::decodeFrames(
             const bool inActive = frameLine >= firstActiveLine && frameLine <= lastActiveLine;
             const int32_t hStart = inActive ? activeStart : 0;
             const int32_t hEnd   = inActive ? activeEnd   : 0;
+            chd::decoders::BurstDeviation burstDev;
+            if (phaseCompensation_ && inActive) {
+                // The quadrature switch below already applies the nominal
+                // carrier sign, so the deviation is measured against it.
+                const double nominalSign =
+                    getLinePhase(frameLine, phaseIDs.first, phaseIDs.second) ? -1.0 : 1.0;
+                burstDev = chd::decoders::detectBurstDeviation(cvbsRow, vp, nominalSign);
+            }
             demodChromaRow(cvbsRow, yNormRow, fieldWidth, hStart, hEnd,
                            frameLine, phaseIDs.first, phaseIDs.second,
-                           chromaBandpass_, bp, bq,
+                           chromaBandpass_, burstDev, bp, bq,
                            iWork, qWork, iFilt, qFilt,
                            out.y(frameLine), out.u(frameLine), out.v(frameLine));
         };

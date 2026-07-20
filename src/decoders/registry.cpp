@@ -129,8 +129,9 @@ bool optionApplies(chd_decoder_kind_t kind, const std::string &name, OptionType 
     }
     if (type == OptionType::F64 && name == CHD_OPT_CHROMA_NR_LEVEL) return comb;
 
-    // Comb-only options.
-    if (type == OptionType::Bool && name == CHD_OPT_PHASE_COMPENSATION) return comb;
+    // Burst-locked demodulation: the comb decodes on the burst-locked axes,
+    // the ldzeug2 kinds correct their carriers or demodulated output.
+    if (type == OptionType::Bool && name == CHD_OPT_PHASE_COMPENSATION) return comb || ldzeug;
 
     // Adaptive-3D knobs: the 3D candidate penalties they tune only run on the
     // adaptive 3D comb, so they apply there alone instead of silently
@@ -335,6 +336,7 @@ std::unique_ptr<chd::decoders::Decoder> build(chd_decoder_kind_t kind, const Opt
             d->setMode(chd::decoders::ldzeug::LdzeugDecoderBase::Mode::Field);
             d->setChromaGain (findOr(opts.f64, CHD_OPT_CHROMA_GAIN, 1.0));
             d->setChromaPhase(findOr(opts.f64, CHD_OPT_CHROMA_PHASE_DEG, 0.0));
+            d->setPhaseCompensation(findOr(opts.boolean, CHD_OPT_PHASE_COMPENSATION, false));
             return d;
         }
         case CHD_DEC_LDZEUG_LUMA_SEP:
@@ -346,6 +348,7 @@ std::unique_ptr<chd::decoders::Decoder> build(chd_decoder_kind_t kind, const Opt
             d->setChromaGain (findOr(opts.f64, CHD_OPT_CHROMA_GAIN, 1.0));
             d->setChromaPhase(findOr(opts.f64, CHD_OPT_CHROMA_PHASE_DEG, 0.0));
             d->setChromaBandpass(findOr(opts.boolean, CHD_OPT_NN_CHROMA_BANDPASS, true));
+            d->setPhaseCompensation(findOr(opts.boolean, CHD_OPT_PHASE_COMPENSATION, false));
             return d;
         }
 #else

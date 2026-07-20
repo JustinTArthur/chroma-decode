@@ -33,8 +33,15 @@
 
 namespace chd::decoders {
 
-BurstInfo detectBurst(const uint16_t *lineData,
-                      const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters)
+namespace {
+    // sin/cos of the 33 degree angle between the burst-locked U/V axes and
+    // the I/Q axes.
+    constexpr double kSin33 = 0.5446390350150271;
+    constexpr double kCos33 = 0.838670567945424;
+}
+
+BurstInfo detectBurstRaw(const uint16_t *lineData,
+                         const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters)
 {
     double bsin = 0, bcos = 0;
 
@@ -52,13 +59,50 @@ BurstInfo detectBurst(const uint16_t *lineData,
     bsin /= colourBurstLength;
     bcos /= colourBurstLength;
 
-    const double burstNorm = std::max(sqrt(bsin * bsin + bcos * bcos), 130000.0 / 128);
+    return BurstInfo{bsin, bcos};
+}
 
-    bsin /= burstNorm;
-    bcos /= burstNorm;
+BurstInfo detectBurst(const uint16_t *lineData,
+                      const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters)
+{
+    BurstInfo info = detectBurstRaw(lineData, videoParameters);
 
-    const BurstInfo info{bsin, bcos};
+    const double burstNorm =
+        std::max(sqrt(info.bsin * info.bsin + info.bcos * info.bcos), kMinBurstAmplitude);
+
+    info.bsin /= burstNorm;
+    info.bcos /= burstNorm;
+
     return info;
+}
+
+BurstDeviation detectBurstDeviation(const uint16_t *lineData,
+                                    const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters,
+                                    const double nominalSign)
+{
+    BurstDeviation dev;
+
+    const BurstInfo raw = detectBurstRaw(lineData, videoParameters);
+    const double mag = std::sqrt(raw.bsin * raw.bsin + raw.bcos * raw.bcos);
+    if (mag < kMinBurstAmplitude) return dev;
+
+    // Product detection of A*cos(wt + phi) against the reference carrier
+    // yields (bsin, bcos) = A/2 * (cos phi, sin phi), so the normalised
+    // measurement is the (cos, sin) phasor of the burst phase.
+    const double mCos = raw.bsin / mag;
+    const double mSin = raw.bcos / mag;
+
+    // Nominal burst phasor for this line: burst sits at 180 degrees on the
+    // U axis, which the nominal carriers modulate to
+    // sign * A * cos(wt - 33deg), giving the phasor sign * (cos33, -sin33).
+    const double nCos = nominalSign * kCos33;
+    const double nSin = -nominalSign * kSin33;
+
+    // Rotation from the nominal phasor to the measured one.
+    dev.cosDelta = mCos * nCos + mSin * nSin;
+    dev.sinDelta = mSin * nCos - mCos * nSin;
+    dev.valid = true;
+    return dev;
 }
 
 }  // namespace chd::decoders

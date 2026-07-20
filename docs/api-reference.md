@@ -642,7 +642,7 @@ and any decoder-kind restriction.
 | `CHD_OPT_LUMA_NR_LEVEL`             | f64  | Luma noise reduction.                                                                                                        |
 | `CHD_OPT_PADDING_MULTIPLE`          | i32  | Round both frame axes up to this multiple with a black border (default `1` = no padding). Never moves the crop.               |
 | `CHD_OPT_REVERSE_FIELD_ORDER`       | bool | Swap field order (matches `ld-chroma-decoder -r`).                                                                           |
-| `CHD_OPT_PHASE_COMPENSATION`        | bool | NTSC phase compensation.                                                                                                     |
+| `CHD_OPT_PHASE_COMPENSATION`        | bool | NTSC phase compensation; comb and ldzeug2 kinds. See [Phase compensation](#phase-compensation).                              |
 | `CHD_OPT_COMB_ADAPT_THRESHOLD`      | f64  | Adaptive 3D candidate threshold; `CHD_DEC_NTSC_3D` only.                                                                     |
 | `CHD_OPT_COMB_CHROMA_WEIGHT`        | f64  | Adaptive 3D chroma penalty weight; `CHD_DEC_NTSC_3D` only.                                                                   |
 | `CHD_OPT_COMB_SHOW_MAP`             | bool | Overlay the adaptive 3D decision map; `CHD_DEC_NTSC_3D` only.                                                                |
@@ -860,6 +860,38 @@ Use it on clean sources (LaserDisc, studio); it lifts vestige noise as well as
 signal, so a noisy off-air/tape capture is better served by `color_under`
 (discard the vestige). +X must be in (0, 1.3 MHz), and is only meaningful with
 `equiband_vsb`; supplying it with any other mode is rejected at commit.
+
+### Phase compensation { #phase-compensation }
+
+`CHD_OPT_PHASE_COMPENSATION` (NTSC; off by default) derives each line's
+subcarrier phase from its own measured colour burst rather than from the
+nominal field-phase table alone. Without it, a decoder assumes every line sits
+at the phase RS-170 prescribes for its field and line parity, so any real phase
+error in the capture lands directly in the decoded hue. It applies to the comb
+kinds (`CHD_DEC_NTSC_1D` through `CHD_DEC_NTSC_3D_NO_ADAPT` and
+`CHD_DEC_NN_TRANSFORM3D`) and to the three ldzeug2 kinds.
+
+Burst-phase error is negligible on scLocked LaserDisc captures and other
+sources locked to a stable reference, which is why it stays off by default;
+it earns its cost on tape and off-air material where the phase drifts.
+
+Each decoder applies the measurement where its pipeline allows:
+
+| Kind | Where the correction lands |
+|---|---|
+| Comb kinds | Demodulation runs on the burst-locked axes directly (`splitIQlocked`). |
+| `CHD_DEC_LDZEUG_LUMA_SEP`, `..._FRAME` | The chroma demodulation is ours, after the network's luma; the demodulated I/Q are rotated onto the measured phase before the bandpass. |
+| `CHD_DEC_LDZEUG_COLOR_CNN` | The network demodulates, so the correction moves to its input: the I/Q carrier reference planes are synthesized on the measured phase instead of the nominal one. |
+
+The measurement is per line from a single burst, so it corrects line-to-line
+phase error but not drift within a line. A line whose burst is too weak to
+measure keeps the nominal phase for that line.
+
+For the ldzeug2 colour CNN specifically, feeding burst-locked carrier planes
+preserves the relationship the published weights were trained on (the carrier
+planes and the composite's own modulation carrier were the same signal), but it
+does present the network with carrier values off the ±1 lattice that training
+sampled. See [Colour CNN](nn-models.md#color-cnn).
 
 ### chd_chroma_sideband_calibrate
 

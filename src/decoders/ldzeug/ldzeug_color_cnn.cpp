@@ -10,6 +10,7 @@
 
 #include "../../common/log.h"
 #include "../../nn/inference_engine.h"
+#include "../ntsc_burst.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -27,6 +28,20 @@ constexpr double IQ_BASE_ANGLE_DEG = 33.0;
 // where 16bIre 0..65535 → 0..1 directly, so ×65535 is the inverse.
 constexpr double FROM_NORMALIZED = 65535.0;
 
+// Phase compensation feeds the network carrier planes rotated onto each
+// line's measured burst, rather than rotating the network's I/Q output.
+// The weights were trained on carriers that were themselves the modulating
+// carriers of the synthesized composite (ldzeug2's modulate_fields returns
+// mod1/mod2 as both), so "carrier plane matches the signal's actual
+// subcarrier phase" is the invariant the network learned; a measured burst
+// upholds it where the nominal table does not. The reference decoder
+// exposes the same seam as the optional iq_cariers override.
+//
+// The tradeoff is that a rotated carrier takes values off the {0, ±1}
+// lattice that training only ever sampled. Rotations stay small for real
+// captures, and a line whose burst can't be measured falls back to the
+// nominal lattice.
+//
 // fieldPhase {1,2,3,4} → carrier sign, matching the table in
 // ldzeug2.colordecoder.input_for_color_cnn.
 inline double fieldPhaseSign(int32_t fieldPhase) {
@@ -38,12 +53,6 @@ inline double fieldPhaseSign(int32_t fieldPhase) {
         default: return 1.0;   // unknown phase; preserve input
     }
 }
-
-// Integer-pixel I/Q carrier samples at 4fsc.
-// cos((x*pi)/2 - pi/2) → {0, 1, 0, -1}.
-// sin((x*pi)/2 - pi/2) → {-1, 0, 1, 0}.
-constexpr std::array<double, 4> kBaseI = { 0.0,  1.0, 0.0, -1.0 };
-constexpr std::array<double, 4> kBaseQ = {-1.0,  0.0, 1.0,  0.0 };
 
 // uv_from_iq: rotation by (33° + chromaPhase), scaled by chromaGain.
 //   theta = (33 + chromaPhase) * pi / 180
@@ -131,13 +140,20 @@ void LdzeugColorCnnDecoder::decodeFrames(
                     const int32_t frameLine = y * 2 + yOffset;
                     if (frameLine >= frameHeight) break;
                     const double rowSign = (y % 2 == 1 ? -1.0 : 1.0) * phaseSign;
+                    const uint16_t *cvbsRow = src + y * fieldWidth;
+                    chd::decoders::BurstDeviation burstDev;
+                    if (phaseCompensation_) {
+                        burstDev = chd::decoders::detectBurstDeviation(cvbsRow, vp, rowSign);
+                    }
                     float *cv = cvbsPlane + frameLine * fieldWidth;
                     float *ic = iCarPlane + frameLine * fieldWidth;
                     float *qc = qCarPlane + frameLine * fieldWidth;
                     for (int32_t x = 0; x < fieldWidth; ++x) {
-                        cv[x] = static_cast<float>(src[y * fieldWidth + x]) * scale;
-                        ic[x] = static_cast<float>(kBaseI[x % 4] * rowSign);
-                        qc[x] = static_cast<float>(kBaseQ[x % 4] * rowSign);
+                        cv[x] = static_cast<float>(cvbsRow[x]) * scale;
+                        double iCar, qCar;
+                        chd::decoders::burstLockedCarrier(x, burstDev, rowSign, &iCar, &qCar);
+                        ic[x] = static_cast<float>(iCar);
+                        qc[x] = static_cast<float>(qCar);
                     }
                 }
             }
@@ -181,13 +197,20 @@ void LdzeugColorCnnDecoder::decodeFrames(
             constexpr float scale = 1.0f / 65535.0f;
             for (int32_t y = 0; y < fieldHeight; ++y) {
                 const double rowSign = (y % 2 == 1 ? -1.0 : 1.0) * phaseSign;
+                const uint16_t *cvbsRow = src + y * fieldWidth;
+                chd::decoders::BurstDeviation burstDev;
+                if (phaseCompensation_) {
+                    burstDev = chd::decoders::detectBurstDeviation(cvbsRow, vp, rowSign);
+                }
                 float *cv = cvbsPlane + y * fieldWidth;
                 float *ic = iCarPlane + y * fieldWidth;
                 float *qc = qCarPlane + y * fieldWidth;
                 for (int32_t x = 0; x < fieldWidth; ++x) {
-                    cv[x] = static_cast<float>(src[y * fieldWidth + x]) * scale;
-                    ic[x] = static_cast<float>(kBaseI[x % 4] * rowSign);
-                    qc[x] = static_cast<float>(kBaseQ[x % 4] * rowSign);
+                    cv[x] = static_cast<float>(cvbsRow[x]) * scale;
+                    double iCar, qCar;
+                    chd::decoders::burstLockedCarrier(x, burstDev, rowSign, &iCar, &qCar);
+                    ic[x] = static_cast<float>(iCar);
+                    qc[x] = static_cast<float>(qCar);
                 }
             }
 

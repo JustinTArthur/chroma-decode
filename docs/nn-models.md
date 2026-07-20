@@ -256,7 +256,7 @@ and the author's release quotes).
 The ldzeug2 project targets composite video from NTSC(-J) laserdiscs. Its models
 come in two groups; the canonical source of truth is the ldzeug2 project itself.
 
-### Color CNN
+### Color CNN { #color-cnn }
 
 **Decoder kind:** `CHD_DEC_LDZEUG_COLOR_CNN`. A full colour-decoding network.
 
@@ -266,6 +266,17 @@ come in two groups; the canonical source of truth is the ldzeug2 project itself.
 | output | `[N, 3, H, W]` | float32 | Decoded colour. |
 
 Published variants include `color_cnn` v1 and v2 and a denoising variant.
+
+The carrier planes are keyed to the nominal field/line phase by default. With
+[`CHD_OPT_PHASE_COMPENSATION`](api-reference.md#phase-compensation) they are
+instead synthesized on each line's measured burst phase. This is the input side
+of the same correction the luma-separation kinds apply to their demodulated
+output, and it keeps the property the published weights were trained under: the
+carrier planes the network sees are the carriers the composite was actually
+modulated with, which a nominal table cannot guarantee on a source whose phase
+drifts. The tradeoff is that a rotated carrier takes fractional values, whereas
+training only ever presented the ±1 lattice, so it is worth checking against a
+known-good decode of the same source before adopting it wholesale.
 
 ### Luma separation
 

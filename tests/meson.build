@@ -72,6 +72,13 @@ test_encode_orc_color_bars = executable('test_encode_orc_color_bars',
   dependencies: chromadec_internal_dep)
 test('encode_orc_color_bars', test_encode_orc_color_bars)
 
+# NTSC burst measurement and the phase-compensation corrections built on it
+# (shared by the comb and ldzeug2 decoders). Pure signal maths — no NN.
+test_ntsc_burst = executable('test_ntsc_burst',
+  'unit/test_ntsc_burst.cpp',
+  dependencies: chromadec_internal_dep)
+test('ntsc_burst', test_ntsc_burst)
+
 # NTSC-1953 SSB wideband-I reconstruction. Synthesizes burst-locked
 # composite fields with single- and double-sideband chroma tones, decodes
 # them through the comb decoder's ChromaFilterMode variants, and asserts
