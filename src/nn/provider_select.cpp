@@ -54,7 +54,7 @@ const char *availabilityKey(ProviderPreference p)
 // stub libraries under /usr/local/cuda/lib64/stubs that are NOT a real
 // driver. Probe in priority order, reject stubs by checking the resolved
 // path of cuInit. Ported from tbc-tools/src/ld-chroma-decoder/comb.cpp's
-// ensureCudaDriverLoaded (authors: asdfqazsnbb + harrypm).
+// ensureCudaDriverLoaded (author: harrypm).
 //
 // macOS / Windows are no-ops — Windows has its own provider-loading
 // pitfall (see ensureWindowsCudaProviderLoaded below), and macOS doesn't
@@ -194,9 +194,9 @@ bool attachCpu(Ort::SessionOptions &, std::string *)
 
 // ─── CUDA attach ──────────────────────────────────────────────────────────
 // Ported from tbc-tools/src/ld-chroma-decoder/comb.cpp's
-// appendCudaExecutionProvider (lines 368-507). Authors: asdfqazsnbb +
-// harrypm. The preferred option set is the one nnTransform3D was tuned
-// against; the compatibility option set drops the four newest options
+// appendCudaExecutionProvider (lines 368-507, author: harrypm).
+// The preferred option set is the one tbc-tools ships with;
+// the compatibility option set drops the four newest options
 // (use_tf32, prefer_nhwc, the two tunable_op_*) for older ORT builds
 // that don't recognise them yet. If even the compatibility set has an
 // unsupported option, the regex-driven filter prunes it and retries.

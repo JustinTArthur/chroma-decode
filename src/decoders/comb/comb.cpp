@@ -193,10 +193,10 @@ void Comb::decodeFrames(const std::vector<chd::decoders::SourceField> &inputFiel
     assert((componentFrames.size() * 2) == (endIndex - startIndex));
 
 #if defined(CHD_WITH_NN)
-    // nnTransform3D path (asdfqazsnbb / harrypm, ported from tbc-tools'
-    // Comb::decodeFrames). Uses a per-frame FrameBuffer map so each
-    // frame's split1D/split2D run once even when it's referenced as
-    // "current" and then "next" across consecutive iterations.
+    // nnTransform3D path (ported from tbc-tools' rendition of
+    // Comb::decodeFrames, asdfqazsnbb / harrypm). Uses a per-frame FrameBuffer
+    // map so each frame's split1D/split2D run once even when it's referenced
+    // as "current" and then "next" across consecutive iterations.
     if (configuration.dimensions == 3 && configuration.nnTransform3D) {
         std::map<int32_t, std::shared_ptr<FrameBuffer>> frameBuffers;
         const int32_t frameCount = (endIndex - startIndex) / 2;

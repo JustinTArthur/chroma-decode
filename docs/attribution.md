@@ -31,7 +31,9 @@ Particular contributors visible in that history (non-exhaustive):
   chats before v2 was open-sourced on GitHub.
 - **harrypm**: first to bring the nnTransform3D code into a public repo
   (the `tbc-tools` fork of `ld-decode-tools`), where it lived as patches to
-  `src/ld-chroma-decoder/comb.{h,cpp}` plus `nnTransform3D_kernel.cu`.
+  `src/ld-chroma-decoder/comb.{h,cpp}`. The CUDA side of that integration
+  (`nnTransform3D_kernel.cu` and its comb.cpp wiring) contributed by
+  asdfqazsnbb directly.
 
 ## ldzeug2 models and harnesses
 

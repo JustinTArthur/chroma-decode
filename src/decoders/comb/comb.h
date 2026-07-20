@@ -103,7 +103,7 @@ public:
         double chromaWeight = 1.0;
 
         // nnTransform3D mode: replace the classical 3D split
-        // with the asdfqazsnbb / harrypm 3D-FFT + CNN-mask + IFFT pipeline.
+        // with asdfqazsnbb's 3D-FFT + CNN-mask + IFFT pipeline.
         // Requires dimensions == 3 + a session bound via Comb::setNnModel.
         // nnInputMagnitudeScale matches the per-model normalisation
         // constant (1.0 for the original chroma_net, 128.0 for v2).
