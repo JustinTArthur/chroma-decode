@@ -22,6 +22,7 @@
 
 #include <chromadec/decoder.h>
 #include <chromadec/frame.h>
+#include <chromadec/log.h>
 #include <chromadec/video.h>
 
 #include <sqlite3.h>
@@ -54,6 +55,18 @@ namespace {
         return 1; \
     } \
 } while (0)
+
+// The library emits nothing until a consumer installs a sink, so the
+// diagnostic checks below turn one on around the call they want to see.
+void enableDebugLogging() {
+    chd_log_to_stderr();
+    chd_set_log_level(CHD_LOG_DEBUG);
+}
+
+void disableDebugLogging() {
+    chd_set_log_level(CHD_LOG_INFO);
+    chd_set_log_callback(nullptr, nullptr);
+}
 
 const char *kCvbsSchema = R"(
 PRAGMA user_version = 7;
@@ -491,11 +504,11 @@ int testEncoderScLockedValidation() {
 
     chd::reader::CvbsCompositeSource src;
     // Surface the horizontal-alignment measurement in the validation output.
-    chd::log::setDebugEnabled(true);
+    enableDebugLogging();
     const bool opened = src.open(native, getVideoStandard(VideoStandard::PAL),
                                  SampleEncoding::CVBS_U16_4FSC,
                                  SignalState::STANDARD_TBC_LOCKED);
-    chd::log::setDebugEnabled(false);
+    disableDebugLogging();
     REQUIRE(opened);
     REQUIRE(src.frameLayout() == FrameLayout::FRAME_NATIVE);
     REQUIRE(src.getNumberOfAvailableFields() == numFrames * 2);
@@ -860,9 +873,9 @@ int testRealCompositeDiagnostics() {
     if (path == nullptr) return 0;
 
     chd_video_t *v = nullptr;
-    chd::log::setDebugEnabled(true);
+    enableDebugLogging();
     const chd_status_t rc = chd_video_open_composite(path, nullptr, nullptr, &v);
-    chd::log::setDebugEnabled(false);
+    disableDebugLogging();
     REQUIRE(rc == CHD_OK);
     chd_video_info_t info{};
     REQUIRE(chd_video_get_info(v, &info) == CHD_OK);

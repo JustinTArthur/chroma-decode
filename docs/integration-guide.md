@@ -508,7 +508,49 @@ if (rc != CHD_OK) {
 ```
 
 `chd_status_str` is a stable static code name; `chd_last_error` is the
-context-rich, per-thread message.
+context-rich, per-thread message. Check the status first and read the detail
+only when it is not `CHD_OK`: the library records a detail wherever it detects
+a failure, including ones it goes on to handle itself, so the string can be
+non-empty after a call that succeeded.
+
+## Diagnostics
+
+Failures come back on the return path above; the commentary a decode produces
+along the way has no return path, so it goes to a sink you install. The library
+writes nothing to stderr or stdout on its own, which keeps it out of your
+program's output unless you ask:
+
+```c
+static void log_sink(chd_log_level_t level, chd_log_flags_t flags,
+                     const char *message, void *user_data)
+{
+    /* You are already printing this one from chd_last_error() above. */
+    if (flags & CHD_LOG_F_RETURNED) return;
+
+    fprintf((FILE *)user_data, "[chromadec/%s] %s\n",
+            chd_log_level_str(level), message);
+}
+
+chd_set_log_callback(log_sink, stderr);
+chd_set_log_level(CHD_LOG_DEBUG);   /* default is CHD_LOG_INFO */
+```
+
+If you report failures from the return path, as the pattern above does, drop
+`CHD_LOG_F_RETURNED` messages: they are the same reason arriving a second time.
+Keep them if the sink is your only output. Errors *without* the flag have no
+return path of their own, so never filter on the level alone. See
+[Message flags](api-reference.md#chd_log_f_returned).
+
+For a command-line tool that just wants the messages on the terminal,
+`chd_log_to_stderr()` installs a built-in sink that does exactly that. See
+[Diagnostics](api-reference.md#diagnostics) for the sink contract, in
+particular that it is called from decode worker threads.
+
+Both calls may be made before `chd_init`, which is where you want them if you
+would rather not miss anything early. If you are writing a plugin rather than
+an application, note that the sink is process-wide: the last consumer of
+libchromadec in the process to install one wins, so installing unconditionally
+at load time can take the messages away from whoever asked for them first.
 
 ---
 

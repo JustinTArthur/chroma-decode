@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use chromadec::{Cancel, Video};
+use chromadec::{Cancel, Status, Video};
 
 #[test]
 fn version_reports() {
@@ -19,6 +19,9 @@ fn feature_queries() {
 #[test]
 fn open_missing_tbc_reports_error_with_message() {
     let err = Video::open_composite("/nonexistent/missing.tbc", None, None).unwrap_err();
+    // The status narrows the category and the detail names the cause; a missing
+    // file is not reported the same way as a corrupt sidecar or a read failure.
+    assert_eq!(err.status(), Status::FileNotFound);
     assert!(
         err.message().is_some(),
         "expected a chd_last_error detail message"

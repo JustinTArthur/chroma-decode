@@ -9,6 +9,7 @@ chromadec_sources = files(
   'abi/c_api_dropout_detect.cpp',
   'abi/c_api_pipeline.cpp',
   'abi/c_api_errors.cpp',
+  'abi/c_api_log.cpp',
   'common/color_conversion.cpp',
   'common/error_state.cpp',
   'common/log.cpp',

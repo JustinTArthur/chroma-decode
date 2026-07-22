@@ -266,7 +266,7 @@ bool LdDecodeMetaData::readJsonImpl(const std::string &fileName)
 {
     std::ifstream jsonFile(fileName);
     if (jsonFile.fail()) {
-        chd::log::error() << "Opening JSON input file failed:" << fileName;
+        chd::log::fail() << "Opening JSON input file failed:" << fileName;
         return false;
     }
 
@@ -295,19 +295,19 @@ bool LdDecodeMetaData::readJsonImpl(const std::string &fileName)
 
         reader.endObject();
     } catch (JsonReader::Error &error) {
-        chd::log::error() << "Parsing JSON file failed:" << error.what();
+        chd::log::fail() << "Parsing JSON file failed:" << error.what();
         return false;
     }
 
     // Check we saw VideoParameters - if not, we can't do anything useful!
     if (!videoParameters.isValid) {
-        chd::log::error() << "JSON file invalid: videoParameters object is not defined";
+        chd::log::fail() << "JSON file invalid: videoParameters object is not defined";
         return false;
     }
 
     // Check numberOfSequentialFields is consistent
     if (static_cast<size_t>(videoParameters.numberOfSequentialFields) != fields.size()) {
-        chd::log::error() << "JSON file invalid: numberOfSequentialFields does not match fields array";
+        chd::log::fail() << "JSON file invalid: numberOfSequentialFields does not match fields array";
         return false;
     }
 

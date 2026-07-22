@@ -19,4 +19,8 @@ void clear_last_error() {
     g_last_error.clear();
 }
 
+std::string detail_or(const std::string &fallback) {
+    return g_last_error.empty() ? fallback : g_last_error;
+}
+
 }  // namespace chd::detail

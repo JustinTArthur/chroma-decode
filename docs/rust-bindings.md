@@ -101,6 +101,7 @@ model, so there is no explicit init step.
 | `chd_cancel_t *`       | `Cancel` (frees on drop)                       |
 | `chd_status_t` return  | `Result<T, Error>`                             |
 | `chd_last_error()`     | captured into `Error::message`                 |
+| `chd_set_log_callback` | `chromadec::log::set_callback`                 |
 | `CHD_OPT_*` names      | `chromadec::options::*`                        |
 | `chd_frame_get_plane*` | `Frame::plane_u16` / `plane_f32` → `PlaneView` |
 
@@ -115,6 +116,11 @@ Every fallible call returns `chromadec::Result<T>`. An `Error` carries the
 [`Status`] code and the thread-local detail string the library recorded
 (`chd_last_error`), captured on the thread the failing call ran on. `Error`
 implements `std::error::Error`, so it composes with `?` and error libraries.
+
+The C caveat about reading the detail string only after a non-`CHD_OK` status
+does not reach Rust: an `Error` is only constructed on the failure path, so a
+detail left behind by a failure the library handled itself cannot end up in an
+`Ok`.
 
 ### Decoding paths
 
@@ -171,6 +177,69 @@ Cancel externally with `FrameStream::cancel` / `cancel_handle`; dropping the
 stream requests cancel so an in-flight decode stops promptly. Call
 `finish().await` afterwards for the overall decode status, including a setup
 error that produced an empty stream.
+
+## Diagnostics
+
+The C library is silent until a sink is installed (see the [C API
+reference](api-reference.md#diagnostics)); `chromadec::log` is the safe front
+end for that. `set_callback` takes any `Fn(Level, &str) + Send + Sync +
+'static` closure, boxes it, and keeps it alive for exactly as long as the
+library can call it:
+
+```rust
+use chromadec::log::{self, Level, LevelFilter};
+
+log::set_filter(LevelFilter::Debug);
+log::set_callback(|d| eprintln!("[chromadec/{}] {}", d.level, d.message));
+```
+
+The closure receives a `&Diagnostic<'_>` with `level`, `message`, and
+`returned`. The last is the one to know about: a failure coming back as an
+`Error` is announced on the sink too, carrying the same text, so a program that
+reports both says it twice. Skip the marked ones if you already surface the
+`Err`:
+
+```rust
+# use chromadec::log;
+log::set_callback(|d| {
+    if d.returned {
+        return; // the `Err` carries this
+    }
+    eprintln!("[chromadec/{}] {}", d.level, d.message);
+});
+```
+
+Never filter on `Level::Error` alone instead: an unmarked error is one with no
+return path, and dropping those loses it entirely. `Diagnostic` is
+`#[non_exhaustive]`, so read the fields you want rather than destructuring it
+whole.
+
+`Level` and `LevelFilter` mirror the `log` crate's own `Level` /
+`LevelFilter` split, so the threshold can express "off" without polluting the
+severity a message arrives with. A panic inside your closure is caught rather
+than unwound into C, which would be undefined. `log::clear_callback` detaches
+on the C side first and drops the closure only once the library guarantees it is
+no longer running, so a sink capturing owned state is sound.
+
+The rest of the module: `log::to_stderr()` installs the library's built-in
+stderr sink, replacing any closure; `log::filter()` reads the threshold back;
+and `log::is_enabled(level)` reports whether a message at that level would
+reach a sink, for guarding diagnostic work on your own side. `Level` has no
+"off" variant, so the C wart of asking whether an off-level message would be
+delivered cannot be expressed here.
+
+The sink is process-wide rather than per-`Video`, so in a plugin loaded
+alongside other libchromadec consumers the last `set_callback` wins.
+
+With the `log` feature, `log::forward_to_log_crate()` wires the sink into the
+[`log`](https://docs.rs/log) facade under the `"chromadec"` target and sets the
+library threshold from `log::max_level()`. Call it after your logger is
+installed:
+
+```toml
+[dependencies]
+chromadec = { version = "0.1", features = ["log"] }
+```
 
 ## Neural decoders
 

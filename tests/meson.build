@@ -106,6 +106,22 @@ test_format_presets = executable('test_format_presets',
   dependencies: chromadec_internal_dep)
 test('format_presets', test_format_presets)
 
+# Diagnostic sink: default-silent contract, threshold filtering, sink
+# hand-off/uninstall, concurrent emit. Links the static archive so it can drive
+# chd::log::info() etc. directly, the way the library's own call sites do.
+test_log_abi = executable('test_log_abi',
+  'unit/test_log_abi.cpp',
+  dependencies: [chromadec_internal_dep, sqlite3_dep])
+test('log_abi', test_log_abi)
+
+# Failures reach the caller through the return path: distinct status codes and
+# the detecting layer's own reason for chd_last_error(), plus the range checks
+# that used to log and then read/write outside their buffers anyway.
+test_error_propagation = executable('test_error_propagation',
+  'unit/test_error_propagation.cpp',
+  dependencies: [chromadec_internal_dep, sqlite3_dep])
+test('error_propagation', test_error_propagation)
+
 # Cross-system chroma-filter table (intent×system validity + standards cutoffs)
 # and the equiband_vsb EQ synthesis (frequency-response checks).
 test_chroma_filter = executable('test_chroma_filter',

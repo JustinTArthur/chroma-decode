@@ -134,7 +134,9 @@ public:
     };
 
     const Configuration &getConfiguration() const;
-    void updateConfiguration(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters,
+    // False if the video parameters are outside what the fixed-size frame
+    // buffers below can hold, in which case nothing is configured.
+    bool updateConfiguration(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters,
                              const Configuration &configuration);
 
 #if defined(CHD_WITH_NN)

@@ -5,6 +5,7 @@
 
 #include <chromadec/version.h>
 #include <chromadec/errors.h>
+#include <chromadec/log.h>
 #include <chromadec/types.h>
 #include <chromadec/video.h>
 #include <chromadec/decoder.h>

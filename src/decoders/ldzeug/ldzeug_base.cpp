@@ -13,7 +13,7 @@ bool LdzeugDecoderBase::configure(
     const chd::metadata::LdDecodeMetaData::VideoParameters &vp)
 {
     if (vp.system != chd::metadata::NTSC) {
-        chd::log::error() << "ldzeug decoders are for NTSC video sources only";
+        chd::log::fail() << "ldzeug decoders are for NTSC video sources only";
         return false;
     }
     videoParameters = vp;

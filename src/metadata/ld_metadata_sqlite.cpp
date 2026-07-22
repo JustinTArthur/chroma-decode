@@ -219,12 +219,12 @@ bool SqliteReader::readCaptureMetadata(int &captureId, std::string &system, std:
     query.prepare(queryStr);
 
     if (!query.exec()) {
-        chd::log::error() << "Failed to execute capture metadata query:" << query.lastError().text();
+        chd::log::fail() << "Failed to execute capture metadata query:" << query.lastError().text();
         return false;
     }
 
     if (!query.next()) {
-        chd::log::error() << "No capture metadata found in database - capture table may be empty";
+        chd::log::fail() << "No capture metadata found in database - capture table may be empty";
         return false;
     }
 
@@ -479,7 +479,7 @@ bool SqliteWriter::createSchema()
     char *errMsg = nullptr;
     const int rc = db.exec(SCHEMA_SQL, &errMsg);
     if (rc != SQLITE_OK) {
-        chd::log::error() << "Failed to execute schema:" << (errMsg ? errMsg : "(no message)");
+        chd::log::fail() << "Failed to execute schema:" << (errMsg ? errMsg : "(no message)");
         sqlite3_free(errMsg);
         return false;
     }

@@ -100,7 +100,7 @@ SecamDecoder::~SecamDecoder()
 bool SecamDecoder::configure(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters)
 {
     if (videoParameters.system != chd::metadata::SECAM) {
-        chd::log::error() << "This decoder is for SECAM video sources only";
+        chd::log::fail() << "This decoder is for SECAM video sources only";
         return false;
     }
 
@@ -453,7 +453,7 @@ void SecamDecoder::decodeField(const SourceField &inputField,
     identOut.fob = fob;
     identOut.for_ = for_;
     if (!calibrated && validFreqs.size() >= 8) {
-        chd::log::warn() << "SecamDecoder: porch carrier pair not measurable; "
+        chd::log::warn() << "SecamDecoder: porch carrier pair not measurable;"
                          << "using nominal subcarriers";
     }
 

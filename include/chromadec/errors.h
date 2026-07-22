@@ -27,7 +27,14 @@ typedef enum chd_status {
     CHD_E_UNSUPPORTED              = 17
 } chd_status_t;
 
+/* Stable static name for a status, e.g. "CHD_E_IO". Never NULL. */
 const char *chd_status_str(chd_status_t s);
+
+/* Detail for the calling thread's most recent failure. Never NULL; empty when
+ * nothing has failed on this thread. Read it only after a call returned
+ * something other than CHD_OK: a failure the library handled internally can
+ * leave a detail behind, so a non-empty string does not by itself mean the
+ * call you just made failed. Valid until the next chd_* call on this thread. */
 const char *chd_last_error(void);
 void        chd_clear_last_error(void);
 

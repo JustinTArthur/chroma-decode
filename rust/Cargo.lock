@@ -59,6 +59,7 @@ dependencies = [
  "chromadec-sys",
  "futures-core",
  "futures-util",
+ "log",
  "tokio",
 ]
 

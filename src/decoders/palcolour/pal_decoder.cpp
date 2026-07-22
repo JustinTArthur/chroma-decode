@@ -38,7 +38,7 @@ PalDecoder::PalDecoder(const PalColour::Configuration &palConfig)
 bool PalDecoder::configure(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters) {
     // Ensure the source video is PAL
     if (videoParameters.system != chd::metadata::PAL && videoParameters.system != chd::metadata::PAL_M) {
-        chd::log::error() << "This decoder is for PAL video sources only";
+        chd::log::fail() << "This decoder is for PAL video sources only";
         return false;
     }
 

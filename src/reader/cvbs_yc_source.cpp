@@ -28,7 +28,7 @@ bool CvbsYcSource::open(const std::string &yPath,
                         std::optional<bool> subcarrierLockedOverride)
 {
     if (isOpen) {
-        chd::log::warn() << "CvbsYcSource::open(): source already open";
+        chd::log::fail() << "source is already open";
         return false;
     }
 
@@ -41,7 +41,7 @@ bool CvbsYcSource::open(const std::string &yPath,
     yFile.open(yPath, std::ios::binary);
     cFile.open(cPath, std::ios::binary);
     if (!yFile.is_open() || !cFile.is_open()) {
-        chd::log::warn() << "CvbsYcSource::open(): could not open" << yPath << "/" << cPath;
+        chd::log::fail() << "could not open" << yPath << "/" << cPath;
         yFile.close();
         cFile.close();
         return false;
@@ -66,8 +66,9 @@ bool CvbsYcSource::open(const std::string &yPath,
     fieldByteSize = fieldSamples * bytesPerSample;
 
     if (ySize != cSize || ySize <= 0 || fieldByteSize <= 0) {
-        chd::log::warn().nospace()
-            << "CvbsYcSource::open(): file size mismatch (y=" << ySize << ", c=" << cSize << ")";
+        chd::log::fail().nospace()
+            << "luma and chroma file sizes are empty or unequal (y=" << ySize
+            << ", c=" << cSize << ")";
         yFile.close();
         cFile.close();
         return false;

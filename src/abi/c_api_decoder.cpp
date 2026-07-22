@@ -855,9 +855,11 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
 #else
             (void)applyNn;
 #endif
+            chd::detail::clear_last_error();
             if (!inst->configure(vp)) {
                 chd::detail::set_last_error(
-                    "chd_decoder_commit: decoder rejected input (incompatible video standard?)");
+                    "chd_decoder_commit: " +
+                    chd::detail::detail_or("decoder rejected the input video parameters"));
                 return CHD_E_DECODER_INCOMPATIBLE;
             }
             outDecs.push_back(std::move(inst));

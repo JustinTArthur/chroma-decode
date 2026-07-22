@@ -5,6 +5,7 @@ public_headers = files(
   'chromadec/dropout.h',
   'chromadec/errors.h',
   'chromadec/frame.h',
+  'chromadec/log.h',
   'chromadec/nn.h',
   'chromadec/pipeline.h',
   'chromadec/types.h',

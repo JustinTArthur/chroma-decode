@@ -10,6 +10,7 @@ mod cancel;
 mod decoder;
 mod error;
 mod frame;
+pub mod log;
 mod nn;
 #[cfg(feature = "tokio")]
 mod stream;

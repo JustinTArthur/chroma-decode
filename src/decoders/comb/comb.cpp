@@ -139,25 +139,37 @@ const Comb::Configuration &Comb::getConfiguration() const {
 }
 
 // Set the comb filter configuration parameters
-void Comb::updateConfiguration(const chd::metadata::LdDecodeMetaData::VideoParameters &_videoParameters, const Comb::Configuration &_configuration)
+bool Comb::updateConfiguration(const chd::metadata::LdDecodeMetaData::VideoParameters &_videoParameters, const Comb::Configuration &_configuration)
 {
+    // Range check the frame dimensions before storing anything. The frame
+    // buffers below are fixed at MAX_HEIGHT x MAX_WIDTH, so accepting a larger
+    // geometry would write past them once decoding started.
+    if (_videoParameters.fieldWidth > MAX_WIDTH) {
+        chd::log::fail().nospace() << "Comb: frame width " << _videoParameters.fieldWidth
+                                   << " exceeds the maximum of " << MAX_WIDTH;
+        return false;
+    }
+    if (((_videoParameters.fieldHeight * 2) - 1) > MAX_HEIGHT) {
+        chd::log::fail().nospace() << "Comb: frame height " << ((_videoParameters.fieldHeight * 2) - 1)
+                                   << " exceeds the maximum of " << MAX_HEIGHT;
+        return false;
+    }
+    if (_videoParameters.activeVideoStart < 16) {
+        chd::log::fail().nospace() << "Comb: activeVideoStart " << _videoParameters.activeVideoStart
+                                   << " must be at least 16";
+        return false;
+    }
+
     // Copy the configuration parameters
     videoParameters = _videoParameters;
     configuration = _configuration;
-
-    // Range check the frame dimensions
-    if (videoParameters.fieldWidth > MAX_WIDTH) chd::log::error() << "Comb::Comb(): Frame width exceeds allowed maximum!";
-    if (((videoParameters.fieldHeight * 2) - 1) > MAX_HEIGHT) chd::log::error() << "Comb::Comb(): Frame height exceeds allowed maximum!";
-
-    // Range check the video start
-    if (videoParameters.activeVideoStart < 16) chd::log::error() << "Comb::Comb(): activeVideoStart must be > 16!";
 
     // Check the sample rate is close to 4 * fSC.
     // Older versions of ld-decode used integer approximations, so this needs
     // to be an approximate comparison.
     if (fabs((videoParameters.sampleRate / videoParameters.fSC) - 4.0) > 1.0e-6)
     {
-        chd::log::error() << "Data is not in 4fsc sample rate, color decoding will not work properly!";
+        chd::log::warn() << "Data is not in 4fsc sample rate, color decoding will not work properly!";
     }
 
     // Synthesize the β-profile correction taps for the SSB reconstruction.
@@ -177,6 +189,7 @@ void Comb::updateConfiguration(const chd::metadata::LdDecodeMetaData::VideoParam
     }
 
     configurationSet = true;
+    return true;
 }
 
 #if defined(CHD_WITH_NN)
@@ -1192,7 +1205,7 @@ bool Comb::FrameBuffer::split3DnnTransform(FrameBuffer &nextFrame,
 
     auto &plans = nntransform3d::getThreadLocalCpuPlans();
     if (plans.forward == nullptr || plans.inverse == nullptr) {
-        chd::log::error() << "nnTransform3D: failed to acquire FFTW plans; falling back to 2D";
+        chd::log::warn() << "nnTransform3D: failed to acquire FFTW plans; falling back to 2D";
         return false;
     }
     const auto &windows = nntransform3d::getSineWindows();

@@ -63,8 +63,7 @@ bool TbcSource::open(std::string filename, int32_t _fieldLength, int32_t _fieldL
     chd::log::debug() << "TbcSource::open(): Called with field byte length =" << fieldByteLength;
 
     if (isSourceVideoOpen) {
-        // Video file is already open, close it
-        chd::log::info() << "A source video input file is already open, cannot open a new one";
+        chd::log::fail() << "source is already open";
         return false;
     }
 
@@ -72,13 +71,13 @@ bool TbcSource::open(std::string filename, int32_t _fieldLength, int32_t _fieldL
     if (filename == "-") {
         // Reading from stdin is not supported through std::ifstream; the
         // caller must use a pipe or a regular file path.
-        chd::log::warn() << "Could not open stdin as source video input file";
+        chd::log::fail() << "Could not open stdin as source video input file";
         return false;
     } else {
         inputFile.open(filename, std::ios::binary);
         if (!inputFile.is_open()) {
             // Failed to open named input file
-            chd::log::warn() << "Could not open" << filename << "as source video input file";
+            chd::log::fail() << "Could not open" << filename << "as source video input file";
             return false;
         }
 

@@ -31,6 +31,19 @@ repeated on every function.
   human-readable, thread-local detail string for the *most recent* failing
   call on the calling thread. [`chd_status_str()`](#chd_status_str) maps a
   status code to a stable static string.
+- **Check the status first, then read the detail.** The detail is only
+  meaningful once a call has returned something other than `CHD_OK`; a failure
+  the library recovered from internally can leave a detail behind, so a
+  non-empty string is not on its own evidence that your call failed.
+- The detail is the reason recorded by whichever layer actually detected the
+  failure, prefixed with the entry point you called. Opening a `.tbc` whose
+  sidecar lists fewer fields than it declares reports that mismatch, not
+  "failed to read sidecar metadata"; a decoder that rejects its input names
+  what it rejected. The status code narrows the category, the detail names the
+  cause.
+- Failures always travel this return path. The [diagnostic
+  sink](#diagnostics) is a separate channel carrying commentary that has no
+  return path of its own, and it is silent until you install a callback.
 
 ### Ownership and lifetime
 
@@ -57,7 +70,9 @@ repeated on every function.
 - Distinct handles are independent and may be used concurrently from different
   threads.
 - [`chd_decode_frames_async`](#chd_decode_frames_async) invokes your callback
-  from internal worker threads; the callback must be thread-safe.
+  from internal worker threads; the callback must be thread-safe. So does the
+  [diagnostic sink](#diagnostics), which is process-wide rather than
+  per-handle.
 
 ### Lifecycle
 
@@ -65,6 +80,12 @@ Call [`chd_init`](#chd_init) once before any other call, and
 [`chd_shutdown`](#chd_shutdown) once before process exit **if any NN model was
 loaded**. See [Library lifecycle](#library-lifecycle) for why shutdown is not
 automatic.
+
+The [diagnostic sink](#diagnostics) is the exception: `chd_set_log_callback`
+and `chd_set_log_level` may be called before `chd_init`, which is where you
+want them if you would rather not miss anything. The log state is never torn
+down, so they are equally safe from an `atexit` handler or a static
+destructor.
 
 ---
 
@@ -153,7 +174,7 @@ Declared in `<chromadec/errors.h>`.
 | `CHD_E_METADATA_CORRUPT`        | Metadata was found but failed to parse.                                                   |
 | `CHD_E_PRESET_UNKNOWN`          | An unknown preset name was requested.                                                     |
 | `CHD_E_DECODER_UNKNOWN`         | Unknown decoder kind.                                                                     |
-| `CHD_E_DECODER_INCOMPATIBLE`    | Decoder kind is invalid for this video standard/encoding.                                 |
+| `CHD_E_DECODER_INCOMPATIBLE`    | Decoder kind is invalid for this video standard/encoding, or the frame geometry is outside what it can decode. |
 | `CHD_E_NN_MODEL_LOAD`           | The NN model file failed to load.                                                         |
 | `CHD_E_NN_BACKEND_UNAVAILABLE`  | The requested inference backend is not available in this build/host.                      |
 | `CHD_E_NN_INFERENCE`            | Inference failed at runtime.                                                              |
@@ -182,7 +203,18 @@ const char *chd_last_error(void);
 Return a thread-local, human-readable description of the **most recent failing
 call on the calling thread**, including call-site context the status code
 alone cannot convey (which path, which option, etc.). The pointer is valid
-until the next `chd_*` call on the same thread. Never freed.
+until the next `chd_*` call on the same thread. Never freed, and never `NULL`:
+with nothing yet recorded on this thread it returns an empty string.
+
+Read it only in response to a non-`CHD_OK` status. The library records a detail
+wherever it detects a failure, including failures it then handles itself, so
+the string can be left non-empty by a call that went on to succeed. Nothing
+resets it on success; [`chd_clear_last_error`](#chd_clear_last_error) is there
+if you would rather manage that yourself.
+
+The message describes the input, not the internals: it names the entry point
+you called and the file, option, or metadata field at fault, never the internal
+class that noticed.
 
 ### chd_clear_last_error
 
@@ -191,6 +223,195 @@ void chd_clear_last_error(void);
 ```
 
 Reset the calling thread's error-detail string to empty.
+
+---
+
+## Diagnostics { #diagnostics }
+
+Declared in `<chromadec/log.h>`.
+
+Beyond pass/fail, a decode produces commentary worth surfacing: which sidecar
+was picked up, how many burst lines were measurable, why a SECAM field ident
+fell back. None of that has a return value to travel on, so it goes to a sink
+you install.
+
+**The library never writes to a console on its own.** No sink is installed by
+default, and until one is, nothing is emitted anywhere. That is deliberate: a
+library does not own the process's stderr, and a consumer with its own log
+system, a GUI, or a host plugin API wants the messages routed there instead.
+Failures are always reported through [`chd_status_t`](#status-codes) plus
+[`chd_last_error()`](#chd_last_error) whether or not anything is listening
+here, so ignoring this section costs you no error reporting.
+
+The two channels do overlap in one place. A failure that reaches you as a
+status is also announced here, at `CHD_LOG_ERROR`, carrying the same text — so
+a program that reports both would say it twice. Those messages are marked
+[`CHD_LOG_F_RETURNED`](#chd_log_f_returned), which is what tells them apart
+from an error that has no other way of reaching anyone.
+
+### chd_set_log_callback
+
+```c
+typedef enum chd_log_level {
+    CHD_LOG_DEBUG = 0,
+    CHD_LOG_INFO  = 1,
+    CHD_LOG_WARN  = 2,
+    CHD_LOG_ERROR = 3,
+    CHD_LOG_OFF   = 4   /* threshold only; never delivered */
+} chd_log_level_t;
+
+typedef unsigned int chd_log_flags_t;
+#define CHD_LOG_F_RETURNED 0x1u
+
+typedef void (*chd_log_fn)(chd_log_level_t level, chd_log_flags_t flags,
+                           const char *message, void *user_data);
+
+void chd_set_log_callback(chd_log_fn fn_or_null, void *user_data);
+```
+
+Install the sink, or pass `NULL` to uninstall and go back to silence. The
+`user_data` pointer is handed back to every call, untouched by the library.
+
+- `message` is NUL-terminated UTF-8 with **no trailing newline**, and is valid
+  only for the duration of the call. Copy it if you need to keep it.
+- The sink is called from whichever thread produced the message, including the
+  decode worker threads behind
+  [`chd_decode_frames_async`](#chd_decode_frames_async), so it **must be
+  thread-safe**.
+- The sink **must not call back into libchromadec**, this function included.
+- Once `chd_set_log_callback` returns, the previous sink is neither running nor
+  reachable, so freeing its `user_data` at that point is safe. The call blocks
+  for as long as a dispatch already in flight takes to return, which is one
+  reason to keep a sink quick.
+- The sink is **process-wide, not per-handle**, and there is one of it. In a
+  host that loads several consumers of libchromadec into the same process (a
+  plugin architecture, say), the last one to install wins and the library will
+  not chain to the sink it replaced. If you are writing a plugin rather than an
+  application, consider installing a sink only when your host has actually
+  asked for the messages.
+
+### Message flags { #chd_log_f_returned }
+
+`flags` is a bitmask describing the message beyond its severity. It is not an
+enumeration, because a combination of enumerators is not itself an enumerator.
+Test the bits you know and ignore the rest; future versions may set more.
+
+|Flag|Meaning|
+|---|---|
+|`CHD_LOG_F_RETURNED`|This message is also the calling thread's [`chd_last_error()`](#chd_last_error) detail, so the failure it describes is already on its way back to you as a non-`CHD_OK` [`chd_status_t`](#status-codes).|
+
+Only `CHD_LOG_ERROR` messages are ever marked, and a marked message is never
+the *only* notice you get. That makes the dedup rule simple: if your program
+already reports failures from the return path, drop marked messages.
+
+```c
+static void log_sink(chd_log_level_t level, chd_log_flags_t flags,
+                     const char *message, void *user_data)
+{
+    /* The caller is about to see this as a status; reporting it here as well
+       would say the same thing twice. */
+    if (flags & CHD_LOG_F_RETURNED) return;
+    host_log(user_data, level, message);
+}
+```
+
+Keep them instead if the sink is your program's only output, such as a log pane
+in a GUI, or a `--verbose` trace where seeing the failure in sequence with the
+diagnostics around it is the point.
+
+An unmarked `CHD_LOG_ERROR` is the case that makes the flag worth having: it is
+a failure with no return path of its own, so dropping *those* would lose them.
+
+Note the converse does not hold: not every failing call emits a diagnostic at
+all. Argument validation at the ABI boundary records the detail and returns
+without saying anything here, since nothing has gone wrong that a log would
+illuminate. The flag tells you a message duplicates a status, never that a
+status will be accompanied by a message.
+
+### chd_log_to_stderr
+
+```c
+void chd_log_to_stderr(void);
+```
+
+Install a built-in sink that writes `LEVEL: message` lines to stderr. A
+convenience for command-line consumers that want the old
+write-it-to-the-terminal behaviour in one call; it replaces any sink already
+installed. It ignores `flags`, so a failure you also print from
+`chd_last_error()` will appear twice; write your own three-line sink if that
+matters.
+
+### chd_set_log_level / chd_get_log_level { #chd_set_log_level }
+
+```c
+void            chd_set_log_level(chd_log_level_t min_level);
+chd_log_level_t chd_get_log_level(void);
+```
+
+Drop messages below `min_level`. The default is `CHD_LOG_INFO`, so debug
+output is opt-in even once a sink exists. `CHD_LOG_OFF` suppresses everything
+without uninstalling the sink. A value outside the enum is clamped into it,
+rather than silencing the library on a typo.
+
+The threshold and the sink are both process-wide. Set them before you start
+decoding; changing them mid-decode is safe but which in-flight messages make it
+through is a race, by nature.
+
+What each level costs you:
+
+|Level|Volume|What it carries|
+|---|---|---|
+|`CHD_LOG_ERROR`|Rare|A failure that has no return path of its own, or one the library is about to report through `chd_status_t` as well. [`CHD_LOG_F_RETURNED`](#chd_log_f_returned) tells the two apart.|
+|`CHD_LOG_WARN`|Rare|The library did something other than what the input asked for: a decoder fallback, or an out-of-range value in a sidecar replaced with the standard's default.|
+|`CHD_LOG_INFO`|Per run, plus periodic progress on the batch pipeline path|Which source and sidecar were resolved, geometry, thread count, decode throughput.|
+|`CHD_LOG_DEBUG`|High, and dominated by metadata and source parsing|Per-field and per-sidecar-record detail. Useful when a capture will not open; not something to leave installed for a long decode.|
+
+Nothing is emitted per pixel or per scan line at any level.
+
+### chd_log_is_enabled
+
+```c
+int chd_log_is_enabled(chd_log_level_t level);
+```
+
+Whether a message at `level` would reach a sink right now: non-zero if one is
+installed and `level` is at or above the threshold. Suppressed messages are
+already cheap inside the library, so this is for *your* side of the fence,
+guarding diagnostic data you would otherwise build and throw away.
+
+`CHD_LOG_OFF` always answers `0`. It is a threshold value, so no message
+carries it and none can be delivered at it.
+
+### chd_log_level_str
+
+```c
+const char *chd_log_level_str(chd_log_level_t level);
+```
+
+Stable static name for a level: `"DEBUG"`, `"INFO"`, `"WARN"`, `"ERROR"`,
+`"OFF"`, or `"UNKNOWN"`. Never freed.
+
+### Example
+
+```c
+static void log_sink(chd_log_level_t level, chd_log_flags_t flags,
+                     const char *message, void *user_data)
+{
+    FILE *out = (FILE *)user_data;
+    fprintf(out, "[chromadec/%s]%s %s\n", chd_log_level_str(level),
+            (flags & CHD_LOG_F_RETURNED) ? " (returned)" : "", message);
+}
+
+chd_set_log_callback(log_sink, stdout);
+chd_set_log_level(CHD_LOG_DEBUG);
+```
+
+When the ONNX Runtime backend is built in, ORT's own diagnostics are routed
+through this sink too rather than to its default stderr logger, so a consumer
+sees one stream. ORT applies its own threshold first, fixed at its warning
+level when the environment is created on the first model load, so raising
+`chd_set_log_level` to `CHD_LOG_DEBUG` reveals more of libchromadec but no more
+of ORT.
 
 ---
 

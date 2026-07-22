@@ -25,9 +25,12 @@ namespace fs = std::filesystem;
 
 namespace {
 
-chd_status_t set_error(const std::string &msg) {
+// Records the detail and returns the status. CHD_E_INVALID_ARG is the default
+// because most of the guards here really are bad caller arguments; anything
+// about the state of the files on disk names its own status.
+chd_status_t set_error(const std::string &msg, chd_status_t status = CHD_E_INVALID_ARG) {
     chd::detail::set_last_error(msg);
-    return CHD_E_INVALID_ARG;
+    return status;
 }
 
 // Synthesize an LdDecodeMetaData from an ISource that doesn't carry one
@@ -337,7 +340,8 @@ chd_status_t resolveCvbsParams(const std::string &dataPath,
     }
     if (!sidecar.empty()) {
         if (!fs::exists(sidecar)) {
-            return set_error("CVBS metadata sidecar not found: " + sidecar);
+            return set_error("CVBS metadata sidecar not found: " + sidecar,
+                         CHD_E_FILE_NOT_FOUND);
         }
         auto parsed = chd::metadata::readCvbsMetadata(sidecar);
         if (!parsed) {
@@ -432,18 +436,22 @@ chd_status_t openCompositeSource(const std::string &fn, const std::string &path,
                                  OpenedSource *out) {
     const SidecarResolution sc = resolveSidecarFlavour(path, sidecarOrNull);
     if (sidecarOrNull != nullptr && !sc.found) {
-        return set_error(fn + ": sidecar file does not exist: " + sc.path);
+        return set_error(fn + ": sidecar file does not exist: " + sc.path,
+                         CHD_E_FILE_NOT_FOUND);
     }
 
     if (sc.found && !sc.isCvbs) {
         // ld-decode path: real per-field metadata + TbcSource.
         auto metadata = std::make_unique<chd::metadata::LdDecodeMetaData>();
+        chd::detail::clear_last_error();
         try {
             if (!metadata->read(sc.path)) {
-                return set_error(fn + ": failed to read sidecar metadata");
+                return set_error(fn + ": " + chd::detail::detail_or(
+                                                 "failed to read sidecar metadata"),
+                                 CHD_E_METADATA_CORRUPT);
             }
         } catch (const std::exception &e) {
-            return set_error(fn + ": " + e.what());
+            return set_error(fn + ": " + e.what(), CHD_E_METADATA_CORRUPT);
         }
         // A non-zero override standard re-declares the colour standard over
         // the sidecar's, for captures whose sidecar cannot express it (a
@@ -465,8 +473,10 @@ chd_status_t openCompositeSource(const std::string &fn, const std::string &path,
         }
         const auto &vp = metadata->getVideoParameters();
         auto src = std::make_unique<chd::reader::TbcSource>();
+        chd::detail::clear_last_error();
         if (!src->open(path, vp.fieldWidth * vp.fieldHeight, vp.fieldWidth)) {
-            return set_error(fn + ": failed to open sample file");
+            return set_error(fn + ": " + chd::detail::detail_or("failed to open sample file"),
+                             CHD_E_IO);
         }
         src->bindVideoParameters(vp);
         out->source = std::move(src);
@@ -483,10 +493,12 @@ chd_status_t openCompositeSource(const std::string &fn, const std::string &path,
     auto src = std::make_unique<chd::reader::CvbsCompositeSource>();
     const std::optional<int32_t> blackOverride =
         resolved.meta ? resolved.meta->blackLevelOverride : std::nullopt;
+    chd::detail::clear_last_error();
     if (!src->open(path, *resolved.videoStandard, resolved.sampleEncoding,
                    resolved.signalState, blackOverride, resolved.layoutOverride,
                    resolved.declaredFrames, resolved.subcarrierLockedOverride)) {
-        return set_error(fn + ": failed to open sample file");
+        return set_error(fn + ": " + chd::detail::detail_or("failed to open sample file"),
+                         CHD_E_IO);
     }
     out->metadata = synthesizeMetadata(*src, !resolved.secondFieldFirst);
     if (resolved.declareSecam) {
@@ -504,7 +516,8 @@ chd_status_t addCompositeExtra(const std::string &fn,
                                std::vector<chd_video_extra> &dst,
                                const std::string &path, const char *sidecarOrNull) {
     if (!fs::exists(path)) {
-        return set_error(fn + ": file does not exist: " + path);
+        return set_error(fn + ": file does not exist: " + path,
+                         CHD_E_FILE_NOT_FOUND);
     }
     OpenedSource opened;
     const chd_status_t rc = openCompositeSource(fn, path, sidecarOrNull, nullptr, &opened);
@@ -530,7 +543,8 @@ chd_status_t chd_video_open_composite(const char *path,
     }
     *out = nullptr;
     if (!fs::exists(path)) {
-        return set_error(std::string("chd_video_open_composite: file does not exist: ") + path);
+        return set_error(std::string("chd_video_open_composite: file does not exist: ") + path,
+                         CHD_E_FILE_NOT_FOUND);
     }
 
     OpenedSource opened;
@@ -558,7 +572,8 @@ chd_status_t chd_video_open_yc(const char *luma_path, const char *chroma_path,
     }
     *out = nullptr;
     if (!fs::exists(luma_path) || !fs::exists(chroma_path)) {
-        return set_error("chd_video_open_yc: luma/chroma file does not exist");
+        return set_error("chd_video_open_yc: luma/chroma file does not exist",
+                         CHD_E_FILE_NOT_FOUND);
     }
 
     const SidecarResolution sc = resolveSidecarFlavour(luma_path, metadata_path_or_null);
@@ -579,11 +594,14 @@ chd_status_t chd_video_open_yc(const char *luma_path, const char *chroma_path,
         auto src = std::make_unique<chd::reader::CvbsYcSource>();
         const std::optional<int32_t> blackOverride =
             resolved.meta ? resolved.meta->blackLevelOverride : std::nullopt;
+        chd::detail::clear_last_error();
         if (!src->open(luma_path, chroma_path, *resolved.videoStandard,
                        resolved.sampleEncoding, resolved.signalState, blackOverride,
                        resolved.layoutOverride, resolved.declaredFrames,
                        resolved.subcarrierLockedOverride)) {
-            return set_error("chd_video_open_yc: failed to open y/c files");
+            return set_error("chd_video_open_yc: " +
+                                 chd::detail::detail_or("failed to open y/c files"),
+                             CHD_E_IO);
         }
         handle->metadata = synthesizeMetadata(*src, !resolved.secondFieldFirst);
         if (resolved.declareSecam) {
@@ -619,10 +637,12 @@ chd_status_t chd_video_open_yc(const char *luma_path, const char *chroma_path,
     const auto &lvp = luma.source->parameters();
     const auto &cvp = chroma.source->parameters();
     if (lvp.fieldWidth != cvp.fieldWidth || lvp.fieldHeight != cvp.fieldHeight) {
-        return set_error("chd_video_open_yc: luma and chroma have mismatched dimensions");
+        return set_error("chd_video_open_yc: luma and chroma have mismatched dimensions",
+                         CHD_E_FORMAT_UNSUPPORTED);
     }
     if (luma.metadata->getNumberOfFrames() != chroma.metadata->getNumberOfFrames()) {
-        return set_error("chd_video_open_yc: luma and chroma have different frame counts");
+        return set_error("chd_video_open_yc: luma and chroma have different frame counts",
+                         CHD_E_FORMAT_UNSUPPORTED);
     }
 
     warn625ChromaSignatureMismatch(*chroma.source, "chd_video_open_yc");
@@ -693,7 +713,8 @@ chd_status_t chd_video_add_extra_source_yc(chd_video_t *v, const char *luma_path
         return set_error("chd_video_add_extra_source_yc: null argument");
     }
     if (!fs::exists(luma_path) || !fs::exists(chroma_path)) {
-        return set_error("chd_video_add_extra_source_yc: luma/chroma file does not exist");
+        return set_error("chd_video_add_extra_source_yc: luma/chroma file does not exist",
+                         CHD_E_FILE_NOT_FOUND);
     }
 
     const SidecarResolution sc = resolveSidecarFlavour(luma_path, metadata_path_or_null);
@@ -721,11 +742,14 @@ chd_status_t chd_video_add_extra_source_yc(chd_video_t *v, const char *luma_path
     auto src = std::make_unique<chd::reader::CvbsYcSource>();
     const std::optional<int32_t> blackOverride =
         resolved.meta ? resolved.meta->blackLevelOverride : std::nullopt;
+    chd::detail::clear_last_error();
     if (!src->open(luma_path, chroma_path, *resolved.videoStandard,
                    resolved.sampleEncoding, resolved.signalState, blackOverride,
                    resolved.layoutOverride, resolved.declaredFrames,
                    resolved.subcarrierLockedOverride)) {
-        return set_error("chd_video_add_extra_source_yc: open failed");
+        return set_error("chd_video_add_extra_source_yc: " +
+                             chd::detail::detail_or("open failed"),
+                         CHD_E_IO);
     }
     chd_video_extra extra;
     extra.metadata = synthesizeMetadata(*src, !resolved.secondFieldFirst);

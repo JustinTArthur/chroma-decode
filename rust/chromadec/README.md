@@ -36,6 +36,23 @@ come back as `Result<T, chromadec::Error>`. Library initialisation happens
 automatically on first use. The raw FFI bindings are re-exported as
 `chromadec::sys`.
 
+## Diagnostics
+
+The library writes nothing to the console on its own: failures come back as
+`Error`, and the running commentary a decode produces goes to a sink you
+install, or nowhere at all.
+
+```rust,no_run
+use chromadec::log::{self, LevelFilter};
+
+log::set_filter(LevelFilter::Debug);
+log::set_callback(|d| eprintln!("[chromadec/{}] {}", d.level, d.message));
+```
+
+A failure on its way back as an `Error` is announced on the sink too, carrying
+the same text. `d.returned` marks those, so a program that reports the `Err`
+itself can skip them rather than say it twice.
+
 ## Requirements
 
 This crate links the native **libchromadec** library, which must be present at
@@ -56,6 +73,8 @@ order:
   the batch decoder on a `spawn_blocking` worker and yields frames as a
   `futures_core::Stream`, in completion order or requested-index order. Off by
   default.
+- `log` — bridge the diagnostic sink into the [`log`](https://docs.rs/log)
+  facade with `log::forward_to_log_crate()`. Off by default.
 
 ## Documentation
 

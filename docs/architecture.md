@@ -11,8 +11,22 @@ The public interface is a pure C ABI exposed under `<chromadec/...>`, with
 opaque handles, the `chd_status_t` return-code enum, and a thread-local
 last-error string (`chd_last_error`). Every public symbol is prefixed `chd_`.
 `chromadec.h` is the umbrella header; callers may also include the individual
-headers (`errors.h`, `types.h`, `video.h`, `decoder.h`, `frame.h`, `nn.h`,
-`dropout.h`, `calibration.h`, `pipeline.h`).
+headers (`errors.h`, `log.h`, `types.h`, `video.h`, `decoder.h`, `frame.h`,
+`nn.h`, `dropout.h`, `calibration.h`, `pipeline.h`).
+
+Failures and diagnostics travel separate channels, and the library owns no
+console of its own. A failure comes back on the return path, as a
+`chd_status_t` plus the detail string the layer that detected it recorded.
+Everything else, the running commentary a decode produces, goes to a
+process-wide sink the consumer installs through `log.h`; with no sink
+installed, nothing is emitted anywhere. Internally `chd::log::fail()` both
+emits at error level and records the detail, so a reason found deep in a
+reader or a metadata parser survives the trip up through the `bool` returns
+between it and the ABI shim. Those messages carry `CHD_LOG_F_RETURNED` on the
+sink, which is how a consumer tells the copy of a returned failure from an
+error that reaches it no other way. A site whose condition an intermediate
+layer recovers from is an `error()` rather than a `fail()`, so the flag stays a
+promise about the return path rather than a hint.
 
 ## Internal implementation
 

@@ -39,16 +39,16 @@ NtscDecoder::NtscDecoder(const Comb::Configuration &combConfig)
 bool NtscDecoder::configure(const chd::metadata::LdDecodeMetaData::VideoParameters &videoParameters) {
     // Ensure the source video is NTSC
     if (videoParameters.system != chd::metadata::NTSC) {
-        chd::log::error() << "This decoder is for NTSC video sources only";
+        chd::log::fail() << "This decoder is for NTSC video sources only";
         return false;
     }
 
     config.videoParameters = videoParameters;
 
-    // Configure the Comb instance now that we know the video parameters.
-    comb.updateConfiguration(config.videoParameters, config.combConfig);
-
-    return true;
+    // Configure the Comb instance now that we know the video parameters. It
+    // rejects geometry its fixed-size frame buffers cannot hold, and reports
+    // the reason itself.
+    return comb.updateConfiguration(config.videoParameters, config.combConfig);
 }
 
 int32_t NtscDecoder::getLookBehind() const

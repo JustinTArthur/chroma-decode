@@ -54,7 +54,9 @@ public:
                          int32_t startFrame, int32_t length, int32_t maxThreads);
 
     // Decode fields to frames as specified by the constructor args.
-    // Returns true on success; on failure, prints a message and returns false.
+    // Returns true on success. On failure the reason is recorded as the
+    // calling thread's chd_last_error() detail, including a reason a worker
+    // thread found, whose own thread-local detail dies with it.
     bool process();
 
     // For worker threads: get the configured OutputWriter
@@ -91,6 +93,10 @@ public:
     // For worker threads: shared abort flag (set true to ask workers to stop).
     std::atomic<bool> &getAbort() { return abort; }
 
+    // For worker threads: record why this worker is giving up. Only the first
+    // reason is kept; process() re-records it on the calling thread.
+    void recordAbortReason(std::string reason);
+
 private:
     bool putOutputFrame(int32_t frameNumber, const chd::output::OutputFrame &outputFrame);
 
@@ -109,6 +115,12 @@ private:
     // Atomic abort flag shared by worker threads; workers watch this, and shut
     // down as soon as possible if it becomes true
     std::atomic<bool> abort;
+
+    // Why the first worker gave up. chd_last_error() is thread-local, so a
+    // worker's own record of the failure dies with the worker; process()
+    // re-records this on the calling thread before returning false.
+    std::mutex abortReasonMutex;
+    std::string abortReason;
 
     // Input stream information (all guarded by inputMutex while threads are running)
     std::mutex inputMutex;

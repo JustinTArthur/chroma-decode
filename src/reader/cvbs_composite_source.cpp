@@ -24,7 +24,7 @@ bool CvbsCompositeSource::open(const std::string &compositePath,
                                std::optional<bool> subcarrierLockedOverride)
 {
     if (isOpen) {
-        chd::log::warn() << "CvbsCompositeSource::open(): source already open";
+        chd::log::fail() << "source is already open";
         return false;
     }
 
@@ -36,7 +36,7 @@ bool CvbsCompositeSource::open(const std::string &compositePath,
 
     inputFile.open(compositePath, std::ios::binary);
     if (!inputFile.is_open()) {
-        chd::log::warn() << "CvbsCompositeSource::open(): could not open" << compositePath;
+        chd::log::fail() << "could not open" << compositePath;
         return false;
     }
     inputFile.seekg(0, std::ios::end);
@@ -55,7 +55,7 @@ bool CvbsCompositeSource::open(const std::string &compositePath,
     fieldByteSize = fieldSamples * bytesPerSample;
 
     if (fileSize <= 0 || fieldByteSize <= 0) {
-        chd::log::warn() << "CvbsCompositeSource::open(): invalid file or field size";
+        chd::log::fail() << "file is empty, or the standard implies a zero-length field";
         inputFile.close();
         return false;
     }

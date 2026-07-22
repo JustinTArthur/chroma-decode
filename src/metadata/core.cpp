@@ -359,7 +359,7 @@ bool LdDecodeMetaData::read(std::string fileName)
 bool LdDecodeMetaData::readSqliteImpl(const std::string &fileName)
 {
     if (!std::filesystem::exists(fileName)) {
-        chd::log::error() << "SQLite input file does not exist:" << fileName;
+        chd::log::fail() << "SQLite input file does not exist:" << fileName;
         return false;
     }
 
@@ -386,14 +386,14 @@ bool LdDecodeMetaData::readSqliteImpl(const std::string &fileName)
                                        black16bIre, blanking16bIre, captureNotes,
                                        sidecarFirstActiveFieldLine, sidecarLastActiveFieldLine,
                                        sidecarFirstActiveFrameLine, sidecarLastActiveFrameLine)) {
-            chd::log::error() << "Failed to read capture metadata from SQLite file";
+            chd::log::fail() << "Failed to read capture metadata from SQLite file";
             return false;
         }
 
         // Set video parameters
         videoParameters.numberOfSequentialFields = numberOfSequentialFields;
         if (!parseVideoSystemName(system, videoParameters.system)) {
-            chd::log::error() << "Unknown video system:" << system;
+            chd::log::fail() << "Unknown video system:" << system;
             return false;
         }
         videoParameters.isSubcarrierLocked = isSubcarrierLocked;
@@ -445,7 +445,7 @@ bool LdDecodeMetaData::readSqliteImpl(const std::string &fileName)
         }
 
     } catch (SqliteReader::Error &error) {
-        chd::log::error() << "Reading SQLite file failed:" << error.what();
+        chd::log::fail() << "Reading SQLite file failed:" << error.what();
         return false;
     }
 
@@ -503,13 +503,13 @@ bool LdDecodeMetaData::write(std::string fileName) const
         // Only create schema for new files
         if (!isUpdate) {
             if (!writer.createSchema()) {
-                chd::log::error() << "Failed to create SQLite schema";
+                chd::log::fail() << "Failed to create SQLite schema";
                 return false;
             }
         }
 
         if (!writer.beginTransaction()) {
-            chd::log::error() << "Failed to begin transaction";
+            chd::log::fail() << "Failed to begin transaction";
             return false;
         }
 
@@ -563,12 +563,12 @@ bool LdDecodeMetaData::write(std::string fileName) const
         writeFields(writer, captureId);
 
         if (!writer.commitTransaction()) {
-            chd::log::error() << "Failed to commit transaction";
+            chd::log::fail() << "Failed to commit transaction";
             return false;
         }
 
     } catch (SqliteWriter::Error &error) {
-        chd::log::error() << "Writing SQLite file failed:" << error.what();
+        chd::log::fail() << "Writing SQLite file failed:" << error.what();
         return false;
     }
 
@@ -801,7 +801,7 @@ void LdDecodeMetaData::LineParameters::applyTo(LdDecodeMetaData::VideoParameters
     // Validate and potentially fix the first active field line.
     if (firstActiveFieldLine < 1 || firstActiveFieldLine > defaultLastFieldLine) {
         if (firstFieldLineExists) {
-            chd::log::info().nospace() << "Specified first active field line " << firstActiveFieldLine << " out of bounds (1 to "
+            chd::log::warn().nospace() << "Specified first active field line " << firstActiveFieldLine << " out of bounds (1 to "
                               << defaultLastFieldLine << "), resetting to default (" << defaultFirstFieldLine << ").";
         }
         firstActiveFieldLine = defaultFirstFieldLine;
@@ -810,7 +810,7 @@ void LdDecodeMetaData::LineParameters::applyTo(LdDecodeMetaData::VideoParameters
     // Validate and potentially fix the last active field line.
     if (lastActiveFieldLine < 1 || lastActiveFieldLine > defaultLastFieldLine) {
         if (lastFieldLineExists) {
-            chd::log::info().nospace() << "Specified last active field line " << lastActiveFieldLine << " out of bounds (1 to "
+            chd::log::warn().nospace() << "Specified last active field line " << lastActiveFieldLine << " out of bounds (1 to "
                               << defaultLastFieldLine << "), resetting to default (" << defaultLastFieldLine << ").";
         }
         lastActiveFieldLine = defaultLastFieldLine;
@@ -818,7 +818,7 @@ void LdDecodeMetaData::LineParameters::applyTo(LdDecodeMetaData::VideoParameters
 
     // Range-check the first and last active field lines.
     if (firstActiveFieldLine > lastActiveFieldLine) {
-       chd::log::info().nospace() << "Specified last active field line " << lastActiveFieldLine << " is before specified first active field line"
+       chd::log::warn().nospace() << "Specified last active field line " << lastActiveFieldLine << " is before specified first active field line "
                          << firstActiveFieldLine << ", resetting to defaults (" << defaultFirstFieldLine << "-" << defaultLastFieldLine << ").";
         firstActiveFieldLine = defaultFirstFieldLine;
         lastActiveFieldLine = defaultLastFieldLine;
@@ -827,7 +827,7 @@ void LdDecodeMetaData::LineParameters::applyTo(LdDecodeMetaData::VideoParameters
     // Validate and potentially fix the first active frame line.
     if (firstActiveFrameLine < minFirstFrameLine || firstActiveFrameLine > defaultLastFrameLine) {
         if (firstFrameLineExists) {
-            chd::log::info().nospace() << "Specified first active frame line " << firstActiveFrameLine << " out of bounds (" << minFirstFrameLine << " to "
+            chd::log::warn().nospace() << "Specified first active frame line " << firstActiveFrameLine << " out of bounds (" << minFirstFrameLine << " to "
                               << defaultLastFrameLine << "), resetting to default (" << defaultFirstFrameLine << ").";
         }
         firstActiveFrameLine = defaultFirstFrameLine;
@@ -836,7 +836,7 @@ void LdDecodeMetaData::LineParameters::applyTo(LdDecodeMetaData::VideoParameters
     // Validate and potentially fix the last active frame line.
     if (lastActiveFrameLine < minFirstFrameLine || lastActiveFrameLine > defaultLastFrameLine) {
         if (lastFrameLineExists) {
-            chd::log::info().nospace() << "Specified last active frame line " << lastActiveFrameLine << " out of bounds (" << minFirstFrameLine << " to "
+            chd::log::warn().nospace() << "Specified last active frame line " << lastActiveFrameLine << " out of bounds (" << minFirstFrameLine << " to "
                               << defaultLastFrameLine << "), resetting to default (" << defaultLastFrameLine << ").";
         }
         lastActiveFrameLine = defaultLastFrameLine;
@@ -844,7 +844,7 @@ void LdDecodeMetaData::LineParameters::applyTo(LdDecodeMetaData::VideoParameters
 
     // Range-check the first and last active frame lines.
     if (firstActiveFrameLine > lastActiveFrameLine) {
-        chd::log::info().nospace() << "Specified last active frame line " << lastActiveFrameLine << " is before specified first active frame line"
+        chd::log::warn().nospace() << "Specified last active frame line " << lastActiveFrameLine << " is before specified first active frame line "
                           << firstActiveFrameLine << ", resetting to defaults (" << defaultFirstFrameLine << "-" << defaultLastFrameLine << ").";
         firstActiveFrameLine = defaultFirstFrameLine;
         lastActiveFrameLine = defaultLastFrameLine;
@@ -857,12 +857,24 @@ void LdDecodeMetaData::LineParameters::applyTo(LdDecodeMetaData::VideoParameters
     videoParameters.lastActiveFrameLine = lastActiveFrameLine;
 }
 
+// Stand-in for an out-of-range field request. The accessors below used to log
+// the out-of-range index and then index with it anyway, which reads outside the
+// vector; they return a reference, so there is no status to hand back and this
+// is what they yield instead. Callers that cannot tolerate empty metadata
+// range-check the field number themselves (see SourceField::loadFields).
+static const LdDecodeMetaData::Field &emptyField()
+{
+    static const LdDecodeMetaData::Field empty{};
+    return empty;
+}
+
 // This method gets the metadata for the specified sequential field number (indexed from 1 (not 0!))
 const LdDecodeMetaData::Field &LdDecodeMetaData::getField(int32_t sequentialFieldNumber)
 {
     int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
         chd::log::error() << "LdDecodeMetaData::getField(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        return emptyField();
     }
 
     return fields[fieldNumber];
@@ -874,6 +886,7 @@ const LdDecodeMetaData::VitsMetrics &LdDecodeMetaData::getFieldVitsMetrics(int32
     int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
         chd::log::error() << "LdDecodeMetaData::getFieldVitsMetrics(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        return emptyField().vitsMetrics;
     }
 
     return fields[fieldNumber].vitsMetrics;
@@ -885,6 +898,7 @@ const LdDecodeMetaData::Vbi &LdDecodeMetaData::getFieldVbi(int32_t sequentialFie
     int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
         chd::log::error() << "LdDecodeMetaData::getFieldVbi(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        return emptyField().vbi;
     }
 
     return fields[fieldNumber].vbi;
@@ -896,6 +910,7 @@ const LdDecodeMetaData::Ntsc &LdDecodeMetaData::getFieldNtsc(int32_t sequentialF
     int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
         chd::log::error() << "LdDecodeMetaData::getFieldNtsc(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        return emptyField().ntsc;
     }
 
     return fields[fieldNumber].ntsc;
@@ -907,6 +922,7 @@ const LdDecodeMetaData::Vitc &LdDecodeMetaData::getFieldVitc(int32_t sequentialF
     int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
         chd::log::error() << "LdDecodeMetaData::getFieldVitc(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        return emptyField().vitc;
     }
 
     return fields[fieldNumber].vitc;
@@ -918,6 +934,7 @@ const LdDecodeMetaData::ClosedCaption &LdDecodeMetaData::getFieldClosedCaption(i
     int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
         chd::log::error() << "LdDecodeMetaData::getFieldClosedCaption(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        return emptyField().closedCaption;
     }
 
     return fields[fieldNumber].closedCaption;
@@ -929,6 +946,7 @@ const DropOuts &LdDecodeMetaData::getFieldDropOuts(int32_t sequentialFieldNumber
     int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
         chd::log::error() << "LdDecodeMetaData::getFieldDropOuts(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        return emptyField().dropOuts;
     }
 
     return fields[fieldNumber].dropOuts;
@@ -939,7 +957,8 @@ void LdDecodeMetaData::updateField(const LdDecodeMetaData::Field &field, int32_t
 {
     int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
-        chd::log::error() << "LdDecodeMetaData::updateFieldVitsMetrics(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        chd::log::error() << "LdDecodeMetaData::updateField(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        return;
     }
 
     fields[fieldNumber] = field;
@@ -951,6 +970,7 @@ void LdDecodeMetaData::updateFieldVitsMetrics(const LdDecodeMetaData::VitsMetric
     int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
         chd::log::error() << "LdDecodeMetaData::updateFieldVitsMetrics(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        return;
     }
 
     fields[fieldNumber].vitsMetrics = vitsMetrics;
@@ -962,6 +982,7 @@ void LdDecodeMetaData::updateFieldVbi(const LdDecodeMetaData::Vbi &vbi, int32_t 
     int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
         chd::log::error() << "LdDecodeMetaData::updateFieldVbi(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        return;
     }
 
     fields[fieldNumber].vbi = vbi;
@@ -973,6 +994,7 @@ void LdDecodeMetaData::updateFieldNtsc(const LdDecodeMetaData::Ntsc &ntsc, int32
     int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
         chd::log::error() << "LdDecodeMetaData::updateFieldNtsc(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        return;
     }
 
     fields[fieldNumber].ntsc = ntsc;
@@ -984,6 +1006,7 @@ void LdDecodeMetaData::updateFieldVitc(const LdDecodeMetaData::Vitc &vitc, int32
     int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
         chd::log::error() << "LdDecodeMetaData::updateFieldVitc(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        return;
     }
 
     fields[fieldNumber].vitc = vitc;
@@ -995,6 +1018,7 @@ void LdDecodeMetaData::updateFieldClosedCaption(const LdDecodeMetaData::ClosedCa
     int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
         chd::log::error() << "LdDecodeMetaData::updateFieldClosedCaption(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        return;
     }
 
     fields[fieldNumber].closedCaption = closedCaption;
@@ -1006,6 +1030,7 @@ void LdDecodeMetaData::updateFieldDropOuts(const DropOuts &dropOuts, int32_t seq
     int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
         chd::log::error() << "LdDecodeMetaData::updateFieldDropOuts(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        return;
     }
 
     fields[fieldNumber].dropOuts = dropOuts;
@@ -1017,6 +1042,7 @@ void LdDecodeMetaData::clearFieldDropOuts(int32_t sequentialFieldNumber)
     int32_t fieldNumber = sequentialFieldNumber - 1;
     if (fieldNumber < 0 || fieldNumber >= getNumberOfFields()) {
         chd::log::error() << "LdDecodeMetaData::clearFieldDropOuts(): Requested field number" << sequentialFieldNumber << "out of bounds!";
+        return;
     }
 
     fields[fieldNumber].dropOuts.clear();
@@ -1126,6 +1152,12 @@ int32_t LdDecodeMetaData::getNumberOfFrames()
 
 // Method to get the first and second field numbers based on the frame number
 // If field = 1 return the firstField, otherwise return second field
+// Every caller of the -1 sentinel recovers from it rather than propagating a
+// failure: SourceField::loadFields substitutes blank frames and warns, the
+// extra-source and VBI scans skip the frame. So these are error() rather than
+// fail() - nobody is going to be handed a status carrying the reason, and
+// recording it as the thread's error detail would leave a message behind for a
+// call that goes on to succeed.
 int32_t LdDecodeMetaData::getFieldNumber(int32_t frameNumber, int32_t field)
 {
     int32_t firstFieldNumber = 0;
@@ -1166,21 +1198,25 @@ int32_t LdDecodeMetaData::getFieldNumber(int32_t frameNumber, int32_t field)
 
     // Range check the first field number
     if (firstFieldNumber > getNumberOfFields()) {
-        chd::log::error() << "LdDecodeMetaData::getFieldNumber(): First field number exceed the available number of fields!";
+        chd::log::error() << "first field number exceeds the available number of fields";
         firstFieldNumber = -1;
         secondFieldNumber = -1;
     }
 
     // Range check the second field number
     if (secondFieldNumber > getNumberOfFields()) {
-        chd::log::error() << "LdDecodeMetaData::getFieldNumber(): Second field number exceed the available number of fields!";
+        chd::log::error() << "second field number exceeds the available number of fields";
         firstFieldNumber = -1;
         secondFieldNumber = -1;
     }
 
+    // Both numbers were invalidated above; the caller gets the sentinel rather
+    // than a field lookup on it.
+    if (firstFieldNumber == -1) return -1;
+
     // Test for a buggy TBC file...
     if (getField(secondFieldNumber).isFirstField) {
-        chd::log::error() << "LdDecodeMetaData::getFieldNumber(): Both of the determined fields have isFirstField set - the TBC source video is probably broken...";
+        chd::log::warn() << "LdDecodeMetaData::getFieldNumber(): Both of the determined fields have isFirstField set - the TBC source video is probably broken...";
     }
 
     if (field == 1) return firstFieldNumber; else return secondFieldNumber;

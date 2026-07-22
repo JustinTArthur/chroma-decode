@@ -27,6 +27,8 @@
 
 #include "decoder_pool.h"
 
+#include "../common/error_state.h"
+
 #include <algorithm>
 #include <thread>
 
@@ -67,7 +69,8 @@ void workerLoop(DecoderPool *pool) {
         try {
             decoder.decodeFrames(inputFields, startIndex, endIndex, componentFrames);
         } catch (const std::exception &e) {
-            chd::log::error() << "Decoder worker failed:" << e.what();
+            chd::log::fail() << "Decoder worker failed:" << e.what();
+            pool->recordAbortReason(std::string("decoder worker failed: ") + e.what());
             abort.store(true);
             return;
         }
@@ -98,6 +101,12 @@ DecoderPool::DecoderPool(chd::decoders::Decoder &_decoder, std::string _inputFil
 
 chd::decoders::Decoder& DecoderPool::getDecoder() { return decoder; }
 
+void DecoderPool::recordAbortReason(std::string reason)
+{
+    std::lock_guard<std::mutex> lock(abortReasonMutex);
+    if (abortReason.empty()) abortReason = std::move(reason);
+}
+
 bool DecoderPool::process()
 {
     chd::metadata::LdDecodeMetaData::VideoParameters videoParameters = ldDecodeMetaData.getVideoParameters();
@@ -118,7 +127,7 @@ bool DecoderPool::process()
     // Open the source video file
     if (!sourceVideo.open(inputFileName, videoParameters.fieldWidth * videoParameters.fieldHeight)) {
         // Could not open source video file
-        chd::log::info() << "Unable to open ld-decode video file";
+        chd::log::fail() << "Unable to open ld-decode video file";
         return false;
     }
 
@@ -126,7 +135,7 @@ bool DecoderPool::process()
     if (startFrame == -1) startFrame = 1;
 
     if (startFrame > ldDecodeMetaData.getNumberOfFrames()) {
-        chd::log::info() << "Specified start frame is out of bounds, only" << ldDecodeMetaData.getNumberOfFrames() << "frames available";
+        chd::log::fail() << "Specified start frame is out of bounds, only" << ldDecodeMetaData.getNumberOfFrames() << "frames available";
         return false;
     }
 
@@ -143,13 +152,13 @@ bool DecoderPool::process()
     // Open the output file. Stdout is not supported here (chroma-decode
     // is a library; the consumer can pipe a regular file path).
     if (outputFileName == "-") {
-        chd::log::error() << "Stdout output is not supported by libchromadec";
+        chd::log::fail() << "Stdout output is not supported by libchromadec";
         sourceVideo.close();
         return false;
     }
     targetVideo.open(outputFileName, std::ios::binary);
     if (!targetVideo.is_open()) {
-        chd::log::error() << "Could not open" << outputFileName << "for output";
+        chd::log::fail() << "Could not open" << outputFileName << "for output";
         sourceVideo.close();
         return false;
     }
@@ -159,7 +168,7 @@ bool DecoderPool::process()
     if (!streamHeader.empty()) {
         targetVideo.write(streamHeader.data(), streamHeader.size());
         if (!targetVideo.good()) {
-            chd::log::error() << "Writing to the output video file failed";
+            chd::log::fail() << "Writing to the output video file failed";
             return false;
         }
     }
@@ -187,6 +196,8 @@ bool DecoderPool::process()
 
     // Did any of the threads abort?
     if (abort.load()) {
+        std::lock_guard<std::mutex> lock(abortReasonMutex);
+        if (!abortReason.empty()) chd::detail::set_last_error(abortReason);
         sourceVideo.close();
         targetVideo.close();
         return false;
@@ -195,7 +206,7 @@ bool DecoderPool::process()
     // Check we've processed all the frames, now the workers have finished
     if (inputFrameNumber != (lastFrameNumber + 1) || outputFrameNumber != (lastFrameNumber + 1)
         || !pendingOutputFrames.empty()) {
-        chd::log::error() << "Incorrect state at end of processing";
+        chd::log::fail() << "Incorrect state at end of processing";
         sourceVideo.close();
         targetVideo.close();
         return false;
@@ -279,7 +290,7 @@ bool DecoderPool::putOutputFrame(int32_t frameNumber, const chd::output::OutputF
         if (!frameHeader.empty()) {
             targetVideo.write(frameHeader.data(), frameHeader.size());
             if (!targetVideo.good()) {
-                chd::log::error() << "Writing to the output video file failed";
+                chd::log::fail() << "Writing to the output video file failed";
                 return false;
             }
         }
@@ -287,7 +298,7 @@ bool DecoderPool::putOutputFrame(int32_t frameNumber, const chd::output::OutputF
         // Write the frame data
         targetVideo.write(reinterpret_cast<const char *>(outputData.data()), outputData.size() * 2);
         if (!targetVideo.good()) {
-            chd::log::error() << "Writing to the output video file failed";
+            chd::log::fail() << "Writing to the output video file failed";
             return false;
         }
 
