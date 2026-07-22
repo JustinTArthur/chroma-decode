@@ -620,8 +620,9 @@ typedef struct chd_plane_info {
 Per-plane geometry, filled by
 [`chd_frame_get_plane_info`](#chd_frame_get_plane_info). Full-height planes
 report the frame dimensions and `first_frame_row` 0. The 4:4:0 chroma planes
-report their subsampled height and the output frame row their first row was
-decoded from; see [4:4:0 output](#440-output).
+weave the two fields by row parity and report their subsampled height and the
+output frame row plane row 0 was decoded from (which is not always the
+plane's topmost line); see [4:4:0 output](#440-output).
 
 ### chd_chroma_ident_report_t
 
@@ -1252,22 +1253,35 @@ index](#chd_frame_info_t).
 The `yuv440p16` / `yuv440ps` output formats carry line-sequential (SECAM)
 chroma honestly: the Cb and Cr planes are full width but hold only the rows
 that were really decoded, one plane row per decoded line, with no vertical
-interpolation. SECAM transmits one colour-difference component per line, and
-because the second field of a 625-line frame sits an odd line count after the
-first, the components pair up in interlaced frame-row order
-(`Db, Dr, Dr, Db, Db, ...`). Consequences:
+interpolation. SECAM transmits one colour-difference component per line, so
+each field contributes every other line to each plane.
 
-- The two chroma planes' heights differ by at most one and together cover
-  every active row.
-- Chroma plane row `k` is the `k`-th row of that component in frame order;
-  its luma row is **not** a fixed-step lattice. Use
+The chroma planes weave the two fields the same way the emitted luma plane
+does: a plane row's parity matches the parity of the output frame row it was
+decoded from. Plane row `2j` is the component's `j`-th line on even output
+rows, plane row `2j+1` its `j`-th line on odd output rows. Consequences:
+
+- The two chroma planes have equal heights (half the active height each) and
+  together cover every active row.
+- Separating fields by row parity works identically on the luma plane and
+  both chroma planes.
+- A chroma plane is not always in top-to-bottom picture order. The second
+  field of a 625-line frame sits an odd line count after the first, so on any
+  given frame one of the two planes carries each adjacent row pair spatially
+  swapped, and which plane that is alternates frame to frame. Use
   [`chd_frame_chroma_row_component`](#chd_frame_chroma_row_component) to map
   frame rows to components (and therefore plane rows to frame rows), and
   [`chd_frame_get_plane_info`](#chd_frame_get_plane_info) for each plane's
-  height and first frame row.
+  height and the frame row of its plane row `0` (its even-parity line, not
+  always its topmost).
 - The mapping is per-frame, not per-format: a given frame row's component
   flips frame to frame (the 625-line count is odd, giving the four-field
   ident cycle of Rec. ITU-R BR.469).
+
+The weave interleaves both fields' half-rate chroma lattices, which tiles
+only over whole two-line pairs of each field: `chd_decoder_commit` rejects
+4:4:0 output unless the active frame-line crop spans a multiple of 4 lines.
+The default SECAM crop (576 active lines) satisfies this.
 
 SECAM sources decode only to these formats or to luma-only `gray16`/`grays`;
 `chd_decoder_commit` rejects full-height chroma and RGB formats because any
@@ -1278,8 +1292,10 @@ line-repeat or resample decision belongs to the consuming application.
 the frame and its full-height Y plane round up on both axes with a black
 border. The chroma planes take the side border (neutral chroma) so all three
 planes share the frame width, but they never gain rows. Every chroma plane row
-stays a real decoded line; each plane's `first_frame_row` shifts down with the
-top border, and border rows report no component from
+stays a real decoded line, and the weave follows the output frame rows, so an
+odd top border shifts which field sits on even plane rows together with the
+luma weave. Each plane's `first_frame_row` shifts down with the top border,
+and border rows report no component from
 [`chd_frame_chroma_row_component`](#chd_frame_chroma_row_component).
 
 ### chd_frame_get_plane_info

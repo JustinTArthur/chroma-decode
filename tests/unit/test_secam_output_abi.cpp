@@ -65,6 +65,25 @@ int8_t pairLatticeComponent(int32_t frameRow) {
     return static_cast<int8_t>(((frameRow + 1) >> 1) & 1);
 }
 
+// Expected woven plane rows for one component: group its active rows by
+// output-row parity and interleave, so plane row 2j+p is the component's
+// j-th row on output rows of parity p (the packing contract under test).
+std::vector<int32_t> wovenRows(const chd::metadata::LdDecodeMetaData::VideoParameters &vp,
+                               int32_t activeHeight, int32_t topPad, int8_t component) {
+    std::vector<int32_t> byParity[2];
+    for (int32_t y = 0; y < activeHeight; y++) {
+        if (pairLatticeComponent(vp.firstActiveFrameLine + y) == component) {
+            byParity[(topPad + y) & 1].push_back(y);
+        }
+    }
+    std::vector<int32_t> rows;
+    for (size_t j = 0; j < byParity[0].size(); j++) {
+        rows.push_back(byParity[0][j]);
+        rows.push_back(byParity[1][j]);
+    }
+    return rows;
+}
+
 // Per-row source values, distinct per line so provenance is checkable.
 double uValueFor(int32_t line) { return (line - 9) * 100.0; }
 double vValueFor(int32_t line) { return line * -55.0; }
@@ -120,17 +139,20 @@ int testWriter440() {
     REQUIRE(activeWidth == 56);
     REQUIRE(activeHeight == 16);
 
-    // Expected per-plane row lists over active frame rows 2..17.
-    std::vector<int32_t> cbRows, crRows;
-    for (int32_t y = 0; y < activeHeight; y++) {
-        if (pairLatticeComponent(vp.firstActiveFrameLine + y) == 0) cbRows.push_back(y);
-        else crRows.push_back(y);
-    }
+    // Expected woven per-plane row lists over active frame rows 2..17. The
+    // literals anchor the contract: the lattice over active rows is
+    // Dr, Db, Db, Dr, ..., so the Cb plane is the pairwise-swapped one on
+    // this phase and the Cr plane is in picture order.
+    const std::vector<int32_t> cbRows = wovenRows(vp, activeHeight, 0, 0);
+    const std::vector<int32_t> crRows = wovenRows(vp, activeHeight, 0, 1);
+    REQUIRE(cbRows == (std::vector<int32_t>{2, 1, 6, 5, 10, 9, 14, 13}));
+    REQUIRE(crRows == (std::vector<int32_t>{0, 3, 4, 7, 8, 11, 12, 15}));
 
     chd::output::OutputFrame out;
     const auto g = writer.convert440(cf, out);
     REQUIRE(g.cbHeight == static_cast<int32_t>(cbRows.size()));
     REQUIRE(g.crHeight == static_cast<int32_t>(crRows.size()));
+    REQUIRE(g.cbHeight == g.crHeight);
     REQUIRE(g.cbFirstRow == cbRows.front());
     REQUIRE(g.crFirstRow == crRows.front());
     REQUIRE(out.size() == static_cast<size_t>(activeWidth)
@@ -201,11 +223,12 @@ int testWriter440Padded() {
     REQUIRE(leftPad == 2);
     REQUIRE(topPad == 2);
 
-    std::vector<int32_t> cbRows, crRows;
-    for (int32_t y = 0; y < activeHeight; y++) {
-        if (pairLatticeComponent(vp.firstActiveFrameLine + y) == 0) cbRows.push_back(y);
-        else crRows.push_back(y);
-    }
+    // topPad is even here, so the parity weave matches the unpadded one and
+    // only the reported first rows shift down with the border.
+    const std::vector<int32_t> cbRows = wovenRows(vp, activeHeight, topPad, 0);
+    const std::vector<int32_t> crRows = wovenRows(vp, activeHeight, topPad, 1);
+    REQUIRE(cbRows == (std::vector<int32_t>{2, 1, 6, 5, 10, 9, 14, 13}));
+    REQUIRE(crRows == (std::vector<int32_t>{0, 3, 4, 7, 8, 11, 12, 15}));
 
     chd::output::OutputFrame out;
     const auto g = writer.convert440(cf, out);
@@ -285,6 +308,59 @@ int testWriter440Padded() {
     return 0;
 }
 
+// An odd top border flips which source-row parity sits on even output rows,
+// and the weave follows the output rows: parity still selects the same field
+// on the chroma planes as on the emitted luma plane.
+int testWriter440OddTopPad() {
+    auto vp = testParams();
+    const auto cf = makeFrame(vp);
+
+    chd::output::OutputWriter writer;
+    chd::output::OutputWriter::Configuration cfg;
+    cfg.paddingAmount = 3;
+    cfg.pixelFormat = chd::output::OutputWriter::YUV440P16;
+    cfg.clampMode = chd::output::OutputWriter::CLAMP_NONE;
+    writer.updateConfiguration(vp, cfg);
+
+    // 56x16 rounds up to 57x18 with a single-line top border.
+    const int32_t activeHeight = writer.getActiveHeight();
+    const int32_t topPad = writer.getTopPadLines();
+    REQUIRE(writer.getOutputWidth() == 57);
+    REQUIRE(writer.getOutputHeight() == 18);
+    REQUIRE(topPad == 1);
+
+    const std::vector<int32_t> cbRows = wovenRows(vp, activeHeight, topPad, 0);
+    const std::vector<int32_t> crRows = wovenRows(vp, activeHeight, topPad, 1);
+    REQUIRE(cbRows == (std::vector<int32_t>{1, 2, 5, 6, 9, 10, 13, 14}));
+    REQUIRE(crRows == (std::vector<int32_t>{3, 0, 7, 4, 11, 8, 15, 12}));
+
+    std::vector<float> planes[3];
+    const auto g = writer.convertToFloat440(cf, planes);
+    REQUIRE(g.cbHeight == 8);
+    REQUIRE(g.crHeight == 8);
+    REQUIRE(g.cbFirstRow == cbRows.front() + topPad);
+    REQUIRE(g.crFirstRow == crRows.front() + topPad);
+
+    // Plane row parity matches the output-frame row parity of its line.
+    for (size_t k = 0; k < cbRows.size(); k++) {
+        REQUIRE(static_cast<int32_t>(k & 1) == ((topPad + cbRows[k]) & 1));
+    }
+    for (size_t k = 0; k < crRows.size(); k++) {
+        REQUIRE(static_cast<int32_t>(k & 1) == ((topPad + crRows[k]) & 1));
+    }
+
+    // Row provenance holds through the swapped weave.
+    const double uvRange = vp.white16bIre - vp.black16bIre;
+    const int32_t leftPad = writer.getLeftPadSamples();
+    const int32_t outputWidth = writer.getOutputWidth();
+    for (size_t k = 0; k < crRows.size(); k++) {
+        const int32_t sourceLine = vp.firstActiveFrameLine + crRows[k];
+        const double eCr = expectedECr(vValueFor(sourceLine), uvRange);
+        REQUIRE(std::abs(planes[2][k * outputWidth + leftPad] - eCr) < 1e-6);
+    }
+    return 0;
+}
+
 int testFrameAccessors() {
     auto vp = testParams();
     const auto cf = makeFrame(vp);
@@ -331,8 +407,8 @@ int testFrameAccessors() {
     REQUIRE(pi.first_frame_row == frame->chroma440.crFirstRow);
     REQUIRE(chd_frame_get_plane_info(frame, CHD_PLANE_R, &pi) == CHD_E_INVALID_ARG);
 
-    // Heights differ by at most one and cover every active row.
-    REQUIRE(std::abs(frame->chroma440.cbHeight - frame->chroma440.crHeight) <= 1);
+    // Heights are equal and cover every active row.
+    REQUIRE(frame->chroma440.cbHeight == frame->chroma440.crHeight);
     REQUIRE(frame->chroma440.cbHeight + frame->chroma440.crHeight == frame->outputHeight);
 
     chd_chroma_row_component_t comp;
@@ -468,12 +544,16 @@ bool writeFakeTbc(const std::string &path, int32_t fieldWidth, int32_t fieldHeig
 }
 
 int commitWithFormat(chd_video_t *video, const char *format, int32_t padding,
-                     chd_status_t *statusOut) {
+                     chd_status_t *statusOut, int32_t lastActiveLine = -1) {
     chd_decoder_t *dec = nullptr;
     REQUIRE(chd_decoder_create(video, CHD_DEC_NONE, &dec) == CHD_OK);
     REQUIRE(chd_decoder_set_option_str(dec, CHD_OPT_OUTPUT_FORMAT, format) == CHD_OK);
     if (padding > 1) {
         REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_PADDING_MULTIPLE, padding) == CHD_OK);
+    }
+    if (lastActiveLine >= 0) {
+        REQUIRE(chd_decoder_set_option_i32(dec, CHD_OPT_LAST_ACTIVE_FRAME_LINE,
+                                           lastActiveLine) == CHD_OK);
     }
     *statusOut = chd_decoder_commit(dec);
     chd_decoder_free(dec);
@@ -515,6 +595,18 @@ int testCommitGating(const fs::path &dir) {
     // Padding applies to 4:4:0 like any other format.
     REQUIRE(commitWithFormat(secam, "yuv440ps", 8, &st) == 0);
     REQUIRE(st == CHD_OK);
+    // The woven chroma planes tile only over whole two-line pairs of each
+    // field: active line crops off a multiple of 4 are rejected for 4:4:0
+    // (default crop is 44..619, so last = 617 gives 574 lines and last = 618
+    // gives 575), while luma-only output takes any crop.
+    REQUIRE(commitWithFormat(secam, "yuv440ps", 1, &st, 617) == 0);
+    REQUIRE(st != CHD_OK);
+    REQUIRE(commitWithFormat(secam, "yuv440ps", 1, &st, 618) == 0);
+    REQUIRE(st != CHD_OK);
+    REQUIRE(commitWithFormat(secam, "yuv440ps", 1, &st, 615) == 0);
+    REQUIRE(st == CHD_OK);
+    REQUIRE(commitWithFormat(secam, "grays", 1, &st, 617) == 0);
+    REQUIRE(st == CHD_OK);
     chd_video_free(secam);
 
     // 4:4:0 is rejected off-SECAM (the sidecar's PAL declaration stands).
@@ -537,6 +629,7 @@ int main() {
 
     int rc = testWriter440();
     if (rc == 0) rc = testWriter440Padded();
+    if (rc == 0) rc = testWriter440OddTopPad();
     if (rc == 0) rc = testFrameAccessors();
     if (rc == 0) rc = testFrameAccessorsPadded();
     if (rc == 0) rc = testCommitGating(dir);

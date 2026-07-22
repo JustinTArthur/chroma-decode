@@ -343,8 +343,9 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
 
     if (frame->format == CHD_PIXEL_YUV440PS || frame->format == CHD_PIXEL_YUV440P16) {
         // 4:4:0: full-height Y, chroma planes holding only the rows the
-        // frame's component lattice assigns to each of Db/Dr. Geometry is
-        // per-frame; the frame carries it for chd_frame_get_plane_info.
+        // frame's component lattice assigns to each of Db/Dr, woven by row
+        // parity like the luma plane. Geometry is per-frame; the frame
+        // carries it for chd_frame_get_plane_info.
         const int32_t outputHeight = d->outputWriter.getOutputHeight();
         try {
             frame->chroma440 = (frame->format == CHD_PIXEL_YUV440PS)
@@ -772,6 +773,21 @@ chd_status_t chd_decoder_commit(chd_decoder_t *d) {
     chd::metadata::LdDecodeMetaData::VideoParameters vp = meta->getVideoParameters();
     applyCropOverrides(vp, d->optionMaps);
     if (const chd_status_t s = validateCrop(vp); s != CHD_OK) return s;
+
+    if (abiFormat == CHD_PIXEL_YUV440P16 || abiFormat == CHD_PIXEL_YUV440PS) {
+        // The 4:4:0 planes weave both fields' half-rate chroma lattices by
+        // row parity, which tiles only over whole two-line pairs of each
+        // field: any other crop leaves one plane with unequal row counts on
+        // the two parities and no slot that keeps parity meaning field.
+        const int32_t activeLines = vp.lastActiveFrameLine - vp.firstActiveFrameLine + 1;
+        if ((activeLines % 4) != 0) {
+            chd::detail::set_last_error(
+                "chd_decoder_commit: 4:4:0 output weaves both fields' chroma rows, "
+                "so the active frame-line crop must span a multiple of 4 lines (got "
+                + std::to_string(activeLines) + ")");
+            return CHD_E_INVALID_ARG;
+        }
+    }
 
     // Apply REVERSE_FIELD_ORDER. Matches upstream ld-chroma-decoder `-r`
     // flag: flips the metadata-wide isFirstFieldFirst flag, which

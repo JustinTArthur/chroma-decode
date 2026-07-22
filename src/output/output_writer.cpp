@@ -486,7 +486,10 @@ void OutputWriter::convertLine(int32_t lineNumber, const ComponentFrame &compone
 }
 
 // Active-region-relative row lists for the two 4:4:0 chroma planes, read
-// from the frame's chromaRowComponents map. Shared by the integer and float
+// from the frame's chromaRowComponents map and woven so that a plane row's
+// parity matches the parity of the output-frame row it holds: plane row
+// 2j+p is the component's j-th row on output rows of parity p, the same
+// field interleave the luma plane has. Shared by the integer and float
 // convert440 paths, which must agree on geometry.
 namespace {
 struct Rows440 {
@@ -495,21 +498,48 @@ struct Rows440 {
 };
 }  // namespace
 
+static std::vector<int32_t> weave440(const std::vector<int32_t> (&byParity)[2],
+                                     const char *planeName) {
+    // Per-field lines alternate components, so a multiple-of-4 active height
+    // (enforced at commit) yields the same number of rows on each parity.
+    // An imbalance means the component map does not describe a
+    // line-sequential lattice this packing can carry.
+    if (byParity[0].size() != byParity[1].size()) {
+        throw std::runtime_error(std::string("4:4:0 output: ") + planeName
+                                 + " rows do not weave evenly across the fields");
+    }
+    std::vector<int32_t> rows;
+    rows.reserve(byParity[0].size() + byParity[1].size());
+    for (size_t j = 0; j < byParity[0].size(); j++) {
+        rows.push_back(byParity[0][j]);
+        rows.push_back(byParity[1][j]);
+    }
+    return rows;
+}
+
 static Rows440 gather440Rows(const ComponentFrame &componentFrame,
-                             int32_t firstActiveFrameLine, int32_t activeHeight) {
+                             int32_t firstActiveFrameLine, int32_t activeHeight,
+                             int32_t topPadLines) {
     const auto &map = componentFrame.chromaRowComponents;
     if (static_cast<int32_t>(map.size()) < firstActiveFrameLine + activeHeight) {
         throw std::runtime_error("4:4:0 output requires a chroma row component map");
     }
 
-    Rows440 rows;
-    rows.cb.reserve((activeHeight + 1) / 2);
-    rows.cr.reserve((activeHeight + 1) / 2);
+    std::vector<int32_t> cbByParity[2], crByParity[2];
+    for (auto *lists : {&cbByParity, &crByParity}) {
+        (*lists)[0].reserve((activeHeight + 3) / 4);
+        (*lists)[1].reserve((activeHeight + 3) / 4);
+    }
     for (int32_t y = 0; y < activeHeight; y++) {
         const int8_t c = map[firstActiveFrameLine + y];
-        if (c == 0)      rows.cb.push_back(y);
-        else if (c == 1) rows.cr.push_back(y);
+        const int32_t parity = (topPadLines + y) & 1;
+        if (c == 0)      cbByParity[parity].push_back(y);
+        else if (c == 1) crByParity[parity].push_back(y);
     }
+
+    Rows440 rows;
+    rows.cb = weave440(cbByParity, "Cb");
+    rows.cr = weave440(crByParity, "Cr");
     return rows;
 }
 
@@ -526,7 +556,7 @@ OutputWriter::Chroma440Geometry OutputWriter::convert440(const ComponentFrame &c
                                                          OutputFrame &outputFrame) const
 {
     const Rows440 rows = gather440Rows(componentFrame, videoParameters.firstActiveFrameLine,
-                                       activeHeight);
+                                       activeHeight, topPadLines);
     const Chroma440Geometry g = geometryFor(rows, topPadLines);
 
     outputFrame.resize(static_cast<size_t>(outputWidth)
@@ -586,7 +616,7 @@ OutputWriter::Chroma440Geometry OutputWriter::convertToFloat440(
     const ComponentFrame &componentFrame, std::vector<float> *outPlanes) const
 {
     const Rows440 rows = gather440Rows(componentFrame, videoParameters.firstActiveFrameLine,
-                                       activeHeight);
+                                       activeHeight, topPadLines);
     const Chroma440Geometry g = geometryFor(rows, topPadLines);
 
     // The zero fill is the border: E'Y black and neutral E'Cb/E'Cr are all

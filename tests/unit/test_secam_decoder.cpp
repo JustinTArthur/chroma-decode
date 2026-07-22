@@ -570,7 +570,7 @@ int testYcAbiDecode(const fs::path &dir) {
     REQUIRE(chd_frame_get_plane_info(frame, CHD_PLANE_CB, &cbInfo) == CHD_OK);
     REQUIRE(chd_frame_get_plane_info(frame, CHD_PLANE_CR, &crInfo) == CHD_OK);
     REQUIRE(cbInfo.height + crInfo.height == 576);
-    REQUIRE(std::abs(cbInfo.height - crInfo.height) <= 1);
+    REQUIRE(cbInfo.height == crInfo.height);
 
     // Luma: flat grey through the Mono kind.
     const float *yData = nullptr;
@@ -594,25 +594,31 @@ int testYcAbiDecode(const fs::path &dir) {
 
     // Chroma plane values: walk the Cb plane against the output-row lattice
     // and check bar 1 (D'B = 0.8) at its centre. E'Cb = D'B / (1.505 * 1.772).
+    // The plane is woven by output-row parity, so a Db line at output row r
+    // sits at plane row 2j+p, where p = r & 1 (no top border here) and j
+    // counts the Db lines of that parity above it.
     const float *cbData = nullptr;
     ptrdiff_t cbStride = 0;
     REQUIRE(chd_frame_get_plane_float(frame, CHD_PLANE_CB, &cbData, &cbStride) == CHD_OK);
     const int32_t barWidth = (kActiveEnd - kActiveStart) / kNumBars;
     const int32_t barX = barWidth + barWidth / 2;  // bar 1 centre, active-relative
     const double expectECb = 0.8 / (1.505 * 2.0 * (1.0 - 0.114));
-    int32_t k = 0;
+    int32_t seen[2] = {0, 0};
     int32_t checked = 0;
     for (int32_t outRow = 0; outRow < info.height; outRow++) {
         if (chd_frame_chroma_row_component(frame, outRow, &comp) != CHD_OK) continue;
         if (comp != CHD_CHROMA_ROW_DB) continue;
+        const int32_t parity = outRow & 1;
+        const int32_t planeRow = 2 * seen[parity] + parity;
+        seen[parity]++;
         if (outRow >= 40 && outRow < 540) {
-            const float got = cbData[k * info.width + barX];
+            const float got = cbData[planeRow * info.width + barX];
             REQUIRE(std::abs(got - expectECb) < 0.03 * expectECb + 0.01);
             checked++;
         }
-        k++;
     }
-    REQUIRE(k == cbInfo.height);
+    REQUIRE(seen[0] + seen[1] == cbInfo.height);
+    REQUIRE(seen[0] == seen[1]);
     REQUIRE(checked > 200);
 
     chd_chroma_ident_report_t report{};
@@ -835,18 +841,22 @@ int checkCvbsDecode(chd_video_t *video) {
     REQUIRE(barX > 0 && barX < info.width);
     const double expectECb = 0.8 / (1.505 * 2.0 * (1.0 - 0.114));
     chd_chroma_row_component_t comp;
-    int32_t k = 0, checked = 0;
+    int32_t seen[2] = {0, 0};
+    int32_t checked = 0;
     for (int32_t outRow = 0; outRow < info.height; outRow++) {
         if (chd_frame_chroma_row_component(frame, outRow, &comp) != CHD_OK) continue;
         if (comp != CHD_CHROMA_ROW_DB) continue;
+        const int32_t parity = outRow & 1;
+        const int32_t planeRow = 2 * seen[parity] + parity;
+        seen[parity]++;
         if (outRow >= 40 && outRow < 540) {
-            const float got = cbData[k * info.width + barX];
+            const float got = cbData[planeRow * info.width + barX];
             REQUIRE(std::abs(got - expectECb) < 0.05 * expectECb + 0.01);
             checked++;
         }
-        k++;
     }
-    REQUIRE(k == cbInfo.height);
+    REQUIRE(seen[0] + seen[1] == cbInfo.height);
+    REQUIRE(seen[0] == seen[1]);
     REQUIRE(checked > 200);
 
     chd_frame_free(frame);
@@ -965,7 +975,7 @@ int testLocalMesecamFixture() {
     REQUIRE(chd_frame_get_plane_info(frame0, CHD_PLANE_CB, &cbInfo) == CHD_OK);
     REQUIRE(chd_frame_get_plane_info(frame0, CHD_PLANE_CR, &crInfo) == CHD_OK);
     REQUIRE(cbInfo.height + crInfo.height == info.height);
-    REQUIRE(std::abs(cbInfo.height - crInfo.height) <= 1);
+    REQUIRE(cbInfo.height == crInfo.height);
 
     // Frame parity: 625 is odd, so a given output row's component flips
     // frame to frame (the BR.469 four-field cycle).

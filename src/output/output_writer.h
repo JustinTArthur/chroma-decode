@@ -55,8 +55,11 @@ public:
 
     // Geometry of the two 4:4:0 chroma planes produced by the convert440
     // paths, in output-frame rows (so the first rows include any top pad
-    // border). Heights differ by at most one; each plane's rows keep the
-    // frame's top-to-bottom order.
+    // border). The planes weave the two fields the way the luma plane does:
+    // a plane row's parity matches the parity of the output-frame row it was
+    // decoded from, so heights are equal and *FirstRow is the source row of
+    // plane row 0 (the even-parity field's first line, not necessarily the
+    // plane's topmost).
     struct Chroma440Geometry {
         int32_t cbHeight = 0;
         int32_t crHeight = 0;
@@ -121,9 +124,13 @@ public:
 
     // 4:4:0 paths: full-height Y plus subsampled Cb/Cr planes holding only
     // the rows the frame's chromaRowComponents map assigns to each
-    // component, in frame order. The integer form appends [Y | Cb | Cr]
+    // component, woven by output-row parity: plane row 2j+p is the j-th row
+    // of that component on output rows of parity p, so row parity selects
+    // the same field on every plane. The integer form appends [Y | Cb | Cr]
     // into outputFrame; the float form fills outPlanes[0..2]. Both require
-    // a populated chromaRowComponents map covering the active region.
+    // a populated chromaRowComponents map covering the active region and an
+    // active height that is a multiple of 4 (chd_decoder_commit enforces
+    // this for the 4:4:0 formats).
     // Padding pads the Y plane on both axes; the chroma planes share the
     // padded width (neutral side border) but never gain rows, so every
     // chroma plane row stays a real decoded line.

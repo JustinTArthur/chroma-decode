@@ -127,9 +127,10 @@ typedef struct chd_frame_info {
 
 /* Per-plane geometry, reported by chd_frame_get_plane_info. Full-height
  * planes report the frame dimensions and first_frame_row 0. 4:4:0 chroma
- * planes report their subsampled height and the output frame row their
- * first row was decoded from; each of their rows is a real decoded line,
- * located per row via chd_frame_chroma_row_component. */
+ * planes weave the two fields by row parity, matching the luma plane, and
+ * report their subsampled height and the output frame row plane row 0 was
+ * decoded from; each of their rows is a real decoded line, located per row
+ * via chd_frame_chroma_row_component. */
 typedef struct chd_plane_info {
     int32_t width;
     int32_t height;
