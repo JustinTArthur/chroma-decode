@@ -1,0 +1,531 @@
+name: release
+
+# Publishes the binary packages that consumers who are not building from source
+# pick up: an extracted archive plus a chromadecConfig.cmake and a chromadec.pc,
+# which is all a CMake project needs for `find_package(chromadec CONFIG)` and
+# all an autotools project needs for `pkg-config chromadec`.
+#
+# Windows and macOS only. Linux is deliberately absent: a prebuilt .so carries a
+# glibc and libstdc++ floor with no equivalent of the vcpkg triplet or the macOS
+# deployment target to name it by, and Linux consumers can build from source or
+# take the Nix flake. Nix consumers on any platform use the flake, not these.
+on:
+  push:
+    tags: [ 'v*' ]
+  # Lets the packaging be exercised before a tag exists. The dispatch run
+  # uploads workflow artifacts and skips the release upload.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Override the version stamped into the package (no leading v). Empty uses VERSION.txt.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  # The ORT the DLL is linked against. libchromadec imports from
+  # onnxruntime.dll, and this is the floor a consumer's own copy has to meet;
+  # see the "not bundled" note in BUILD-INFO.txt below.
+  ORT_VER: '1.27.1'
+
+jobs:
+  # Runs before anything is built: a tag that disagrees with VERSION would
+  # publish archives whose filenames contradict the version inside them.
+  version:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check version consistency
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            ./scripts/check-version.sh "${GITHUB_REF_NAME}"
+          else
+            ./scripts/check-version.sh
+          fi
+
+  package-windows:
+    name: package-windows-${{ matrix.arch }}
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+            triplet: x64-windows
+            ort_arch: x64
+          - arch: arm64
+            runner: windows-11-arm
+            triplet: arm64-windows
+            ort_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # VERSION is authoritative, and the gate above has already established
+      # that a release tag agrees with it. The dispatch input only overrides it
+      # for dry runs, which never reach the publish job.
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION.txt -Raw).Trim()
+          if ($env:GITHUB_REF_TYPE -ne 'tag' -and '${{ inputs.version }}') {
+            $v = '${{ inputs.version }}'
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Packaging version $v"
+
+      - name: Set up MSVC environment (${{ matrix.arch }})
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: ${{ matrix.arch }}
+
+      - name: vcpkg deps (sqlite3 + fftw3 + pkgconf)
+        shell: pwsh
+        run: |
+          # Mirrors the build workflow: the x64 image ships vcpkg, the arm64
+          # image does not. pkgconf is installed as a tool because both meson's
+          # dependency lookups and the packaged chromadecConfig.cmake resolve
+          # through pkg-config.
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkgRoot -or -not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
+            git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:GITHUB_WORKSPACE\vcpkg"
+            & "$env:GITHUB_WORKSPACE\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+            $vcpkgRoot = "$env:GITHUB_WORKSPACE\vcpkg"
+          }
+          & "$vcpkgRoot\vcpkg.exe" install `
+            "sqlite3:${{ matrix.triplet }}" "fftw3:${{ matrix.triplet }}" "pkgconf:${{ matrix.triplet }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $vcpkgInstalled = "$vcpkgRoot\installed\${{ matrix.triplet }}"
+          "PKG_CONFIG_PATH=$vcpkgInstalled\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "CMAKE_PREFIX_PATH=$vcpkgInstalled" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$vcpkgInstalled\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "$vcpkgInstalled\tools\pkgconf" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Python venv (meson + ninja)
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\pip.exe install meson ninja
+          "$env:GITHUB_WORKSPACE\.venv\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Download ONNX Runtime (Microsoft release, Windows ${{ matrix.arch }})
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://github.com/microsoft/onnxruntime/releases/download/v$env:ORT_VER/onnxruntime-win-${{ matrix.ort_arch }}-$env:ORT_VER.zip" -OutFile ort.zip
+          Expand-Archive -Path ort.zip -DestinationPath "$env:USERPROFILE\ort_extract"
+          $ortDir = (Get-ChildItem "$env:USERPROFILE\ort_extract" | Where-Object PSIsContainer | Select-Object -First 1).FullName
+          "ORT_ROOT=$ortDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$ortDir\lib" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      # buildtype=release is load-bearing twice over. It selects the dynamic
+      # release CRT (/MD), which is what the x64-windows and arm64-windows
+      # triplets use, so the package can be mixed into a consumer's own
+      # release build; a debug package would be /MDd and could not. It also
+      # trips b_ndebug=if-release, so asserts compile out. Overriding debug or
+      # optimization individually would flip buildtype to 'custom' and quietly
+      # leave asserts in a shipped binary, so neither is set here.
+      #
+      # pkgconfig.relocatable stays at the project default: prefix is derived
+      # from the .pc file's own directory, which is exactly right for an
+      # archive the consumer extracts wherever they like.
+      - name: Configure (release)
+        shell: pwsh
+        run: |
+          meson setup build `
+            --buildtype=release `
+            --prefix="$env:GITHUB_WORKSPACE\stage" `
+            -Dwith_tests=false `
+            -Dwith_examples=false `
+            "-Donnxruntime_root=$env:ORT_ROOT"
+
+      - name: Build
+        shell: pwsh
+        run: meson compile -C build
+
+      - name: Install into staging prefix
+        shell: pwsh
+        run: |
+          meson install -C build --quiet
+          Get-ChildItem -Recurse "$env:GITHUB_WORKSPACE\stage" | Select-Object -ExpandProperty FullName
+
+      - name: Verify package layout
+        shell: pwsh
+        run: |
+          $stage = "$env:GITHUB_WORKSPACE\stage"
+          # The DLL carries the ABI version in its name (soversion), so glob
+          # rather than hardcoding it.
+          $dll = Get-ChildItem "$stage\bin\chromadec*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $imp = Get-ChildItem "$stage\lib\chromadec*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $required = @(
+            "$stage\include\chromadec\chromadec.h",
+            "$stage\include\chromadec\version.h",
+            "$stage\lib\pkgconfig\chromadec.pc",
+            "$stage\lib\cmake\chromadec\chromadecConfig.cmake",
+            "$stage\lib\cmake\chromadec\chromadecConfigVersion.cmake"
+          )
+          $missing = $required | Where-Object { -not (Test-Path $_) }
+          if (-not $dll) { $missing += "$stage\bin\chromadec*.dll" }
+          if (-not $imp) { $missing += "$stage\lib\chromadec*.lib" }
+          if ($missing) { Write-Error "missing from package: $($missing -join ', ')"; exit 1 }
+          Write-Host "DLL: $($dll.Name)   import lib: $($imp.Name)"
+          # Only the C ABI may be exported; a leak here means the .def
+          # generation missed something and the package would collide with a
+          # consumer's own symbols.
+          $out = & dumpbin /exports $dll.FullName
+          $chd  = ($out | Select-String '\bchd_\w+').Count
+          $leak = ($out | Select-String '^\s+\d+\s+\d+\s+[0-9A-Fa-f]+\s+(?!chd_)[A-Za-z_]\w*$').Count
+          Write-Host "chd_ exports: $chd  (non-chd globals: $leak)"
+          if ($chd -lt 40) { Write-Error "expected >=40 chd_ exports"; exit 1 }
+          if ($leak -gt 0) { Write-Error "non-chd symbols leaked"; exit 1 }
+
+      # Consumes the staged tree the way tbc-tools will: find_package against
+      # the packaged CMake config, with nothing but CMAKE_PREFIX_PATH pointing
+      # into the extracted archive.
+      - name: CMake consumer smoke test
+        shell: pwsh
+        run: |
+          $stage = "$env:GITHUB_WORKSPACE\stage"
+          $env:PKG_CONFIG_PATH = "$stage\lib\pkgconfig;$env:PKG_CONFIG_PATH"
+          $env:PATH = "$stage\bin;$env:PATH"
+          cmake -S tests/cmake-consumer -B "$env:GITHUB_WORKSPACE\cc-build" `
+            -DCMAKE_BUILD_TYPE=Release `
+            "-DCMAKE_PREFIX_PATH=$stage"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build "$env:GITHUB_WORKSPACE\cc-build" --config Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $exe = Get-ChildItem -Recurse "$env:GITHUB_WORKSPACE\cc-build\consumer.exe" | Select-Object -First 1
+          & $exe.FullName
+          if ($LASTEXITCODE -ne 0) { Write-Error "consumer failed to run"; exit $LASTEXITCODE }
+
+      - name: Write BUILD-INFO.txt
+        shell: pwsh
+        run: |
+          $stage = "$env:GITHUB_WORKSPACE\stage"
+          $dll = (Get-ChildItem "$stage\bin\chromadec*.dll" | Select-Object -First 1).Name
+          @"
+          libchromadec ${{ steps.ver.outputs.version }} for Windows ${{ matrix.arch }}
+
+          Built from   : ${{ github.repository }}@${{ github.sha }}
+          Toolchain    : MSVC (VCToolsVersion $env:VCToolsVersion)
+          Triplet      : ${{ matrix.triplet }}
+          C runtime    : dynamic release CRT (/MD)
+          Library      : bin\$dll  +  lib\ import library
+
+          This package matches the vcpkg ${{ matrix.triplet }} triplet, so it can be
+          linked into a release-configuration MSVC build. It cannot be mixed into a
+          debug (/MDd) build.
+
+          ONNX Runtime is NOT bundled. libchromadec imports from onnxruntime.dll and
+          was linked against ONNX Runtime $env:ORT_VER, which is the minimum version
+          your onnxruntime.dll must satisfy. Supplying your own copy is deliberate:
+          it lets you pick the execution providers you need (the CUDA-enabled build,
+          say) without a second onnxruntime.dll competing on PATH.
+
+          NN model weights are NOT bundled either; they are licensed separately. Pass
+          absolute paths to chd_nn_model_load_from_file at runtime.
+
+          To consume from CMake, point CMAKE_PREFIX_PATH at the extracted directory:
+              find_package(chromadec CONFIG REQUIRED)
+              target_link_libraries(app PRIVATE chromadec::chromadec)
+          The config resolves through pkg-config, so a pkg-config/pkgconf executable
+          must be on PATH and lib\pkgconfig must be on PKG_CONFIG_PATH.
+          "@ | Out-File -FilePath "$stage\BUILD-INFO.txt" -Encoding utf8
+          Copy-Item LICENSE "$stage\LICENSE"
+          Get-Content "$stage\BUILD-INFO.txt"
+
+      - name: Archive
+        id: archive
+        shell: pwsh
+        run: |
+          $name = "libchromadec-${{ steps.ver.outputs.version }}-win-${{ matrix.arch }}-msvc"
+          $zip  = "$env:GITHUB_WORKSPACE\$name.zip"
+          Compress-Archive -Path "$env:GITHUB_WORKSPACE\stage\*" -DestinationPath $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Out-File -FilePath "$zip.sha256" -Encoding ascii
+          "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "$name.zip  sha256=$hash"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.archive.outputs.name }}
+          path: |
+            ${{ steps.archive.outputs.zip }}
+            ${{ steps.archive.outputs.zip }}.sha256
+          if-no-files-found: error
+
+  # arm64 only, and that is a capability decision rather than a runner one.
+  # Microsoft published no onnxruntime-osx-x86_64 asset after 1.23.2, so an
+  # x86_64 package built at our pinned ORT would have to ship with the NN
+  # decoders missing. A silently reduced artifact is worse than none, and Intel
+  # Macs can build from source or take the Nix flake.
+  package-macos:
+    name: package-macos-arm64
+    needs: version
+    runs-on: macos-latest
+    env:
+      # Built against the runner's SDK but deployable below it. The only
+      # macOS-14 dependency is the MPSGraph FFT selector set, which is guarded
+      # at the call site with @available / API_AVAILABLE and falls back to the
+      # FFTW path, so a lower floor costs nothing on older systems.
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      FFTW_VER: '3.3.11'
+      FFTW_SHA256: '5630c24cdeb33b131612f7eb4b1a9934234754f9f388ff8617458d0be6f239a1'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve version
+        id: ver
+        run: |
+          v="$(tr -d '[:space:]' < VERSION.txt)"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ] && [ -n "${{ inputs.version }}" ]; then
+            v="${{ inputs.version }}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Packaging version $v"
+
+      # Build tools only. Nothing installed here may end up linked into the
+      # package, which the dylib-reference check below enforces.
+      - name: Build tools
+        run: brew install ninja pkg-config xz
+
+      - name: Python venv (meson)
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install meson
+
+      # Homebrew's fftw is a dylib under /opt/homebrew that a consumer without
+      # Homebrew cannot resolve, so the package builds its own static copy and
+      # absorbs it. Dropping FFTW instead is not an option: it would silently
+      # remove the Transform PAL decoders from a shipped artifact.
+      - name: Build static FFTW
+        run: |
+          curl -L -o fftw.tgz "https://fftw.org/fftw-${FFTW_VER}.tar.gz"
+          echo "${FFTW_SHA256}  fftw.tgz" | shasum -a 256 -c -
+          tar -xzf fftw.tgz
+          cd "fftw-${FFTW_VER}"
+          ./configure --prefix="${HOME}/fftw" \
+            --enable-static --disable-shared --with-pic --disable-fortran --disable-doc
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+          echo "PKG_CONFIG_PATH=${HOME}/fftw/lib/pkgconfig" >> "$GITHUB_ENV"
+
+      - name: Download ONNX Runtime (Microsoft release, macOS arm64 with CoreML)
+        run: |
+          curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-osx-arm64-${ORT_VER}.tgz"
+          mkdir -p "${HOME}/ort"
+          tar -xzf ort.tgz -C "${HOME}/ort" --strip-components=1
+          echo "ORT_ROOT=${HOME}/ort" >> "$GITHUB_ENV"
+
+      # force-fallback-for=sqlite3 takes the bundled amalgamation rather than a
+      # Homebrew libsqlite3; meson.build folds it in with link_whole, so the
+      # package carries no SQLite of its own to resolve. buildtype and
+      # pkgconfig.relocatable follow the same reasoning as the Windows job.
+      - name: Configure (release)
+        run: |
+          . .venv/bin/activate
+          meson setup build \
+            --buildtype=release \
+            --prefix="${GITHUB_WORKSPACE}/stage" \
+            --force-fallback-for=sqlite3 \
+            -Dwith_tests=false \
+            -Dwith_examples=false \
+            -Donnxruntime_root="${ORT_ROOT}"
+
+      - name: Build
+        run: |
+          . .venv/bin/activate
+          meson compile -C build
+
+      - name: Install into staging prefix
+        run: |
+          . .venv/bin/activate
+          meson install -C build --quiet
+          find "${GITHUB_WORKSPACE}/stage" -type f -o -type l
+
+      # Meson records the absolute install path as the dylib's install_name,
+      # which is right for a fixed prefix and useless in an archive the consumer
+      # extracts anywhere. Rewriting it to @rpath makes the package relocatable;
+      # CMake adds the linked directory to the consumer's RPATH by itself.
+      # install_name_tool invalidates the signature, and arm64 macOS refuses to
+      # load an invalidly signed dylib, so re-sign ad-hoc afterwards.
+      - name: Make the dylib relocatable
+        run: |
+          stage="${GITHUB_WORKSPACE}/stage"
+          dylib="$(find "$stage/lib" -type f -name 'libchromadec.*.dylib' | head -1)"
+          test -n "$dylib" || { echo "no versioned dylib installed" >&2; exit 1; }
+          install_name_tool -id "@rpath/$(basename "$dylib")" "$dylib"
+          codesign --force --sign - "$dylib"
+          echo "install_name is now: $(otool -D "$dylib" | tail -1)"
+
+      - name: Verify package layout
+        run: |
+          stage="${GITHUB_WORKSPACE}/stage"
+          dylib="$(find "$stage/lib" -type f -name 'libchromadec.*.dylib' | head -1)"
+          for f in \
+            "$stage/include/chromadec/chromadec.h" \
+            "$stage/include/chromadec/version.h" \
+            "$stage/lib/libchromadec.dylib" \
+            "$stage/lib/pkgconfig/chromadec.pc" \
+            "$stage/lib/cmake/chromadec/chromadecConfig.cmake" \
+            "$stage/lib/cmake/chromadec/chromadec-targets.cmake"
+          do
+            test -e "$f" || { echo "missing from package: $f" >&2; exit 1; }
+          done
+          # Only the C ABI may be exported.
+          nm -g "$dylib" | awk '$2 == "T" && $3 !~ /^_chd_/ { print $3 }' > /tmp/leaks.txt
+          if [ -s /tmp/leaks.txt ]; then
+            echo "Non-chd_ symbols leaked:"; cat /tmp/leaks.txt; exit 1
+          fi
+          count=$(nm -g "$dylib" | awk '$2 == "T" && $3 ~ /^_chd_/' | wc -l)
+          echo "chd_ exports: $count"
+          test "$count" -ge 40
+
+      # The package may reference only system libraries, frameworks, itself, and
+      # ONNX Runtime (which the consumer supplies). A path under /opt/homebrew,
+      # /usr/local or the build workspace means a build-time dependency leaked
+      # into the artifact and would be unresolvable on the consumer's machine.
+      - name: Verify no build-host dylib references
+        run: |
+          stage="${GITHUB_WORKSPACE}/stage"
+          dylib="$(find "$stage/lib" -type f -name 'libchromadec.*.dylib' | head -1)"
+          echo "--- otool -L ---"
+          otool -L "$dylib"
+          if otool -L "$dylib" | tail -n +2 | grep -Ev \
+            '^\s+(/usr/lib/|/System/Library/|@rpath/)'; then
+            echo "package references a path outside the system and @rpath" >&2
+            exit 1
+          fi
+
+      - name: CMake consumer smoke test
+        run: |
+          stage="${GITHUB_WORKSPACE}/stage"
+          export DYLD_LIBRARY_PATH="${ORT_ROOT}/lib"
+          cmake -S tests/cmake-consumer -B /tmp/cc-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$stage"
+          cmake --build /tmp/cc-build
+          /tmp/cc-build/consumer
+
+      - name: Write BUILD-INFO.txt
+        run: |
+          stage="${GITHUB_WORKSPACE}/stage"
+          cat > "$stage/BUILD-INFO.txt" <<EOF
+          libchromadec ${{ steps.ver.outputs.version }} for macOS arm64
+
+          Built from   : ${{ github.repository }}@${{ github.sha }}
+          Toolchain    : $(cc --version | head -1)
+          Deployment   : macOS ${MACOSX_DEPLOYMENT_TARGET} or newer
+
+          SQLite is the bundled amalgamation and FFTW ${FFTW_VER} is linked
+          statically, so the library references only system libraries, frameworks
+          and ONNX Runtime. Nothing from Homebrew is required at runtime.
+
+          ONNX Runtime is NOT bundled. libchromadec links @rpath/libonnxruntime
+          and was built against ONNX Runtime ${ORT_VER}, which is the minimum
+          version your copy must satisfy. Supplying your own lets you pick the
+          execution providers you need.
+
+          The MPSGraph GPU FFT path needs macOS 14; below that the library falls
+          back to FFTW automatically. CoreML inference itself has no such floor.
+
+          NN model weights are NOT bundled; they are licensed separately. Pass
+          absolute paths to chd_nn_model_load_from_file at runtime.
+
+          To consume from CMake, point CMAKE_PREFIX_PATH at the extracted
+          directory:
+              find_package(chromadec CONFIG REQUIRED)
+              target_link_libraries(app PRIVATE chromadec::chromadec)
+          For autotools, put lib/pkgconfig on PKG_CONFIG_PATH and use
+          \`pkg-config --cflags --libs chromadec\`.
+          EOF
+          cp LICENSE "$stage/LICENSE"
+          cat "$stage/BUILD-INFO.txt"
+
+      # tar, not zip: lib/ is a symlink chain (libchromadec.dylib ->
+      # libchromadec.0.1.dylib) and zip would flatten it into copies, breaking
+      # the -lchromadec lookup and doubling the payload.
+      #
+      # xz is piped instead of tar -J for higher compression options
+      - name: Archive
+        id: archive
+        run: |
+          name="libchromadec-${{ steps.ver.outputs.version }}-macos-arm64"
+          tar -cf - -C "${GITHUB_WORKSPACE}/stage" . \
+            | xz -9 -e -T1 > "${GITHUB_WORKSPACE}/${name}.tar.xz"
+          cd "${GITHUB_WORKSPACE}"
+          shasum -a 256 "${name}.tar.xz" > "${name}.tar.xz.sha256"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          ls -lh "${name}.tar.xz"
+          cat "${name}.tar.xz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.archive.outputs.name }}
+          # Already xz-compressed; the default zip wrapper would only add a
+          # container around incompressible data.
+          compression-level: 0
+          path: |
+            ${{ steps.archive.outputs.name }}.tar.xz
+            ${{ steps.archive.outputs.name }}.tar.xz.sha256
+          if-no-files-found: error
+
+  publish:
+    # Only a tag push publishes; workflow_dispatch runs stop at the artifacts
+    # above so packaging can be exercised without touching a release.
+    if: github.ref_type == 'tag'
+    needs: [ package-windows, package-macos ]
+    runs-on: ubuntu-24.04
+    # Gates everything below on a human. The packaging jobs have already run and
+    # attached their archives as workflow artifacts by this point, so a tag
+    # pushed at a bad commit can be inspected and then declined, leaving no
+    # release object behind to clean up: fix, move the tag, re-run. The gate is
+    # the environment's protection rules, not this line, so `release` needs
+    # required reviewers set in repository settings or the job just proceeds.
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # `gh release upload` attaches assets to a release that already exists and
+      # fails if none does, so pushing a tag has to mint the release object too.
+      # It is created as a draft: the assets land, and a human reads the notes
+      # and presses publish. Nothing here should make a release visible on its
+      # own. Re-running the workflow reuses whatever release the tag already
+      # has, draft or published, rather than making a second one.
+      - name: Create the release if the tag has none
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "release ${GITHUB_REF_NAME} already exists; reusing it"
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${GITHUB_REF_NAME}" \
+              --draft \
+              --verify-tag \
+              --generate-notes
+          fi
+
+      - name: Upload the archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la artifacts
+          gh release upload "${GITHUB_REF_NAME}" \
+            artifacts/*.zip artifacts/*.tar.xz artifacts/*.sha256 \
+            --repo "${GITHUB_REPOSITORY}" --clobber
+          echo "Assets uploaded. The release is a draft until published by hand:"
+          gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json url --jq .url

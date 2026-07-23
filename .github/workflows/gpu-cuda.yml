@@ -2,9 +2,6 @@ name: gpu-cuda-validation
 
 on:
   workflow_dispatch:
-  schedule:
-    # Weekly: Mondays 04:00 UTC.
-    - cron: '0 4 * * 1'
 
 permissions:
   id-token: write
@@ -24,6 +21,13 @@ env:
 
 jobs:
   launch-spot:
+    # Nothing to launch without an AWS role to assume; skip rather than fail
+    # on a repo that hasn't set AWS_GPU_RUNNER_ROLE_ARN.
+    if: vars.AWS_GPU_RUNNER_ROLE_ARN != ''
+    # Environment is what the AWS role trusts, so any branch may run this while
+    # only jobs naming the environment can assume the role. Branch limits and
+    # approvals live on the environment.
+    environment: gpu-ci
     runs-on: ubuntu-latest
     outputs:
       instance_id: ${{ steps.launch.outputs.instance_id }}
@@ -47,7 +51,7 @@ jobs:
       - name: Generate runner registration token
         id: runner-token
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_RUNNER_MGMT_TOKEN }}
         run: |
           TOKEN=$(gh api -X POST repos/${{ github.repository }}/actions/runners/registration-token --jq '.token')
           echo "::add-mask::$TOKEN"
@@ -112,7 +116,7 @@ jobs:
 
       - name: Wait for runner to come online
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_RUNNER_MGMT_TOKEN }}
         run: |
           for i in $(seq 1 60); do
             if gh api repos/${{ github.repository }}/actions/runners --paginate \
@@ -194,7 +198,11 @@ jobs:
 
   cleanup:
     needs: [launch-spot, cuda-test]
-    if: always()
+    if: always() && vars.AWS_GPU_RUNNER_ROLE_ARN != ''
+    # Separate environment, deliberately free of protection rules: this job
+    # terminates the instance and must never wait on an approval. It exists
+    # only to give cleanup an OIDC subject the role trusts.
+    environment: gpu-ci-cleanup
     runs-on: ubuntu-latest
     steps:
       - name: Configure AWS credentials via OIDC

@@ -1,0 +1,121 @@
+# Imported-target definition for chromadec, included by chromadecConfig.cmake.
+#
+# Hand-written because Meson's cmake module can generate a package config file
+# and a version file but has no equivalent of CMake's install(EXPORT); tracked
+# upstream as mesonbuild/meson#10504 ("Add a CMake-Targets-File generator"),
+# which is open. If that lands, this file and the configure_file call that
+# installs it should be replaced by the official generator.
+#
+# Defining the target here means a consumer needs no pkg-config executable.
+# chromadecConfig.cmake still falls back to pkg-config when this file does not
+# manage to define the target, so a static-only build (no shared library to
+# point an imported target at) keeps working as before.
+
+if(TARGET chromadec::chromadec)
+    return()
+endif()
+
+# Two layouts have to resolve, and neither can be assumed:
+#
+#   * Moved: an extracted release archive, or any relocated install tree. The
+#     paths baked in below are stale, but everything sits at the usual offsets
+#     from this file, so they are recomputed from CMAKE_CURRENT_LIST_DIR.
+#   * Split: the library, the headers and this file live in separate trees.
+#     nixpkgs does exactly this, moving headers and CMake files into a `dev`
+#     output while the library stays in `out`, so no self-relative walk can
+#     reach the library and the configured absolutes are the only answer.
+#
+# The self-relative guess is tried first and accepted only if the library is
+# actually there, which distinguishes the two without having to detect which
+# case applies.
+set(_chromadec_configured_libdir "@CHROMADEC_LIBDIR@")
+set(_chromadec_configured_incdir "@CHROMADEC_INCLUDEDIR@")
+set(_chromadec_configured_bindir "@CHROMADEC_BINDIR@")
+
+# The link-time artifact: an import library where one is used, otherwise the
+# shared library itself. The CMAKE_* prefix/suffix variables carry the naming
+# convention of the consumer's own toolchain, which is what has to match.
+if(WIN32)
+    set(_chromadec_link_name
+        "${CMAKE_IMPORT_LIBRARY_PREFIX}chromadec${CMAKE_IMPORT_LIBRARY_SUFFIX}")
+else()
+    set(_chromadec_link_name
+        "${CMAKE_SHARED_LIBRARY_PREFIX}chromadec${CMAKE_SHARED_LIBRARY_SUFFIX}")
+endif()
+
+# This file installs to <libdir>/cmake/chromadec, so three levels up is the
+# prefix. Only meaningful for the moved case, where the standard lib/ bin/
+# include/ layout that the release archives ship is what is being walked.
+get_filename_component(_chromadec_prefix "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+
+if(EXISTS "${_chromadec_prefix}/lib/${_chromadec_link_name}")
+    set(_chromadec_libdir "${_chromadec_prefix}/lib")
+    set(_chromadec_incdir "${_chromadec_prefix}/include")
+    set(_chromadec_bindir "${_chromadec_prefix}/bin")
+elseif(EXISTS "${_chromadec_configured_libdir}/${_chromadec_link_name}")
+    set(_chromadec_libdir "${_chromadec_configured_libdir}")
+    set(_chromadec_incdir "${_chromadec_configured_incdir}")
+    set(_chromadec_bindir "${_chromadec_configured_bindir}")
+else()
+    # Leave the target undefined and let chromadecConfig.cmake fall back to
+    # pkg-config rather than defining a target that points at nothing.
+    unset(_chromadec_configured_libdir)
+    unset(_chromadec_configured_incdir)
+    unset(_chromadec_configured_bindir)
+    unset(_chromadec_link_name)
+    unset(_chromadec_prefix)
+    return()
+endif()
+
+set(_chromadec_link_path "${_chromadec_libdir}/${_chromadec_link_name}")
+
+# On Windows the imported target needs both halves: IMPORTED_IMPLIB to link
+# against and IMPORTED_LOCATION naming the DLL, which is what lets a consumer
+# use $<TARGET_RUNTIME_DLLS> to stage it next to their executable. The DLL
+# carries the ABI version in its name, so it is globbed rather than assumed.
+set(_chromadec_runtime "")
+if(WIN32)
+    file(GLOB _chromadec_dlls "${_chromadec_bindir}/chromadec*.dll")
+    if(_chromadec_dlls)
+        list(GET _chromadec_dlls 0 _chromadec_runtime)
+    endif()
+endif()
+
+if(WIN32 AND _chromadec_runtime)
+    add_library(chromadec::chromadec SHARED IMPORTED)
+    set_target_properties(chromadec::chromadec PROPERTIES
+        IMPORTED_LOCATION "${_chromadec_runtime}"
+        IMPORTED_IMPLIB   "${_chromadec_link_path}")
+else()
+    # UNKNOWN rather than SHARED: on Windows without a locatable DLL this is
+    # still linkable through the import library, and on a platform where the
+    # library turns out to be static this stays correct instead of asserting a
+    # shared library that is not there.
+    add_library(chromadec::chromadec UNKNOWN IMPORTED)
+    set_target_properties(chromadec::chromadec PROPERTIES
+        IMPORTED_LOCATION "${_chromadec_link_path}")
+endif()
+
+# CMake rejects an imported target whose interface include directory does not
+# exist, so a headers-elsewhere install must not assert one.
+if(EXISTS "${_chromadec_incdir}")
+    set_target_properties(chromadec::chromadec PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${_chromadec_incdir}")
+endif()
+
+# Deliberately no INTERFACE_LINK_LIBRARIES for sqlite3, fftw3 or ONNX Runtime.
+# Linking the shared library does not need them, and a consumer static-linking
+# chromadec needs the full private set that only chromadec.pc records; that
+# case should keep going through `pkg-config --static`.
+
+unset(_chromadec_configured_libdir)
+unset(_chromadec_configured_incdir)
+unset(_chromadec_configured_bindir)
+unset(_chromadec_link_name)
+unset(_chromadec_link_path)
+unset(_chromadec_libdir)
+unset(_chromadec_incdir)
+unset(_chromadec_bindir)
+unset(_chromadec_prefix)
+unset(_chromadec_runtime)
+unset(_chromadec_dlls)

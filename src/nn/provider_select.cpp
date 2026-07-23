@@ -14,6 +14,15 @@
 #include <dlfcn.h>
 #endif
 
+// DirectML's factory entry point lives in its own header, and only the
+// DirectML-flavoured ONNX Runtime packages ship it. Building against a
+// CPU-only Windows package leaves the DirectML attach path out entirely;
+// the runtime availability check keeps the chain from reaching it.
+#if defined(_WIN32) && __has_include(<dml_provider_factory.h>)
+#include <dml_provider_factory.h>
+#define CHD_HAVE_DML_PROVIDER 1
+#endif
+
 namespace chd::nn {
 
 namespace {
@@ -344,7 +353,7 @@ bool attachCoreML(Ort::SessionOptions &options, std::string *outError)
 // for now.
 bool attachDirectML(Ort::SessionOptions &options, std::string *outError)
 {
-#if defined(_WIN32)
+#if defined(CHD_HAVE_DML_PROVIDER)
     try {
         OrtStatus *status = OrtSessionOptionsAppendExecutionProvider_DML(options, /*device_id*/ 0);
         if (status != nullptr) {
@@ -360,6 +369,10 @@ bool attachDirectML(Ort::SessionOptions &options, std::string *outError)
         if (outError) *outError = e.what();
         return false;
     }
+#elif defined(_WIN32)
+    (void)options;
+    if (outError) *outError = "this build's ONNX Runtime package has no DirectML provider";
+    return false;
 #else
     (void)options;
     if (outError) *outError = "DirectML execution provider is only available on Windows";

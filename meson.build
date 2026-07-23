@@ -1,5 +1,15 @@
 project('chromadec', 'cpp', 'c',
-        version: '0.1.0',
+        # Single source of truth for the version. The Nix derivation reads the
+        # same file, and scripts/check-version.sh gates the copies that cannot
+        # read it (Cargo manifests, release tags).
+        #
+        # The .txt suffix is not decoration. The source root is on the include
+        # path, so on a case-insensitive filesystem a file named plain VERSION
+        # is what `#include <version>` resolves to, and every translation unit
+        # that reaches the C++20 header through <string> or <filesystem> fails
+        # to compile. Only macOS and Windows would break, which is to say the
+        # two platforms we ship binaries for.
+        version: files('VERSION.txt'),
         license: 'GPL-3.0-or-later',
         license_files: 'LICENSE',
         meson_version: '>=1.8.0',
@@ -64,21 +74,34 @@ threads_dep = dependency('threads')
 sqlite3_dep = dependency('sqlite3', required: true)
 fftw3_dep   = dependency('fftw3',   required: false)
 
-# ONNX Runtime discovery: pkg-config first, then -Donnxruntime_root fallback.
-ort_dep = dependency('libonnxruntime', required: false)
-if not ort_dep.found()
-  ort_dep = dependency('onnxruntime', required: false)
-endif
-if not ort_dep.found() and get_option('with_onnxruntime') and get_option('onnxruntime_root') != ''
-  ort_root = get_option('onnxruntime_root')
-  ort_lib  = cpp.find_library('onnxruntime',
-                              dirs: [ort_root / 'lib'],
-                              required: false)
+# ONNX Runtime discovery. An explicitly configured -Donnxruntime_root is checked
+# BEFORE pkg-config and CMake, because it is the caller naming the exact copy to
+# link, usually a Microsoft release chosen for the execution providers it
+# carries. Letting auto-discovery run first is not a harmless preference: the
+# `onnxruntime` lookup falls through to CMake, so on a machine with a system copy
+# installed the build would link that instead and ignore the root entirely,
+# producing a library bound to a path the consumer does not have and to whatever
+# version and provider set that copy happens to carry.
+ort_root = get_option('onnxruntime_root')
+ort_dep  = dependency('', required: false)
+if get_option('with_onnxruntime') and ort_root != ''
+  ort_lib = cpp.find_library('onnxruntime',
+                             dirs: [ort_root / 'lib'],
+                             required: false)
   if ort_lib.found()
     ort_dep = declare_dependency(
       dependencies: ort_lib,
       include_directories: include_directories(ort_root / 'include'))
+  else
+    warning('onnxruntime_root=' + ort_root + ' has no linkable onnxruntime ' +
+            'library under lib/; falling back to pkg-config and CMake discovery')
   endif
+endif
+if not ort_dep.found()
+  ort_dep = dependency('libonnxruntime', required: false)
+endif
+if not ort_dep.found()
+  ort_dep = dependency('onnxruntime', required: false)
 endif
 
 # ONNX Runtime backend. The NN framework (interface, decoders, C ABI) is
@@ -273,6 +296,28 @@ cmake_mod.configure_package_config_file(
   name: 'chromadec',
   input: 'meson/chromadec-config.cmake.in',
   configuration: cmake_pkg_cfg)
+
+# The imported-target definition chromadecConfig.cmake includes. Written by
+# hand and configured here because the cmake module has no install(EXPORT)
+# equivalent; see the header comment in the template, and mesonbuild/meson#10504.
+#
+# CMake reads backslashes in a quoted string as escapes, so the Windows paths
+# meson hands back have to be normalised to forward slashes, which CMake accepts
+# on every platform.
+cmake_dir = get_option('libdir') / 'cmake' / 'chromadec'
+cmake_tgt_cfg = configuration_data()
+cmake_tgt_cfg.set('CHROMADEC_LIBDIR',
+                  (get_option('prefix') / get_option('libdir')).replace('\\', '/'))
+cmake_tgt_cfg.set('CHROMADEC_INCLUDEDIR',
+                  (get_option('prefix') / get_option('includedir')).replace('\\', '/'))
+cmake_tgt_cfg.set('CHROMADEC_BINDIR',
+                  (get_option('prefix') / get_option('bindir')).replace('\\', '/'))
+configure_file(
+  input:         'meson/chromadec-targets.cmake.in',
+  output:        'chromadec-targets.cmake',
+  configuration: cmake_tgt_cfg,
+  install:       true,
+  install_dir:   cmake_dir)
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 summary({

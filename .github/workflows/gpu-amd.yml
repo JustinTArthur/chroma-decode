@@ -2,9 +2,6 @@ name: gpu-amd-validation
 
 on:
   workflow_dispatch:
-  schedule:
-    # Weekly: Mondays 04:30 UTC, half an hour after the CUDA run.
-    - cron: '30 4 * * 1'
 
 permissions:
   id-token: write
@@ -25,6 +22,13 @@ env:
 
 jobs:
   launch-spot:
+    # Nothing to launch without an AWS role to assume; skip rather than fail
+    # on a repo that hasn't set AWS_GPU_RUNNER_ROLE_ARN.
+    if: vars.AWS_GPU_RUNNER_ROLE_ARN != ''
+    # Environment is what the AWS role trusts, so any branch may run this while
+    # only jobs naming the environment can assume the role. Branch limits and
+    # approvals live on the environment.
+    environment: gpu-ci
     runs-on: ubuntu-latest
     outputs:
       instance_id: ${{ steps.launch.outputs.instance_id }}
@@ -48,7 +52,7 @@ jobs:
       - name: Generate runner registration token
         id: runner-token
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_RUNNER_MGMT_TOKEN }}
         run: |
           TOKEN=$(gh api -X POST repos/${{ github.repository }}/actions/runners/registration-token --jq '.token')
           echo "::add-mask::$TOKEN"
@@ -74,8 +78,10 @@ jobs:
           apt-get install -y --no-install-recommends -qq \\
             curl ca-certificates gnupg lsb-release jq
 
-          # amdgpu kernel driver via AMD's installer. --no-dkms avoids module
-          # rebuild (the AWS AMD AMI ships a compatible kernel by default).
+          # amdgpu kernel driver from AMD's apt repo. The AMI is stock Ubuntu
+          # 22.04 with no amdgpu module, so amdgpu-dkms builds one against the
+          # running kernel. That build and the image pre-pull below are why
+          # the AMD watchdog gets 60 minutes to the CUDA side's 30.
           mkdir --parents --mode=0755 /etc/apt/keyrings
           curl https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor > /etc/apt/keyrings/rocm.gpg
           echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/latest/ubuntu jammy main" \\
@@ -133,7 +139,7 @@ jobs:
 
       - name: Wait for runner to come online
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_RUNNER_MGMT_TOKEN }}
         run: |
           # AMD bootstrap is longer than NVIDIA: amdgpu install, Docker
           # install + image pull. Allow 20 minutes.
@@ -234,7 +240,11 @@ jobs:
 
   cleanup:
     needs: [launch-spot, amd-test]
-    if: always()
+    if: always() && vars.AWS_GPU_RUNNER_ROLE_ARN != ''
+    # Separate environment, deliberately free of protection rules: this job
+    # terminates the instance and must never wait on an approval. It exists
+    # only to give cleanup an OIDC subject the role trusts.
+    environment: gpu-ci-cleanup
     runs-on: ubuntu-latest
     steps:
       - name: Configure AWS credentials via OIDC
