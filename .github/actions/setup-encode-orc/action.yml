@@ -1,8 +1,9 @@
 name: 'Set up encode-orc fixture generator'
 description: >-
-  Clone, build (with cache), and export CHD_ENCODE_ORC so the
-  test_integration test runs against real synthesized NTSC + PAL
-  colour-bars TBC fixtures instead of self-skipping.
+  Clone, build (with cache), and export CHD_ENCODE_ORC so a job can synthesize
+  colour-bars TBC fixtures. Linux only: the build workflow generates the
+  fixtures once and hands them to the other platforms as an artifact, so this
+  never has to run anywhere else.
 inputs:
   commit:
     description: 'encode-orc commit SHA to pin (matches the locally-validated build).'
@@ -21,8 +22,7 @@ runs:
     # Runtime deps must be installed every time, not just on cache miss,
     # because encode-orc dynamically links yaml-cpp / spdlog / libpng /
     # sqlite3 — the cached binary needs them resolvable at exec time.
-    - name: encode-orc deps (Linux)
-      if: runner.os == 'Linux'
+    - name: encode-orc deps
       shell: bash
       run: |
         sudo apt-get update
@@ -31,65 +31,23 @@ runs:
           libsqlite3-dev libyaml-cpp-dev libspdlog-dev libpng-dev \
           libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
 
-    - name: encode-orc deps (macOS)
-      if: runner.os == 'macOS'
-      shell: bash
-      run: brew install cmake ninja pkg-config yaml-cpp spdlog libpng ffmpeg
-
-    # pkg-config-lite provides the pkg-config tool that encode-orc's
-    # CMakeLists uses to resolve the FFMPEG dependency. vcpkg is
-    # preinstalled on the hosted Windows images.
-    - name: encode-orc deps (Windows)
-      if: runner.os == 'Windows'
-      shell: pwsh
-      run: |
-        choco install -y --no-progress pkgconfiglite
-        vcpkg install sqlite3:x64-windows yaml-cpp:x64-windows spdlog:x64-windows libpng:x64-windows
-        # No avutil in the feature list: vcpkg builds libavutil unconditionally
-        # and stopped accepting it as a selectable feature.
-        vcpkg install "ffmpeg[avcodec,avformat,swscale]:x64-windows"
-        $vcpkgInstalled = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
-        "PKG_CONFIG_PATH=$vcpkgInstalled\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
-        "CMAKE_PREFIX_PATH=$vcpkgInstalled" | Out-File -FilePath $env:GITHUB_ENV -Append
-        "$vcpkgInstalled\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-
-    - name: Clone + build encode-orc (Linux/macOS)
-      if: runner.os != 'Windows' && steps.cache.outputs.cache-hit != 'true'
+    - name: Clone + build encode-orc
+      if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
         git clone https://github.com/simoninns/encode-orc.git ~/encode-orc
         cd ~/encode-orc
         git checkout ${{ inputs.commit }}
-        # encode-orc builds with -Werror, so a distro/Homebrew bump in one of
-        # its dependencies (spdlog against a newer fmt, say) turns a
-        # deprecation warning into a failed fixture build. We only need the
-        # binary, so silence the warnings outright: CMAKE_CXX_FLAGS lands
-        # ahead of the target's own flags, where a -Wno-error would just be
-        # undone by the -Werror that follows it, and -w would not.
+        # encode-orc builds with -Werror, so a distro bump in one of its
+        # dependencies (spdlog against a newer fmt, say) turns a deprecation
+        # warning into a failed fixture build. We only need the binary, so
+        # silence the warnings outright: CMAKE_CXX_FLAGS lands ahead of the
+        # target's own flags, where a -Wno-error would just be undone by the
+        # -Werror that follows it, and -w would not.
         cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_CXX_FLAGS=-w
         cmake --build build
 
-    - name: Clone + build encode-orc (Windows)
-      if: runner.os == 'Windows' && steps.cache.outputs.cache-hit != 'true'
-      shell: pwsh
-      run: |
-        git clone https://github.com/simoninns/encode-orc.git "$env:USERPROFILE\encode-orc"
-        Set-Location "$env:USERPROFILE\encode-orc"
-        git checkout ${{ inputs.commit }}
-        cmake -B build -S . -G Ninja `
-          -DCMAKE_BUILD_TYPE=Release `
-          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
-          -DVCPKG_TARGET_TRIPLET=x64-windows
-        cmake --build build
-
-    - name: Export CHD_ENCODE_ORC (Linux/macOS)
-      if: runner.os != 'Windows'
+    - name: Export CHD_ENCODE_ORC
       shell: bash
       run: echo "CHD_ENCODE_ORC=${HOME}/encode-orc/build/encode-orc" >> $GITHUB_ENV
-
-    - name: Export CHD_ENCODE_ORC (Windows)
-      if: runner.os == 'Windows'
-      shell: pwsh
-      run: |
-        "CHD_ENCODE_ORC=$env:USERPROFILE\encode-orc\build\encode-orc.exe" | Out-File -FilePath $env:GITHUB_ENV -Append

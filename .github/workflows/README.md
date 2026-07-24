@@ -2,6 +2,7 @@
 
 | Workflow | Purpose                                                                                                                                             | Status |
 |---|-----------------------------------------------------------------------------------------------------------------------------------------------------|---|
+| `build.yml` → `fixtures` | Builds encode-orc once and synthesizes the NTSC + PAL colour-bars TBCs via `scripts/make-fixtures.sh`, publishing them as the `tbc-fixtures` artifact every test job below consumes | Active |
 | `build.yml` → `linux` | Build + `meson test` (with encode-orc-driven integration) + symbol-surface check, matrix on x86_64 / arm64                                          | Active |
 | `build.yml` → `linux-asan-ubsan` | ASan + UBSan build + `meson test` (with encode-orc-driven integration), x86_64 only                                                                 | Active |
 | `build.yml` → `linux-tsan` | ThreadSanitizer build + `meson test` (with encode-orc-driven integration), x86_64 only                                                              | Active |
@@ -17,12 +18,19 @@
 ## Reusable actions
 
 - `.github/actions/setup-encode-orc/` — composite action that clones,
-  builds (with cache), and exports `CHD_ENCODE_ORC` so
-  `test_integration` runs against real NTSC + PAL colour-bars
-  TBC fixtures instead of self-skipping. Pinned to a specific
+  builds (with cache), and exports `CHD_ENCODE_ORC`. Pinned to a specific
   encode-orc commit via the `commit` input. encode-orc has no
   GitHub Releases — only ephemeral workflow artifacts — so source-build
   with commit-keyed cache is the durable pattern.
+
+  Linux only, and deliberately: `build.yml` runs it in one `fixtures` job
+  and hands the resulting TBCs to the other platforms as an artifact, which
+  the integration test picks up through `CHD_ENCODE_ORC_FIXTURE_DIR`. A TBC
+  is raw samples plus a SQLite sidecar and says nothing about the machine
+  that wrote it, so building the encoder five times bought nothing but five
+  chances to fail on a platform encode-orc does not support. It also means
+  every platform decodes byte-identical input. `rust.yml` and the two GPU
+  workflows still call the action directly; all three are Linux.
 
 ## AWS GPU runners
 

@@ -18,8 +18,36 @@ jobs:
       - uses: actions/checkout@v7
       - run: ./scripts/check-version.sh
 
+  # encode-orc is built once, here, and every OS below decodes the TBCs this
+  # job produces rather than building its own copy of the encoder. The fixtures
+  # are a few MB of raw samples that say nothing about the machine that made
+  # them, so one producer is enough, and it means the platforms are all
+  # decoding byte-identical input instead of whatever their own encode-orc
+  # build happened to emit.
+  fixtures:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up encode-orc
+        uses: ./.github/actions/setup-encode-orc
+
+      - name: Synthesize the NTSC + PAL fixtures
+        run: ./scripts/make-fixtures.sh "${GITHUB_WORKSPACE}/fixtures"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tbc-fixtures
+          path: fixtures
+          if-no-files-found: error
+          # Raw 16-bit samples compress well, but re-zipping them per job is
+          # not worth the CPU on either end.
+          compression-level: 1
+          retention-days: 1
+
   linux:
     name: linux-${{ matrix.arch }}
+    needs: fixtures
     strategy:
       fail-fast: false
       matrix:
@@ -65,12 +93,16 @@ jobs:
           . .venv/bin/activate
           meson compile -C build
 
-      - name: Set up encode-orc (drives integration fixtures)
-        uses: ./.github/actions/setup-encode-orc
+      - name: Fetch the prebuilt TBC fixtures
+        uses: actions/download-artifact@v4
+        with:
+          name: tbc-fixtures
+          path: fixtures
 
       - name: Test
         env:
           LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib
+          CHD_ENCODE_ORC_FIXTURE_DIR: ${{ github.workspace }}/fixtures
         run: |
           . .venv/bin/activate
           meson test -C build --print-errorlogs
@@ -121,6 +153,7 @@ jobs:
 
   # x86_64 only — one sanitizer run is enough to gate the suite.
   linux-asan-ubsan:
+    needs: fixtures
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -159,12 +192,16 @@ jobs:
           . .venv/bin/activate
           meson compile -C build
 
-      - name: Set up encode-orc (drives integration fixtures)
-        uses: ./.github/actions/setup-encode-orc
+      - name: Fetch the prebuilt TBC fixtures
+        uses: actions/download-artifact@v4
+        with:
+          name: tbc-fixtures
+          path: fixtures
 
       - name: Test
         env:
           LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib
+          CHD_ENCODE_ORC_FIXTURE_DIR: ${{ github.workspace }}/fixtures
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
           ASAN_OPTIONS: detect_leaks=0
         run: |
@@ -175,6 +212,7 @@ jobs:
   # binary. x86_64 only (the suite is identical to the ASan run; we just
   # want to catch races in the chd_decode_frames_async path).
   linux-tsan:
+    needs: fixtures
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -213,12 +251,16 @@ jobs:
           . .venv/bin/activate
           meson compile -C build
 
-      - name: Set up encode-orc (drives integration fixtures)
-        uses: ./.github/actions/setup-encode-orc
+      - name: Fetch the prebuilt TBC fixtures
+        uses: actions/download-artifact@v4
+        with:
+          name: tbc-fixtures
+          path: fixtures
 
       - name: Test
         env:
           LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib
+          CHD_ENCODE_ORC_FIXTURE_DIR: ${{ github.workspace }}/fixtures
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
         run: |
           . .venv/bin/activate
@@ -226,6 +268,7 @@ jobs:
 
   macos:
     name: macos-${{ matrix.arch }}
+    needs: fixtures
     strategy:
       fail-fast: false
       matrix:
@@ -280,12 +323,16 @@ jobs:
           . .venv/bin/activate
           meson compile -C build
 
-      - name: Set up encode-orc (drives integration fixtures)
-        uses: ./.github/actions/setup-encode-orc
+      - name: Fetch the prebuilt TBC fixtures
+        uses: actions/download-artifact@v4
+        with:
+          name: tbc-fixtures
+          path: fixtures
 
       - name: Test
         env:
           DYLD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib
+          CHD_ENCODE_ORC_FIXTURE_DIR: ${{ github.workspace }}/fixtures
         run: |
           . .venv/bin/activate
           meson test -C build --print-errorlogs
@@ -313,6 +360,7 @@ jobs:
   # arm64 suite unrun, which is the part most likely to break.
   windows:
     name: windows-${{ matrix.arch }}
+    needs: fixtures
     strategy:
       fail-fast: false
       matrix:
@@ -384,11 +432,16 @@ jobs:
         shell: pwsh
         run: meson compile -C build
 
-      - name: Set up encode-orc (drives integration fixtures)
-        uses: ./.github/actions/setup-encode-orc
+      - name: Fetch the prebuilt TBC fixtures
+        uses: actions/download-artifact@v4
+        with:
+          name: tbc-fixtures
+          path: fixtures
 
       - name: Test
         shell: pwsh
+        env:
+          CHD_ENCODE_ORC_FIXTURE_DIR: ${{ github.workspace }}/fixtures
         run: meson test -C build --print-errorlogs
 
       - name: Verify exported chd_* symbols
