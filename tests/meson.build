@@ -199,6 +199,25 @@ test('dropout_spans_abi', test_dropout_spans_abi)
 # regardless of the working directory the test runs from.
 nn_fixture_arg = '-DCHD_TEST_FIXTURE_DIR="' + (meson.current_source_dir() / 'fixtures') + '"'
 
+# Put the ONNX Runtime we built against next to the NN test binaries so it is
+# the copy they load. Windows searches the directory of the running executable
+# ahead of every PATH entry, and also ahead of System32 where Windows ML keeps
+# its own older onnxruntime.dll. Leaving our copy only on PATH lets that
+# System32 build load instead; being too old for the API version these headers
+# ask for, it returns a null OrtApi that faults on first use. The executable's
+# own directory is the one place searched before System32, so the DLLs have to
+# live there. No-op off Windows, where the runtime is resolved by rpath.
+ort_test_runtime = []
+if host_machine.system() == 'windows' and has_ort and ort_root != ''
+  fs = import('fs')
+  foreach dll : ['onnxruntime.dll', 'onnxruntime_providers_shared.dll']
+    dll_src = ort_root / 'lib' / dll
+    if fs.exists(dll_src)
+      ort_test_runtime += fs.copyfile(dll_src, dll)
+    endif
+  endforeach
+endif
+
 # NN framework smoke tests (Ort::Env lifecycle, provider availability,
 # chd_nn_model_load_from_file / _from_memory error paths, and a real-model
 # happy path against the synthetic fixture). The body self-skips when the
@@ -207,7 +226,7 @@ test_nn_framework = executable('test_nn_framework',
   'unit/test_nn_framework.cpp',
   cpp_args: [nn_fixture_arg],
   dependencies: chromadec_abi_dep)
-test('nn_framework', test_nn_framework)
+test('nn_framework', test_nn_framework, depends: ort_test_runtime)
 
 # nnTransform3D wiring smoke test. Constructs a session from the located model
 # (the synthetic fixture by default, or real weights via $CHD_TEST_NN_MODEL) and
@@ -219,7 +238,7 @@ if has_ort
     'unit/test_nntransform3d.cpp',
     cpp_args: [nn_fixture_arg],
     dependencies: [chromadec_internal_dep, ort_dep])
-  test('nntransform3d', test_nntransform3d)
+  test('nntransform3d', test_nntransform3d, depends: ort_test_runtime)
 
   # ldzeug2 NN decoders. Same shape as the nnTransform3D test: binds sessions
   # from the located model (synthetic fixture by default, or real weights via
@@ -228,5 +247,5 @@ if has_ort
     'unit/test_ldzeug.cpp',
     cpp_args: [nn_fixture_arg],
     dependencies: [chromadec_internal_dep, ort_dep])
-  test('ldzeug', test_ldzeug)
+  test('ldzeug', test_ldzeug, depends: ort_test_runtime)
 endif
