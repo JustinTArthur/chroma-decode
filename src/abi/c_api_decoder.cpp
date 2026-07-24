@@ -130,10 +130,13 @@ chd_status_t validateCrop(const chd::metadata::LdDecodeMetaData::VideoParameters
     return CHD_OK;
 }
 
+// The destination map is passed as a pointer-to-member so it is selected
+// from d->optionMaps only after the null check below; naming the map at the
+// call site (d->optionMaps.f64) would dereference d before it is validated.
 template <typename T>
 chd_status_t setOpt(chd_decoder_t *d, const char *name,
                     chd::decoders::registry::OptionType type, T value,
-                    std::unordered_map<std::string, T> &dst) {
+                    std::unordered_map<std::string, T> chd::decoders::registry::OptionMaps::*dst) {
     if (d == nullptr || name == nullptr) return set_arg_error("chd_decoder_set_option");
     if (d->committed) {
         chd::detail::set_last_error("chd_decoder_set_option: decoder already committed");
@@ -144,7 +147,7 @@ chd_status_t setOpt(chd_decoder_t *d, const char *name,
                                     + name + "\" not valid for this decoder kind");
         return CHD_E_INVALID_ARG;
     }
-    dst[name] = std::move(value);
+    (d->optionMaps.*dst)[name] = std::move(value);
     return CHD_OK;
 }
 
@@ -388,7 +391,13 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
         // GRAYS emits only the E'Y plane; YUV444PS also emits E'Cb/E'Cr.
         const bool includeChroma = (frame->format == CHD_PIXEL_YUV444PS);
         const int32_t outputHeight = d->outputWriter.getOutputHeight();
-        d->outputWriter.convertToFloat(primaryCF, frame->floatPlane, includeChroma);
+        try {
+            d->outputWriter.convertToFloat(primaryCF, frame->floatPlane, includeChroma);
+        } catch (const std::exception &e) {
+            chd::detail::set_last_error(
+                std::string("chd_decode_frame: float conversion failed: ") + e.what());
+            return CHD_E_INTERNAL;
+        }
         frame->outputWidth = outputWidth;
         frame->outputHeight = outputHeight;
         frame->info.format = frame->format;
@@ -399,7 +408,13 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
         // Direct ComponentFrame → R'G'B' float planes; no Y'CbCr integer
         // intermediate. Same geometry as the integer convert() path.
         const int32_t outputHeight = d->outputWriter.getOutputHeight();
-        d->outputWriter.convertToFloatRGB(primaryCF, frame->floatPlane);
+        try {
+            d->outputWriter.convertToFloatRGB(primaryCF, frame->floatPlane);
+        } catch (const std::exception &e) {
+            chd::detail::set_last_error(
+                std::string("chd_decode_frame: RGB float conversion failed: ") + e.what());
+            return CHD_E_INTERNAL;
+        }
         frame->outputWidth = outputWidth;
         frame->outputHeight = outputHeight;
         frame->info.format = frame->format;
@@ -407,7 +422,13 @@ chd_status_t decodeFrameLocked(chd_decoder_t *d, size_t workerIdx,
         frame->info.height = outputHeight;
         frame->info.num_planes = 3;
     } else {
-        d->outputWriter.convert(primaryCF, frame->u16Plane);
+        try {
+            d->outputWriter.convert(primaryCF, frame->u16Plane);
+        } catch (const std::exception &e) {
+            chd::detail::set_last_error(
+                std::string("chd_decode_frame: conversion failed: ") + e.what());
+            return CHD_E_INTERNAL;
+        }
         const int32_t planes =
             (d->outputConfig.pixelFormat == chd::output::OutputWriter::GRAY16) ? 1 : 3;
         const int32_t outputHeight = static_cast<int32_t>(
@@ -452,22 +473,24 @@ void chd_decoder_free(chd_decoder_t *d) { delete d; }
 // ── Options ──────────────────────────────────────────────────────────────────
 
 chd_status_t chd_decoder_set_option_f64(chd_decoder_t *d, const char *name, double v) {
-    return setOpt(d, name, chd::decoders::registry::OptionType::F64, v, d->optionMaps.f64);
+    return setOpt(d, name, chd::decoders::registry::OptionType::F64, v,
+                  &chd::decoders::registry::OptionMaps::f64);
 }
 
 chd_status_t chd_decoder_set_option_i32(chd_decoder_t *d, const char *name, int32_t v) {
-    return setOpt(d, name, chd::decoders::registry::OptionType::I32, v, d->optionMaps.i32);
+    return setOpt(d, name, chd::decoders::registry::OptionType::I32, v,
+                  &chd::decoders::registry::OptionMaps::i32);
 }
 
 chd_status_t chd_decoder_set_option_bool(chd_decoder_t *d, const char *name, int v) {
     return setOpt<bool>(d, name, chd::decoders::registry::OptionType::Bool, v != 0,
-                        d->optionMaps.boolean);
+                        &chd::decoders::registry::OptionMaps::boolean);
 }
 
 chd_status_t chd_decoder_set_option_str(chd_decoder_t *d, const char *name, const char *v) {
     if (v == nullptr) return set_arg_error("chd_decoder_set_option_str", "value");
     return setOpt<std::string>(d, name, chd::decoders::registry::OptionType::Str, v,
-                               d->optionMaps.str);
+                               &chd::decoders::registry::OptionMaps::str);
 }
 
 chd_status_t chd_decoder_has_option(const chd_decoder_t *d, const char *name) {
@@ -991,19 +1014,20 @@ chd_status_t chd_decode_frames_async(chd_decoder_t *d,
     }
     if (n == 0) return CHD_OK;
 
-    // W workers; each owns decoder[w] + decoderMutexes[w] for the duration
-    // of the call. Workers race-pull next-index from `next` so unequal
-    // frame costs balance automatically. The mutex per worker is needed
-    // only because `chd_decode_frame` (sync) may run concurrently against
-    // worker 0 — without sync contention, the mutex would just be the
-    // worker's stack discipline.
+    // W workers; each owns decoder[w] for the duration of the call. Workers
+    // race-pull next-index from `next` so unequal frame costs balance
+    // automatically. decoderMutexes[w] is held per decode, not per worker:
+    // it must cover decodeFrameLocked (which mutates decoder[w] state and
+    // contends with sync `chd_decode_frame` on worker 0), but must be
+    // released before `cb` runs — a callback that re-enters the library
+    // (e.g. chd_decode_frame, which takes decoderMutexes[0]) would
+    // self-deadlock on the non-recursive mutex otherwise.
     const size_t W = std::min<size_t>(n, d->decoders.size());
     std::atomic<size_t> next{0};
     std::vector<std::thread> workers;
     workers.reserve(W);
     for (size_t w = 0; w < W; w++) {
         workers.emplace_back([d, indices, n, cb, user, cancel, w, &next]() {
-            std::lock_guard<std::mutex> lock(*d->decoderMutexes[w]);
             while (true) {
                 const size_t i = next.fetch_add(1, std::memory_order_relaxed);
                 if (i >= n) return;
@@ -1013,7 +1037,11 @@ chd_status_t chd_decode_frames_async(chd_decoder_t *d,
                     continue;
                 }
                 chd_frame_t *frame = nullptr;
-                const chd_status_t rc = decodeFrameLocked(d, w, idx, &frame);
+                chd_status_t rc;
+                {
+                    std::lock_guard<std::mutex> lock(*d->decoderMutexes[w]);
+                    rc = decodeFrameLocked(d, w, idx, &frame);
+                }
                 cb(user, rc, idx, frame);
             }
         });
