@@ -92,11 +92,16 @@ fn diagnostic_sink() {
         corrupt.with_extension("tbc.json"),
         std::fs::read_to_string(source.with_extension("tbc.json"))
             .unwrap()
-            .replace(r#""numberOfSequentialFields":2"#, r#""numberOfSequentialFields":9"#),
+            .replace(
+                r#""numberOfSequentialFields":2"#,
+                r#""numberOfSequentialFields":9"#,
+            ),
     )
     .unwrap();
     let err = Video::open_composite(&corrupt, None, None).unwrap_err();
-    let detail = err.message().expect("corrupt sidecar names the inconsistency");
+    let detail = err
+        .message()
+        .expect("corrupt sidecar names the inconsistency");
     let marked: Vec<_> = captured
         .take()
         .into_iter()
