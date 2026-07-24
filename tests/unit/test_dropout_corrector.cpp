@@ -13,7 +13,6 @@
 #include <vector>
 
 #include <sqlite3.h>
-#include <unistd.h>
 
 #include <filesystem>
 
@@ -223,13 +222,22 @@ int testMultiSourceCorrection() {
     return 0;
 }
 
+// Sidecar fixtures live in a directory of our own so a concurrently running
+// test binary can never pick the same name.
+std::filesystem::path fixtureDir()
+{
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / "chd_dropout_corrector_test";
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+
 // Build a tiny CVBS dropouts.meta sidecar in a temp file with a handful of
 // rows that exercise the transcoder slicing logic. Returns the path; caller
 // is responsible for removing it.
 std::string writeFixtureDropoutSidecar(const std::vector<std::tuple<int32_t,int32_t,int32_t>> &rows)
 {
-    const std::string path = std::filesystem::temp_directory_path() /
-        ("chd_dropouts_test_" + std::to_string(::getpid()) + ".dropouts.meta");
+    const std::string path = (fixtureDir() / "transcoder.dropouts.meta").string();
     std::filesystem::remove(path);
     sqlite3 *db = nullptr;
     sqlite3_open(path.c_str(), &db);
@@ -311,8 +319,7 @@ int testDropoutAbiNullArgs() {
 int testCvbsDropoutsWrongVersionRejected() {
     // Sidecars with the wrong user_version are rejected, not silently
     // misinterpreted (spec consumer requirement 3 implies this).
-    const std::string path = std::filesystem::temp_directory_path() /
-        ("chd_dropouts_bad_" + std::to_string(::getpid()) + ".dropouts.meta");
+    const std::string path = (fixtureDir() / "bad_version.dropouts.meta").string();
     std::filesystem::remove(path);
     sqlite3 *db = nullptr;
     sqlite3_open(path.c_str(), &db);
@@ -334,6 +341,7 @@ int main() {
     if (testCvbsDropoutsTranscoder()) return 1;
     if (testCvbsDropoutsWrongVersionRejected()) return 1;
     if (testDropoutAbiNullArgs()) return 1;
+    std::filesystem::remove(fixtureDir());
     std::cout << "test_dropout_corrector: OK\n";
     return 0;
 }

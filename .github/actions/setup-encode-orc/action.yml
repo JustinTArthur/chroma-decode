@@ -61,9 +61,11 @@ runs:
         # encode-orc builds with -Werror, so a distro/Homebrew bump in one of
         # its dependencies (spdlog against a newer fmt, say) turns a
         # deprecation warning into a failed fixture build. We only need the
-        # binary, so drop the escalation.
+        # binary, so silence the warnings outright: CMAKE_CXX_FLAGS lands
+        # ahead of the target's own flags, where a -Wno-error would just be
+        # undone by the -Werror that follows it, and -w would not.
         cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_CXX_FLAGS=-Wno-error
+          -DCMAKE_CXX_FLAGS=-w
         cmake --build build
 
     - name: Clone + build encode-orc (Windows)

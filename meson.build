@@ -285,10 +285,18 @@ pkg.generate(libchromadec,
              variables: ['link_language=c++'])
 
 cmake_mod = import('cmake')
-cmake_mod.write_basic_package_version_file(
-  name: 'chromadec',
-  version: meson.project_version(),
-  compatibility: 'SameMinorVersion')
+cmake_dir = get_option('libdir') / 'cmake' / 'chromadec'
+
+# Hand-rolled rather than cmake_mod.write_basic_package_version_file(), which
+# would make CMake a build-time dependency.
+cmake_ver_cfg = configuration_data()
+cmake_ver_cfg.set('CVF_VERSION', meson.project_version())
+configure_file(
+  input:         'meson/chromadec-configversion.cmake.in',
+  output:        'chromadecConfigVersion.cmake',
+  configuration: cmake_ver_cfg,
+  install:       true,
+  install_dir:   cmake_dir)
 
 cmake_pkg_cfg = configuration_data()
 cmake_pkg_cfg.set('VERSION', meson.project_version())
@@ -304,7 +312,6 @@ cmake_mod.configure_package_config_file(
 # CMake reads backslashes in a quoted string as escapes, so the Windows paths
 # meson hands back have to be normalised to forward slashes, which CMake accepts
 # on every platform.
-cmake_dir = get_option('libdir') / 'cmake' / 'chromadec'
 cmake_tgt_cfg = configuration_data()
 cmake_tgt_cfg.set('CHROMADEC_LIBDIR',
                   (get_option('prefix') / get_option('libdir')).replace('\\', '/'))
