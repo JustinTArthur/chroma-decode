@@ -37,7 +37,9 @@ if [ ! -x "$encode_orc" ]; then
     exit 1
 fi
 if [ -z "$assets" ]; then
-    assets="$(cd "$(dirname "$encode_orc")/../.." && pwd)/assets"
+    # encode-orc lives at $repo/build/encode-orc and its assets at
+    # $repo/assets, matching deriveAssetsPath() in the integration test.
+    assets="$(cd "$(dirname "$encode_orc")/.." && pwd)/assets"
 fi
 if [ ! -d "$assets" ]; then
     printf 'assets directory does not exist: %s\n' "$assets" >&2
