@@ -15,22 +15,6 @@ chd_status_t arg_error(const char *what) {
     return CHD_E_INVALID_ARG;
 }
 
-// Per-pixel uint16_t stride for a given pixel format. Used to compute the
-// row stride that chd_frame_get_plane reports back to the caller.
-int32_t u16PerPixel(chd_pixel_format_t fmt) {
-    switch (fmt) {
-        case CHD_PIXEL_RGB48:        return 3;
-        case CHD_PIXEL_YUV444P16:    return 1;  // planar — each plane is width samples
-        case CHD_PIXEL_GRAY16:       return 1;
-        case CHD_PIXEL_YUV440P16:    return 1;
-        case CHD_PIXEL_YUV444PS:     return 0;  // floats — not exposed via this getter
-        case CHD_PIXEL_RGBS:         return 0;  // floats — not exposed via this getter
-        case CHD_PIXEL_GRAYS:        return 0;  // floats — not exposed via this getter
-        case CHD_PIXEL_YUV440PS:     return 0;  // floats — not exposed via this getter
-    }
-    return 1;
-}
-
 bool isFrame440(const chd_frame_t *f) {
     return f->format == CHD_PIXEL_YUV440P16 || f->format == CHD_PIXEL_YUV440PS;
 }
@@ -201,7 +185,6 @@ chd_status_t chd_frame_get_plane(const chd_frame_t *f, chd_plane_t plane,
                 "chd_frame_get_plane: use chd_frame_get_plane_float for float pixel formats");
             return CHD_E_INVALID_ARG;
     }
-    (void)u16PerPixel;
     chd::detail::set_last_error("chd_frame_get_plane: unknown pixel format");
     return CHD_E_INTERNAL;
 }
