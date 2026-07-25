@@ -41,8 +41,6 @@ ld-chroma-decoder [options] <input.tbc> <output.rgb>
 - `--chroma-phase <number>`: Phase rotation applied to chroma components (degrees; default 0.0)
 
 #### Video Area Control
-- `--ffll, --first_active_field_line <number>`: The first visible line of a field. Range 1-259 for NTSC (default: 20), 2-308 for PAL (default: 22)
-- `--lfll, --last_active_field_line <number>`: The last visible line of a field. Range 1-259 for NTSC (default: 259), 2-308 for PAL (default: 308)
 - `--ffrl, --first_active_frame_line <number>`: The first visible line of a frame. Range 1-525 for NTSC (default: 40), 1-620 for PAL (default: 44)
 - `--lfrl, --last_active_frame_line <number>`: The last visible line of a frame. Range 1-525 for NTSC (default: 525), 1-620 for PAL (default: 620)
 
@@ -65,8 +63,6 @@ ld-chroma-decoder [options] <input.tbc> <output.rgb>
 - `--input-metadata <filename>`: Specify the input metadata file (default input.db)
 
 #### Active Area Selection
-- `--ffll, --first_active_field_line <number>`: The first visible line of a field
-- `--lfll, --last_active_field_line <number>`: The last visible line of a field  
 - `--ffrl, --first_active_frame_line <number>`: The first visible line of a frame
 - `--lfrl, --last_active_frame_line <number>`: The last visible line of a frame
 

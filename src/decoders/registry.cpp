@@ -41,13 +41,11 @@ chd::color::ColorConversion colorConversionFor(const OptionMaps &o) {
     return chd::color::resolveColorConversion(cdp, bsp);
 }
 
-// Common option names that apply to most decoders. The six active-crop bounds
+// Common option names that apply to most decoders. The active-crop bounds
 // are inclusive on both axes.
 bool isCropOption(const std::string &name, OptionType type) {
     if (type != OptionType::I32) return false;
-    return name == CHD_OPT_FIRST_ACTIVE_FIELD_LINE
-        || name == CHD_OPT_LAST_ACTIVE_FIELD_LINE
-        || name == CHD_OPT_FIRST_ACTIVE_FRAME_LINE
+    return name == CHD_OPT_FIRST_ACTIVE_FRAME_LINE
         || name == CHD_OPT_LAST_ACTIVE_FRAME_LINE
         || name == CHD_OPT_FIRST_ACTIVE_SAMPLE
         || name == CHD_OPT_LAST_ACTIVE_SAMPLE;

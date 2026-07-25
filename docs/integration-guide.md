@@ -274,7 +274,7 @@ the matching open function and metadata sidecar file from the
 | ld-decode / vhs-decode / encode-orc composite `.tbc`        | `.tbc.db` / `.tbc.json`              | none (pass `NULL`)                                                                                      |
 | vhs-decode luma + chroma `.tbc` pair                        | shared `.tbc.json`, or one per plane | none (pass `NULL`)                                                                                      |
 | ld-chroma-encoder `.tbc` (line-locked or `--sc-locked` PAL) | `.tbc.db` / `.tbc.json`              | none (the sidecar carries the subcarrier lock)                                                          |
-| CVBS field raster with `.meta` (`.composite` or `.y`/`.c`)  | `.meta`                              | none, or `is_subcarrier_locked = 1` for an encoder-style subcarrier-locked raster                       |
+| CVBS field raster with `.meta` (`.composite` or `.y`/`.c`)  | `.meta`                              | none, or `is_subcarrier_locked = 1` for a subcarrier-locked (blanking-start) raster                     |
 | CVBS frame native with `.meta` (`.composite` or `.y`/`.c`)  | `.meta`                              | none, or `layout = CHD_FRAME_LAYOUT_FRAME_NATIVE` at the ambiguous sizes noted below                    |
 | CVBS without `.meta` (any layout)                           | none                                 | `standard`, `encoding`, `signal_state` (all required), plus `layout` / `is_subcarrier_locked` as needed |
 
@@ -314,12 +314,16 @@ Setting an option that does not apply to the decoder kind returns
 
 Framing is two independent knobs, and each does one thing.
 
-`CHD_OPT_FIRST_ACTIVE_SAMPLE` / `CHD_OPT_LAST_ACTIVE_SAMPLE` and the four
-`*_ACTIVE_*_LINE` options are the crop: they choose which signal samples and
-lines become picture. All six are inclusive and are named after the fields
+`CHD_OPT_FIRST_ACTIVE_SAMPLE` / `CHD_OPT_LAST_ACTIVE_SAMPLE` and the two
+`*_ACTIVE_FRAME_LINE` options are the crop: they choose which signal samples and
+lines become picture. All four are inclusive and **0-indexed** — samples are
+stored-row positions, frame lines are lines of the woven interlaced frame — and
+are named after the fields
 [`chd_video_get_info`](api-reference.md#chd_video_info_t) reports, so you can
 read a bound, adjust it, and set it straight back. Widen them to admit overscan
-the default active window excludes.
+the default active window excludes. To work in the analogue standards' line
+numbers instead, convert with `chd_video_frame_line_to_signal_line` /
+`chd_video_signal_line_to_frame_line`.
 
 `CHD_OPT_PADDING_MULTIPLE` rounds both frame axes up to a multiple your codec
 wants, by adding a black border around the picture. It never moves or alters the
@@ -595,7 +599,6 @@ or as part of **your decode loop**.
 | `--pad, --output-padding` | `CHD_OPT_PADDING_MULTIPLE` (i32; **defaults to `1` / no padding here**) |
 | `-p, --output-format` | `CHD_OPT_OUTPUT_FORMAT` (str) + `CHD_OPT_OUTPUT_Y4M_HEADERS` (bool) |
 | `-t, --threads` | `CHD_OPT_THREAD_COUNT` (i32, `0` = auto) |
-| `--ffll / --lfll` (field lines) | `CHD_OPT_FIRST_ACTIVE_FIELD_LINE` / `CHD_OPT_LAST_ACTIVE_FIELD_LINE` (i32; **inclusive** — last line is included) |
 | `--ffrl / --lfrl` (frame lines) | `CHD_OPT_FIRST_ACTIVE_FRAME_LINE` / `CHD_OPT_LAST_ACTIVE_FRAME_LINE` (i32; **inclusive** — last line is included) |
 | `--input-metadata <file>` | the `metadata_path` argument to [`chd_video_open_composite`](api-reference.md#chd_video_open_composite) |
 | `-s, --start` / `-l, --length` | the frame **indices** you pass to [`chd_decode_frame`](api-reference.md#chd_decode_frame). There is no global start/length; you drive the range |
@@ -612,15 +615,19 @@ or as part of **your decode loop**.
   with `CHD_OPT_OUTPUT_Y4M_HEADERS` only if you specifically need it.
 - **Neural decoders are first-class** here (`CHD_DEC_NN_TRANSFORM3D`,
   `CHD_DEC_LDZEUG_*`) rather than out-of-tree patches.
-- **Active frame and field lines are inclusive.**
-  `CHD_OPT_FIRST_ACTIVE_FRAME_LINE` / `CHD_OPT_LAST_ACTIVE_FRAME_LINE` and
-  `CHD_OPT_FIRST_ACTIVE_FIELD_LINE` / `CHD_OPT_LAST_ACTIVE_FIELD_LINE` name the
-  first and last lines that are *part of* the active region; the last line is
-  included, not one-past-the-end. If you previously passed ld-chroma-decoder's
-  exclusive `--lfrl` / `--lfll` values through, subtract one. **TBC sidecar
-  metadata is handled for you:** tbc-tools writes `last_active_frame_line` /
-  `last_active_field_line` as exclusive bounds, and the SQLite reader translates
-  them to the inclusive scheme on ingest, so a v4 sidecar decodes to exactly the
+- **Active frame lines are inclusive and 0-indexed woven-raster lines.**
+  `CHD_OPT_FIRST_ACTIVE_FRAME_LINE` / `CHD_OPT_LAST_ACTIVE_FRAME_LINE` name the
+  first and last lines that are *part of* the active region, 0-indexed into the
+  woven interlaced frame (field 1 on the even lines, field 2 on the odd); the
+  last line is included, not one-past-the-end. If you previously passed
+  ld-chroma-decoder's exclusive `--lfrl` value through, subtract one. To set or
+  read the crop in the analogue standards' field-sequential line numbers, convert
+  with `chd_video_frame_line_to_signal_line` / `chd_video_signal_line_to_frame_line`.
+  The active field-line range is derived from the frame-line crop, so there is no
+  separate field-line option.
+  **TBC sidecar metadata is handled for you:** tbc-tools writes
+  `last_active_frame_line` as an exclusive bound, and the SQLite reader translates
+  it to the inclusive scheme on ingest, so a v4 sidecar decodes to exactly the
   picture its author intended. With the default active region you get a full
   **486-line picture for 525-line (NTSC)** systems and **576 lines for 625-line
   (PAL)** systems.
@@ -651,4 +658,7 @@ or as part of **your decode loop**.
   synthesized crops are indistinguishable. Setting only one end (say
   `CHD_OPT_LAST_ACTIVE_SAMPLE`) is fine; the other keeps the sidecar's value.
   Every resulting bound is validated against the field, so an out-of-range
-  override is reported at `chd_decoder_commit`, not silently dropped.
+  override is reported at `chd_decoder_commit`, not silently dropped. To place
+  a window given in SMPTE ST 244 / EBU Tech 3280-E sample numbers, convert
+  each bound with `chd_video_standard_sample_to_row_sample` first; it applies
+  the right rotation for the source's horizontal alignment.

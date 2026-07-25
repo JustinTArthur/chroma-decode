@@ -178,6 +178,10 @@ void LdzeugLumaSepDecoder::decodeFrames(
         if (outFrame >= outFrameCap) break;
         chd::output::ComponentFrame &out = componentFrames[outFrame];
         out.init(vp);
+        // The network runs over the full frameHeight raster, but ComponentFrame
+        // drops the second field's trailing padding row. Demod only the rows it
+        // stores; the last frame line is discarded, as the comb path does.
+        const int32_t storedHeight = out.getHeight();
 
         const auto phaseIDs = framePhaseIDs(inputFields[frameIdx], inputFields[frameIdx + 1]);
 
@@ -238,7 +242,7 @@ void LdzeugLumaSepDecoder::decodeFrames(
                 const auto *src = field.data.data();
                 for (int32_t y = 0; y < fieldHeight; ++y) {
                     const int32_t frameLine = y * 2 + yOffset;
-                    if (frameLine >= frameHeight) break;
+                    if (frameLine >= storedHeight) break;
                     demodLine(frameLine,
                               src + y * fieldWidth,
                               yOut + frameLine * fieldWidth);
@@ -268,7 +272,7 @@ void LdzeugLumaSepDecoder::decodeFrames(
                 const float *yOut = outputs->data(0);
                 for (int32_t y = 0; y < fieldHeight; ++y) {
                     const int32_t frameLine = y * 2 + yOffset;
-                    if (frameLine >= frameHeight) break;
+                    if (frameLine >= storedHeight) break;
                     demodLine(frameLine,
                               src + y * fieldWidth,
                               yOut + y * fieldWidth);

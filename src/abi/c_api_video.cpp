@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <chromadec/video.h>
 
+#include <cmath>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -694,6 +695,112 @@ chd_status_t chd_video_get_info(const chd_video_t *v, chd_video_info_t *out) {
         const_cast<chd_video_t *>(v)->metadata->getIsFirstFieldFirst() ? 1 : 0;
     out->is_widescreen          = vp.isWidescreen ? 1 : 0;
     out->is_subcarrier_locked   = vp.isSubcarrierLocked ? 1 : 0;
+    return CHD_OK;
+}
+
+// Field-sequential signal line number <-> 0-indexed woven-raster frame line.
+// Field 1 (top field) is even frame lines / signal lines 1..H; field 2 is odd
+// frame lines / signal lines H+1..(2H)-1, where H = fieldHeight. See video.h
+// for the full contract (source raster only; not monotonic; first may exceed
+// last).
+chd_status_t chd_video_frame_line_to_signal_line(const chd_video_t *v,
+                                                  int32_t frame_line, int32_t *out) {
+    if (v == nullptr || out == nullptr || v->source == nullptr) {
+        return set_error("chd_video_frame_line_to_signal_line: null argument");
+    }
+    const int32_t H = v->source->parameters().fieldHeight;
+    if (frame_line < 0 || frame_line > (2 * H) - 2) {
+        return set_error("chd_video_frame_line_to_signal_line: frame_line out of range "
+                         "[0, (2 * field_height) - 2]", CHD_E_OUT_OF_RANGE);
+    }
+    *out = (frame_line % 2 == 0) ? (frame_line / 2 + 1)
+                                 : (H + (frame_line + 1) / 2);
+    return CHD_OK;
+}
+
+chd_status_t chd_video_signal_line_to_frame_line(const chd_video_t *v,
+                                                  int32_t signal_line, int32_t *out) {
+    if (v == nullptr || out == nullptr || v->source == nullptr) {
+        return set_error("chd_video_signal_line_to_frame_line: null argument");
+    }
+    const int32_t H = v->source->parameters().fieldHeight;
+    if (signal_line < 1 || signal_line > (2 * H) - 1) {
+        return set_error("chd_video_signal_line_to_frame_line: signal_line out of range "
+                         "[1, (2 * field_height) - 1]", CHD_E_OUT_OF_RANGE);
+    }
+    *out = (signal_line <= H) ? (2 * (signal_line - 1))
+                              : (2 * (signal_line - H - 1) + 1);
+    return CHD_OK;
+}
+
+// Interface-standard sample numbering (SMPTE ST 244 / EBU Tech 3280-E,
+// sample 0 = first digital active sample) <-> 0-indexed stored-row sample.
+// The rotation between the two follows the source's horizontal alignment:
+// blanking-start rows put standard sample 0 a full digital active line
+// before the row end; sync-start rows start at the first sample at or after
+// the standard's own 0H. See video.h for the full contract.
+static chd_status_t standardSampleRotation(const chd_video_t *v, const char *caller,
+                                           int32_t &rowWidth, int32_t &rowOfStandardZero) {
+    const auto &vp = v->source->parameters();
+    chd::format::VideoStandard standard;
+    switch (vp.system) {
+    case chd::metadata::NTSC:  standard = chd::format::VideoStandard::NTSC;  break;
+    case chd::metadata::PAL_M: standard = chd::format::VideoStandard::PAL_M; break;
+    default:                   standard = chd::format::VideoStandard::PAL;   break;
+    }
+    const auto &preset = chd::format::getVideoStandard(standard);
+    const int32_t samplesPerLine =
+        (preset.standard == chd::format::VideoStandard::PAL)
+            ? 1135
+            : static_cast<int32_t>(preset.samplesPerLineAvg);
+    if (vp.fieldWidth != samplesPerLine) {
+        return set_error(std::string(caller) + ": source row width " +
+                             std::to_string(vp.fieldWidth) +
+                             " is not the standard 4fsc line of " +
+                             std::to_string(samplesPerLine) + " samples",
+                         CHD_E_UNSUPPORTED);
+    }
+    if (v->source->horizontalAlignment() == chd::format::HorizontalAlignment::BLANKING_START) {
+        rowOfStandardZero = samplesPerLine - preset.digitalActiveSamples;
+    } else {
+        rowOfStandardZero = samplesPerLine - static_cast<int32_t>(std::ceil(
+            preset.digitalActiveSamples + preset.zeroHBlankingStartRow));
+    }
+    rowWidth = samplesPerLine;
+    return CHD_OK;
+}
+
+chd_status_t chd_video_standard_sample_to_row_sample(const chd_video_t *v,
+                                                     int32_t standard_sample, int32_t *out) {
+    if (v == nullptr || out == nullptr || v->source == nullptr) {
+        return set_error("chd_video_standard_sample_to_row_sample: null argument");
+    }
+    int32_t rowWidth = 0, rowOfStandardZero = 0;
+    const chd_status_t status = standardSampleRotation(
+        v, "chd_video_standard_sample_to_row_sample", rowWidth, rowOfStandardZero);
+    if (status != CHD_OK) return status;
+    if (standard_sample < 0 || standard_sample >= rowWidth) {
+        return set_error("chd_video_standard_sample_to_row_sample: standard_sample out of "
+                         "range [0, field_width - 1]", CHD_E_OUT_OF_RANGE);
+    }
+    *out = (standard_sample + rowOfStandardZero) % rowWidth;
+    return CHD_OK;
+}
+
+chd_status_t chd_video_row_sample_to_standard_sample(const chd_video_t *v,
+                                                     int32_t row_sample, int32_t *out) {
+    if (v == nullptr || out == nullptr || v->source == nullptr) {
+        return set_error("chd_video_row_sample_to_standard_sample: null argument");
+    }
+    int32_t rowWidth = 0, rowOfStandardZero = 0;
+    const chd_status_t status = standardSampleRotation(
+        v, "chd_video_row_sample_to_standard_sample", rowWidth, rowOfStandardZero);
+    if (status != CHD_OK) return status;
+    if (row_sample < 0 || row_sample >= rowWidth) {
+        return set_error("chd_video_row_sample_to_standard_sample: row_sample out of "
+                         "range [0, field_width - 1]", CHD_E_OUT_OF_RANGE);
+    }
+    *out = (row_sample - rowOfStandardZero + rowWidth) % rowWidth;
     return CHD_OK;
 }
 

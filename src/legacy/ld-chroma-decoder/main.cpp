@@ -195,25 +195,13 @@ int main(int argc, char *argv[])
                                      QCoreApplication::translate("main", "number"));
     parser.addOption(threadsOption);
 
-    // Option to override calculated firstActiveFieldLine in our video parameters (-ffll)
-    QCommandLineOption firstFieldLineOption(QStringList() << "ffll" << "first_active_field_line",
-                                            QCoreApplication::translate("main", "The first visible line of a field. Range 1-259 for NTSC (default: 20), 2-308 for PAL (default: 22)"),
-                                            QCoreApplication::translate("main", "number"));
-    parser.addOption(firstFieldLineOption);
-
-    // Option to override calculated lastActiveFieldLine in our video parameters (-lfll)
-    QCommandLineOption lastFieldLineOption(QStringList() << "lfll" << "last_active_field_line",
-                                           QCoreApplication::translate("main", "The last visible line of a field. Range 1-259 for NTSC (default: 259), 2-308 for PAL (default: 308)"),
-                                           QCoreApplication::translate("main", "number"));
-    parser.addOption(lastFieldLineOption);
-
     // Option to override calculated firstActiveFrameLine in our video parameters (-ffrl)
     QCommandLineOption firstFrameLineOption(QStringList() << "ffrl" << "first_active_frame_line",
                                             QCoreApplication::translate("main", "The first visible line of a frame. Range 1-525 for NTSC (default: 40), 1-620 for PAL (default: 44)"),
                                             QCoreApplication::translate("main", "number"));
     parser.addOption(firstFrameLineOption);
 
-    // Option to override calculated lastActiveFieldLine in our video parameters (-lfll)
+    // Option to override calculated lastActiveFrameLine in our video parameters (-lfrl)
     QCommandLineOption lastFrameLineOption(QStringList() << "lfrl" << "last_active_frame_line",
                                            QCoreApplication::translate("main", "The last visible line of a frame. Range 1-525 for NTSC (default: 525), 1-620 for PAL (default: 620)"),
                                            QCoreApplication::translate("main", "number"));
@@ -445,14 +433,6 @@ int main(int argc, char *argv[])
     }
 
     LdDecodeMetaData::LineParameters lineParameters;
-    if (parser.isSet(firstFieldLineOption)) {
-        lineParameters.firstActiveFieldLine = parser.value(firstFieldLineOption).toInt();
-    }
-    
-    if (parser.isSet(lastFieldLineOption)) {
-        lineParameters.lastActiveFieldLine = parser.value(lastFieldLineOption).toInt();
-    }
-    
     if (parser.isSet(firstFrameLineOption)) {
         lineParameters.firstActiveFrameLine = parser.value(firstFrameLineOption).toInt();
     }

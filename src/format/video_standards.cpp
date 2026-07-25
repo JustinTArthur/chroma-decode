@@ -154,13 +154,9 @@ makeVideoParameters(const VideoStandardPreset &preset,
     // don't yet have a metadata sidecar that overrides these, so populate the
     // defaults explicitly so chd_video_get_info reports sensible values.
     if (preset.standard == VideoStandard::PAL) {
-        vp.firstActiveFieldLine = 22;
-        vp.lastActiveFieldLine  = 307;
         vp.firstActiveFrameLine = 44;
         vp.lastActiveFrameLine  = 619;
     } else {
-        vp.firstActiveFieldLine = 20;
-        vp.lastActiveFieldLine  = 262;
         vp.firstActiveFrameLine = 39;
         vp.lastActiveFrameLine  = 524;
     }
@@ -217,8 +213,8 @@ makeCvbsVideoParameters(const VideoStandardPreset &preset,
     const bool subcarrierLocked =
         (layout == FrameLayout::FRAME_NATIVE && preset.standard == VideoStandard::PAL) ||
         subcarrierLockedOverride.value_or(false);
-    // Derived alignment: subcarrier-locked rasters carry the encoder-style
-    // blanking-first cut, plain field rasters the line-locked sync-first cut.
+    // Derived alignment: subcarrier-locked rasters carry the blanking-start
+    // cut, plain field rasters the line-locked sync-start cut.
     // Frame-native sources resolve theirs from the 0H measurement and pass
     // it via alignmentOverride.
     const HorizontalAlignment alignment = alignmentOverride.value_or(

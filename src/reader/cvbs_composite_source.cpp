@@ -49,6 +49,9 @@ bool CvbsCompositeSource::open(const std::string &compositePath,
     videoParameters = chd::format::makeCvbsVideoParameters(
         videoStandard, sampleEncoding, blackLevelOverride, layout,
         subcarrierLockedOverride);
+    rowAlignment = subcarrierLockedOverride.value_or(false)
+                       ? chd::format::HorizontalAlignment::BLANKING_START
+                       : chd::format::HorizontalAlignment::SYNC_START;
     fieldWidth   = videoParameters.fieldWidth;
     fieldHeight  = videoParameters.fieldHeight;
     fieldSamples = fieldWidth * fieldHeight;
@@ -84,6 +87,7 @@ bool CvbsCompositeSource::open(const std::string &compositePath,
         videoParameters = chd::format::makeCvbsVideoParameters(
             videoStandard, sampleEncoding, blackLevelOverride, layout,
             subcarrierLockedOverride, alignment);
+        rowAlignment = alignment;
     }
 
     isOpen = true;
@@ -125,6 +129,11 @@ chd::format::SignalState CvbsCompositeSource::signalState() const
 chd::format::SampleEncoding CvbsCompositeSource::sampleEncoding() const
 {
     return encoding;
+}
+
+chd::format::HorizontalAlignment CvbsCompositeSource::horizontalAlignment() const
+{
+    return rowAlignment;
 }
 
 chd::format::FrameLayout CvbsCompositeSource::frameLayout() const

@@ -176,16 +176,13 @@ bool SqliteReader::readCaptureMetadata(int &captureId, std::string &system, std:
                                      int &colourBurstStart, int &colourBurstEnd,
                                      bool &isMapped, bool &isSubcarrierLocked, bool &isWidescreen,
                                      int &white16bIre, int &black16bIre, int &blanking16bIre, std::string &captureNotes,
-                                     int &firstActiveFieldLine, int &lastActiveFieldLine,
                                      int &firstActiveFrameLine, int &lastActiveFrameLine)
 {
     // Detect optional columns via a single PRAGMA table_info pass.
     // blanking_16b_ire was added upstream in ld-decode commit 1e4a33db (2025);
-    // the four active-line columns were added by tbc-tools at v4 (commit a0f45b0).
+    // the active-line columns were added by tbc-tools at v4 (commit a0f45b0).
     // We accept files with or without any of these.
     bool hasBlankingColumn = false;
-    bool hasFirstActiveFieldLine = false;
-    bool hasLastActiveFieldLine = false;
     bool hasFirstActiveFrameLine = false;
     bool hasLastActiveFrameLine = false;
     {
@@ -195,8 +192,6 @@ bool SqliteReader::readCaptureMetadata(int &captureId, std::string &system, std:
             while (checkQuery.next()) {
                 const std::string columnName = checkQuery.value("name").toString();
                 if      (columnName == "blanking_16b_ire")        hasBlankingColumn        = true;
-                else if (columnName == "first_active_field_line") hasFirstActiveFieldLine  = true;
-                else if (columnName == "last_active_field_line")  hasLastActiveFieldLine   = true;
                 else if (columnName == "first_active_frame_line") hasFirstActiveFrameLine  = true;
                 else if (columnName == "last_active_frame_line")  hasLastActiveFrameLine   = true;
             }
@@ -210,8 +205,6 @@ bool SqliteReader::readCaptureMetadata(int &captureId, std::string &system, std:
                        "colour_burst_start, colour_burst_end, is_mapped, is_subcarrier_locked, "
                        "is_widescreen, white_16b_ire, black_16b_ire";
     if (hasBlankingColumn)        queryStr += ", blanking_16b_ire";
-    if (hasFirstActiveFieldLine)  queryStr += ", first_active_field_line";
-    if (hasLastActiveFieldLine)   queryStr += ", last_active_field_line";
     if (hasFirstActiveFrameLine)  queryStr += ", first_active_frame_line";
     if (hasLastActiveFrameLine)   queryStr += ", last_active_frame_line";
     queryStr += ", capture_notes FROM capture LIMIT 1";
@@ -258,18 +251,11 @@ bool SqliteReader::readCaptureMetadata(int &captureId, std::string &system, std:
     // Active-line range overrides — tbc-tools v4+. -1 signals "absent" so
     // the caller leaves the standard default in place.
     //
-    // tbc-tools writes the *last* active field/frame line as an EXCLUSIVE bound
-    // (one past the last active line). We carry both inclusively, so translate
-    // those two columns to our scheme on ingest: a real value becomes value-1;
-    // the -1 "absent" sentinel passes through. The *first* active field/frame
+    // tbc-tools writes the *last* active frame line as an EXCLUSIVE bound
+    // (one past the last active line). We carry it inclusively, so translate
+    // that column to our scheme on ingest: a real value becomes value-1;
+    // the -1 "absent" sentinel passes through. The *first* active frame
     // line is inclusive in both schemes and is not adjusted.
-    firstActiveFieldLine = hasFirstActiveFieldLine ? SqliteValue::toIntOrDefault(query, "first_active_field_line", -1) : -1;
-    if (hasLastActiveFieldLine) {
-        const int exclusiveLast = SqliteValue::toIntOrDefault(query, "last_active_field_line", -1);
-        lastActiveFieldLine = (exclusiveLast > 0) ? (exclusiveLast - 1) : -1;
-    } else {
-        lastActiveFieldLine = -1;
-    }
     firstActiveFrameLine = hasFirstActiveFrameLine ? SqliteValue::toIntOrDefault(query, "first_active_frame_line", -1) : -1;
     if (hasLastActiveFrameLine) {
         const int exclusiveLast = SqliteValue::toIntOrDefault(query, "last_active_frame_line", -1);

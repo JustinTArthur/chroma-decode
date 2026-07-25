@@ -113,7 +113,8 @@ struct DropoutRow {
 };
 
 bool writeTbcSidecar(const std::string &path, int32_t numFields,
-                     const std::vector<DropoutRow> &dropouts = {}) {
+                     const std::vector<DropoutRow> &dropouts = {},
+                     int32_t subcarrierLocked = 1) {
     if (fs::exists(path)) fs::remove(path);
     sqlite3 *db = nullptr;
     if (sqlite3_open(path.c_str(), &db) != SQLITE_OK) return false;
@@ -128,10 +129,11 @@ bool writeTbcSidecar(const std::string &path, int32_t numFields,
         "  is_mapped, is_subcarrier_locked, is_widescreen, "
         "  white_16b_ire, black_16b_ire, blanking_16b_ire) "
         "VALUES (1, 'NTSC', 'ld-decode', 14318181.818, 147, 905, 910, 263, ?, "
-        "        92, 119, 1, 1, 0, 51200, 17920, 16384);";
+        "        92, 119, 1, ?, 0, 51200, 17920, 16384);";
     sqlite3_stmt *cap = nullptr;
     sqlite3_prepare_v2(db, capSql, -1, &cap, nullptr);
     sqlite3_bind_int(cap, 1, numFields);
+    sqlite3_bind_int(cap, 2, subcarrierLocked);
     sqlite3_step(cap);
     sqlite3_finalize(cap);
 
@@ -571,11 +573,13 @@ int testParallelAsyncDispatch(const fs::path &dir) {
 // ─── Test 6: tbc-tools v4 active-line columns. ─────────────────────────────
 //
 // tbc-tools added first/last_active_field_line + first/last_active_frame_line
-// columns to the capture table at schema v4 (commit a0f45b0). When present,
-// our SQLite reader should feed them through LineParameters::applyTo so
-// the resulting VideoParameters override the standard ld-decode defaults.
-// Caller-supplied CHD_OPT_*_ACTIVE_*_LINE options should still win over
-// sidecar values, mirroring the established option precedence.
+// columns to the capture table at schema v4 (commit a0f45b0). Our SQLite reader
+// feeds the frame-line columns through LineParameters::applyTo so the resulting
+// VideoParameters override the standard ld-decode defaults; the field-line
+// columns are tolerated when present but not read (the active field-line range
+// is derived from the frame-line crop). Caller-supplied
+// CHD_OPT_*_ACTIVE_FRAME_LINE options should still win over sidecar values,
+// mirroring the established option precedence.
 
 // tbc-tools v4 capture schema (only the columns we need for this test —
 // PRAGMA table_info detection picks up the optional ones we set).
@@ -833,6 +837,49 @@ int testReverseFieldOrder(const fs::path &dir) {
     chd_frame_free(frame);
 
     chd_decoder_free(dec);
+    chd_video_free(video);
+    fs::remove(tbc);
+    fs::remove(sidecar);
+    return 0;
+}
+
+// ─── Test: active-line crop overrides reject bounds past the raster. ───────
+//
+// The frame-line escape-hatch bound feeds a buffer index and must be rejected
+// at commit:
+//
+//   Frame lines index ComponentFrame, which allocates (fieldHeight * 2) - 1
+//   rows (the second field's trailing line is padding, never stored). The last
+//   valid frame line is (fieldHeight * 2) - 2; for NTSC (fieldHeight 263) that
+//   is 524, and 525 is one row past the buffer.
+int testActiveLineCropBounds(const fs::path &dir) {
+    const std::string tbc     = (dir / "crop_bound.tbc").string();
+    const std::string sidecar = (dir / "crop_bound.tbc.db").string();
+    constexpr int32_t fieldWidth  = 910;
+    constexpr int32_t fieldHeight = 263;
+    constexpr int32_t numFields   = 4;
+
+    REQUIRE(writeBlackTbc(tbc, fieldWidth, fieldHeight, numFields));
+    REQUIRE(writeTbcSidecar(sidecar, numFields));
+
+    chd_video_t *video = nullptr;
+    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) == CHD_OK);
+
+    // Commit a single-option override and report the status. Each case gets a
+    // fresh uncommitted decoder.
+    auto commitWith = [&](const char *opt, int32_t value) -> chd_status_t {
+        chd_decoder_t *dec = nullptr;
+        if (chd_decoder_create(video, CHD_DEC_MONO, &dec) != CHD_OK) return CHD_E_INVALID_ARG;
+        const chd_status_t set = chd_decoder_set_option_i32(dec, opt, value);
+        const chd_status_t rc  = (set == CHD_OK) ? chd_decoder_commit(dec) : set;
+        chd_decoder_free(dec);
+        return rc;
+    };
+
+    // The last stored frame line is accepted; one past it is rejected.
+    REQUIRE(commitWith(CHD_OPT_LAST_ACTIVE_FRAME_LINE, (fieldHeight * 2) - 2) == CHD_OK);
+    REQUIRE(commitWith(CHD_OPT_LAST_ACTIVE_FRAME_LINE, (fieldHeight * 2) - 1) == CHD_E_INVALID_ARG);
+
     chd_video_free(video);
     fs::remove(tbc);
     fs::remove(sidecar);
@@ -1335,6 +1382,154 @@ int testPaddingAndSampleCrop(const fs::path &dir) {
     return 0;
 }
 
+// ─── Test: source frame line <-> field-sequential signal line conversion. ──
+//
+// NTSC raster (fieldHeight 263): field 1 = even frame lines / signal 1..263,
+// field 2 = odd frame lines / signal 264..525. The mapping is a bijection over
+// frame lines 0..524 and is deliberately non-monotonic (adjacent frame lines
+// jump fields), so the default active region's frame lines 39..524 map to
+// signal lines 283..263 (first > last).
+int testSignalLineConversion(const fs::path &dir) {
+    const std::string tbc     = (dir / "siglines.tbc").string();
+    const std::string sidecar = (dir / "siglines.tbc.db").string();
+    constexpr int32_t fieldWidth  = 910;
+    constexpr int32_t fieldHeight = 263;
+    constexpr int32_t numFields   = 4;
+
+    REQUIRE(writeBlackTbc(tbc, fieldWidth, fieldHeight, numFields));
+    REQUIRE(writeTbcSidecar(sidecar, numFields));
+
+    chd_video_t *video = nullptr;
+    REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) == CHD_OK);
+
+    int32_t s = 0, f = 0;
+    // Spot values across both fields, including the non-monotonic default crop.
+    REQUIRE(chd_video_frame_line_to_signal_line(video, 0, &s)   == CHD_OK && s == 1);
+    REQUIRE(chd_video_frame_line_to_signal_line(video, 1, &s)   == CHD_OK && s == 264);
+    REQUIRE(chd_video_frame_line_to_signal_line(video, 39, &s)  == CHD_OK && s == 283);
+    REQUIRE(chd_video_frame_line_to_signal_line(video, 523, &s) == CHD_OK && s == 525);
+    REQUIRE(chd_video_frame_line_to_signal_line(video, 524, &s) == CHD_OK && s == 263);
+    REQUIRE(chd_video_signal_line_to_frame_line(video, 283, &f) == CHD_OK && f == 39);
+    REQUIRE(chd_video_signal_line_to_frame_line(video, 263, &f) == CHD_OK && f == 524);
+    REQUIRE(chd_video_signal_line_to_frame_line(video, 264, &f) == CHD_OK && f == 1);
+
+    // Round-trips over the whole raster.
+    for (int32_t fl = 0; fl <= (2 * fieldHeight) - 2; fl++) {
+        REQUIRE(chd_video_frame_line_to_signal_line(video, fl, &s) == CHD_OK);
+        REQUIRE(chd_video_signal_line_to_frame_line(video, s, &f) == CHD_OK);
+        REQUIRE(f == fl);
+    }
+
+    // Ranges: frame lines 0..(2H-2); signal lines 1..(2H-1).
+    REQUIRE(chd_video_frame_line_to_signal_line(video, -1, &s)                   == CHD_E_OUT_OF_RANGE);
+    REQUIRE(chd_video_frame_line_to_signal_line(video, (2 * fieldHeight) - 1, &s) == CHD_E_OUT_OF_RANGE);
+    REQUIRE(chd_video_signal_line_to_frame_line(video, 0, &f)                    == CHD_E_OUT_OF_RANGE);
+    REQUIRE(chd_video_signal_line_to_frame_line(video, 2 * fieldHeight, &f)      == CHD_E_OUT_OF_RANGE);
+    REQUIRE(chd_video_signal_line_to_frame_line(video, (2 * fieldHeight) - 1, &f) == CHD_OK && f == 523);
+
+    // Null-argument guards.
+    REQUIRE(chd_video_frame_line_to_signal_line(nullptr, 0, &s)  == CHD_E_INVALID_ARG);
+    REQUIRE(chd_video_signal_line_to_frame_line(video, 1, nullptr) == CHD_E_INVALID_ARG);
+
+    chd_video_free(video);
+    fs::remove(tbc);
+    fs::remove(sidecar);
+    return 0;
+}
+
+// ─── Test: interface-standard sample <-> stored-row sample conversion. ──
+//
+// The rotation follows the source's horizontal alignment. The synthetic NTSC
+// sidecar marks the capture subcarrier-locked (blanking-start rows), putting
+// ST 244 sample 0 at row sample 142 and the digital active line 0..767 at
+// 142..909; with the lock flag cleared the raster is line-locked (sync-start
+// rows) and the same region lands at 125..892. A sidecar-less PAL .composite
+// covers the 625-line constants (177 sync-start, 187 blanking-start).
+int testStandardSampleConversion(const fs::path &dir) {
+    constexpr int32_t fieldWidth  = 910;
+    constexpr int32_t fieldHeight = 263;
+    constexpr int32_t numFields   = 4;
+
+    int32_t r = 0, s = 0;
+
+    // Blanking-start: the default synthetic sidecar is subcarrier-locked.
+    {
+        const std::string tbc     = (dir / "stdsamp_sc.tbc").string();
+        const std::string sidecar = (dir / "stdsamp_sc.tbc.db").string();
+        REQUIRE(writeBlackTbc(tbc, fieldWidth, fieldHeight, numFields));
+        REQUIRE(writeTbcSidecar(sidecar, numFields));
+        chd_video_t *video = nullptr;
+        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) == CHD_OK);
+
+        REQUIRE(chd_video_standard_sample_to_row_sample(video, 0, &r)   == CHD_OK && r == 142);
+        REQUIRE(chd_video_standard_sample_to_row_sample(video, 767, &r) == CHD_OK && r == 909);
+        REQUIRE(chd_video_standard_sample_to_row_sample(video, 768, &r) == CHD_OK && r == 0);
+        REQUIRE(chd_video_row_sample_to_standard_sample(video, 142, &s) == CHD_OK && s == 0);
+        REQUIRE(chd_video_row_sample_to_standard_sample(video, 0, &s)   == CHD_OK && s == 768);
+
+        // Round-trips over the whole row.
+        for (int32_t stdSample = 0; stdSample < fieldWidth; stdSample++) {
+            REQUIRE(chd_video_standard_sample_to_row_sample(video, stdSample, &r) == CHD_OK);
+            REQUIRE(chd_video_row_sample_to_standard_sample(video, r, &s) == CHD_OK);
+            REQUIRE(s == stdSample);
+        }
+
+        // Ranges + null guards.
+        REQUIRE(chd_video_standard_sample_to_row_sample(video, -1, &r)         == CHD_E_OUT_OF_RANGE);
+        REQUIRE(chd_video_standard_sample_to_row_sample(video, fieldWidth, &r) == CHD_E_OUT_OF_RANGE);
+        REQUIRE(chd_video_row_sample_to_standard_sample(video, -1, &s)         == CHD_E_OUT_OF_RANGE);
+        REQUIRE(chd_video_row_sample_to_standard_sample(video, fieldWidth, &s) == CHD_E_OUT_OF_RANGE);
+        REQUIRE(chd_video_standard_sample_to_row_sample(nullptr, 0, &r)        == CHD_E_INVALID_ARG);
+        REQUIRE(chd_video_row_sample_to_standard_sample(video, 0, nullptr)     == CHD_E_INVALID_ARG);
+
+        chd_video_free(video);
+        fs::remove(tbc);
+        fs::remove(sidecar);
+    }
+
+    // Sync-start: same raster with the subcarrier-lock flag cleared.
+    {
+        const std::string tbc     = (dir / "stdsamp_ll.tbc").string();
+        const std::string sidecar = (dir / "stdsamp_ll.tbc.db").string();
+        REQUIRE(writeBlackTbc(tbc, fieldWidth, fieldHeight, numFields));
+        REQUIRE(writeTbcSidecar(sidecar, numFields, {}, /*subcarrierLocked=*/0));
+        chd_video_t *video = nullptr;
+        REQUIRE(chd_video_open_composite(tbc.c_str(), sidecar.c_str(), nullptr, &video) == CHD_OK);
+
+        REQUIRE(chd_video_standard_sample_to_row_sample(video, 0, &r)   == CHD_OK && r == 125);
+        REQUIRE(chd_video_standard_sample_to_row_sample(video, 767, &r) == CHD_OK && r == 892);
+        REQUIRE(chd_video_row_sample_to_standard_sample(video, 0, &s)   == CHD_OK && s == 785);
+        REQUIRE(chd_video_row_sample_to_standard_sample(video, 125, &s) == CHD_OK && s == 0);
+
+        chd_video_free(video);
+        fs::remove(tbc);
+        fs::remove(sidecar);
+    }
+
+    // 625-line constants, both alignments, via a sidecar-less PAL .composite.
+    for (int32_t scLocked = 0; scLocked <= 1; scLocked++) {
+        const std::string composite = (dir / "stdsamp_pal.composite").string();
+        REQUIRE(writeUniformTbc(composite, 1135, 313, numFields, 16384));
+
+        chd_video_params_t params{};
+        params.standard             = CHD_STD_PAL;
+        params.encoding             = CHD_ENC_CVBS_U16_4FSC;
+        params.signal_state         = CHD_SIG_STANDARD_TBC_UNLOCKED;
+        params.is_subcarrier_locked = scLocked;
+
+        chd_video_t *video = nullptr;
+        REQUIRE(chd_video_open_composite(composite.c_str(), nullptr, &params, &video) == CHD_OK);
+        REQUIRE(chd_video_standard_sample_to_row_sample(video, 0, &r) == CHD_OK);
+        REQUIRE(r == (scLocked ? 187 : 177));
+        REQUIRE(chd_video_standard_sample_to_row_sample(video, 947, &r) == CHD_OK);
+        REQUIRE(r == (scLocked ? 1134 : 1124));
+        chd_video_free(video);
+        fs::remove(composite);
+    }
+
+    return 0;
+}
+
 int main() {
     const fs::path dir = fs::temp_directory_path() / "chd_phase_g_test";
     fs::create_directories(dir);
@@ -1345,12 +1540,15 @@ int main() {
     if (int rc = testParallelAsyncDispatch(dir);  rc != 0) return rc;
     if (int rc = testReverseFieldOrder(dir);          rc != 0) return rc;
     if (int rc = testActiveLineSidecarOverride(dir);  rc != 0) return rc;
+    if (int rc = testActiveLineCropBounds(dir);       rc != 0) return rc;
     if (int rc = testFloatOutputFormats(dir);         rc != 0) return rc;
     if (int rc = testRgbsOutputFormat(dir);           rc != 0) return rc;
     if (int rc = testOutputClampOption(dir);          rc != 0) return rc;
     if (int rc = testPhaseCompensationOptionScope(dir); rc != 0) return rc;
     if (int rc = testYcMergeDualTbc(dir);             rc != 0) return rc;
     if (int rc = testPaddingAndSampleCrop(dir);       rc != 0) return rc;
+    if (int rc = testSignalLineConversion(dir);       rc != 0) return rc;
+    if (int rc = testStandardSampleConversion(dir);   rc != 0) return rc;
 
     fs::remove(dir);
     std::cout << "test_decode_frame_abi: PASS\n";

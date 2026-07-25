@@ -161,6 +161,17 @@ chd::format::SignalState TbcSource::signalState() const
     return chd::format::SignalState::STANDARD_TBC_UNLOCKED;
 }
 
+chd::format::HorizontalAlignment TbcSource::horizontalAlignment() const
+{
+    // Line-locked .tbc rows start at 0H. A subcarrier-locked .tbc is cut at
+    // the first digital blanking sample instead, and its metadata sidecar's
+    // windows sit in those row coordinates.
+    if (boundParameters != nullptr && boundParameters->isSubcarrierLocked) {
+        return chd::format::HorizontalAlignment::BLANKING_START;
+    }
+    return chd::format::HorizontalAlignment::SYNC_START;
+}
+
 chd::format::SampleEncoding TbcSource::sampleEncoding() const
 {
     // The .tbc on-disk format stores 10-bit values shifted left 6

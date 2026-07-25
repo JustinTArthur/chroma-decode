@@ -366,8 +366,14 @@ pub struct VideoInfo {
     pub samples_per_frame: i32,
     pub sample_rate_hz: f64,
     pub fsc_hz: f64,
+    /// Inclusive, 0-indexed active-sample bounds within a stored row.
     pub first_active_sample: i32,
     pub last_active_sample: i32,
+    /// Inclusive, 0-indexed active frame-line bounds: lines of the woven
+    /// interlaced frame (field 1 on the even lines, field 2 on the odd). Use
+    /// `Video::frame_line_to_signal_line` / `Video::signal_line_to_frame_line`
+    /// to convert to and from the analogue standards' field-sequential signal
+    /// line numbers.
     pub first_active_frame_line: i32,
     pub last_active_frame_line: i32,
     pub black_16b_ire: i32,

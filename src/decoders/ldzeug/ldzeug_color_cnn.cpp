@@ -120,6 +120,10 @@ void LdzeugColorCnnDecoder::decodeFrames(
         if (outFrame >= outFrameCap) break;
         chd::output::ComponentFrame &out = componentFrames[outFrame];
         out.init(vp);
+        // The network runs over the full frameHeight raster, but ComponentFrame
+        // drops the second field's trailing padding row. Copy only the rows it
+        // stores; the last model output row is discarded, as the comb path does.
+        const int32_t storedHeight = out.getHeight();
 
         if (mode_ == Mode::Frame) {
             // Weave both fields into a single 3-channel weaved-frame input.
@@ -161,7 +165,7 @@ void LdzeugColorCnnDecoder::decodeFrames(
             const float *iPlane  = outData + 1 * frameStride;
             const float *qPlane  = outData + 2 * frameStride;
 
-            for (int32_t fy = 0; fy < frameHeight; ++fy) {
+            for (int32_t fy = 0; fy < storedHeight; ++fy) {
                 const chd::decoders::BurstDeviation &dev = rowDev[fy];
                 double *yRow = out.y(fy);
                 double *uRow = out.u(fy);
@@ -218,7 +222,7 @@ void LdzeugColorCnnDecoder::decodeFrames(
 
             for (int32_t y = 0; y < fieldHeight; ++y) {
                 const int32_t frameLine = y * 2 + yOffset;
-                if (frameLine >= frameHeight) break;
+                if (frameLine >= storedHeight) break;
                 const chd::decoders::BurstDeviation &dev = rowDev[y];
                 double *yRow = out.y(frameLine);
                 double *uRow = out.u(frameLine);

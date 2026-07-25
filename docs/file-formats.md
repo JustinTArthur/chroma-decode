@@ -134,8 +134,7 @@ The sidecar carries two kinds of information:
 | `isWidescreen` | 16:9 flag. |
 | `colourBurstStart` / `End` | Burst window, in samples. |
 | `activeVideoStart` / `End` | Active-line sample range. |
-| `firstActiveFieldLine` / `lastActiveFieldLine` | Active field-line range. |
-| `firstActiveFrameLine` / `lastActiveFrameLine` | Active frame-line range. |
+| `firstActiveFrameLine` / `lastActiveFrameLine` | Active frame-line range (the active field-line range is derived from this). |
 | `white16bIre`, `black16bIre`, `blanking16bIre` | 16-bit IRE reference levels. |
 | `numberOfSequentialFields` | Field count recorded by the capturer. |
 
@@ -254,15 +253,15 @@ whether the sampling was line-locked or subcarrier-locked; the two are
 byte-identical on disk. The library defaults to line-locked (matching every
 current field-raster producer) and reports `is_subcarrier_locked = 0` even
 for burst-locked signal states; set `is_subcarrier_locked` in the override to
-mark an encoder-style subcarrier-locked raster. Frame-native PAL implies a
+mark a subcarrier-locked raster. Frame-native PAL implies a
 subcarrier-locked lattice.
 
 The burst-gate and active-video windows follow the rows' horizontal
 alignment (where 0H sits within a stored row; see
 [Sample numbering](api-reference.md#sample-numbering) for the sample-0
 origin). Field rasters are declared: plain ones use the sync-start (0H)
-cut, and the `is_subcarrier_locked` override selects the encoder-style
-blanking-start cut, whose burst gate matches what ld-chroma-encoder writes
+cut, and the `is_subcarrier_locked` override selects the blanking-start
+cut, whose burst gate matches what ld-chroma-encoder writes
 into its own scLocked sidecars (PAL burst 109-149). The default active-video
 crop is the interface standard's digital active line (SMPTE ST 244 / EBU
 Tech 3280-E), positioned for the row's alignment. Frame-native files are

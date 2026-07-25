@@ -41,7 +41,7 @@ public:
 
     // Read capture-level metadata.
     //
-    // The four trailing active-line outputs are populated only when the
+    // The two trailing active-line outputs are populated only when the
     // corresponding columns exist in the capture table (tbc-tools v4+
     // schema bump, commit a0f45b0); they're set to -1 otherwise. -1
     // signals "no sidecar override" — the caller should leave whatever
@@ -53,7 +53,6 @@ public:
                            int &colourBurstStart, int &colourBurstEnd,
                            bool &isMapped, bool &isSubcarrierLocked, bool &isWidescreen,
                            int &white16bIre, int &black16bIre, int &blanking16bIre, std::string &captureNotes,
-                           int &firstActiveFieldLine, int &lastActiveFieldLine,
                            int &firstActiveFrameLine, int &lastActiveFrameLine);
 
     // Read PCM audio parameters

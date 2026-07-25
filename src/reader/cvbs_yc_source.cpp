@@ -60,6 +60,9 @@ bool CvbsYcSource::open(const std::string &yPath,
     videoParameters = chd::format::makeCvbsVideoParameters(
         videoStandard, sampleEncoding, blackLevelOverride, layout,
         subcarrierLockedOverride);
+    rowAlignment = subcarrierLockedOverride.value_or(false)
+                       ? chd::format::HorizontalAlignment::BLANKING_START
+                       : chd::format::HorizontalAlignment::SYNC_START;
     fieldWidth   = videoParameters.fieldWidth;
     fieldHeight  = videoParameters.fieldHeight;
     fieldSamples = fieldWidth * fieldHeight;
@@ -99,6 +102,7 @@ bool CvbsYcSource::open(const std::string &yPath,
         videoParameters = chd::format::makeCvbsVideoParameters(
             videoStandard, sampleEncoding, blackLevelOverride, layout,
             subcarrierLockedOverride, alignment);
+        rowAlignment = alignment;
     }
 
     isOpen = true;
@@ -141,6 +145,11 @@ chd::format::SignalState CvbsYcSource::signalState() const
 chd::format::SampleEncoding CvbsYcSource::sampleEncoding() const
 {
     return encoding;
+}
+
+chd::format::HorizontalAlignment CvbsYcSource::horizontalAlignment() const
+{
+    return rowAlignment;
 }
 
 chd::format::FrameLayout CvbsYcSource::frameLayout() const

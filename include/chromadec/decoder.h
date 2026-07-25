@@ -76,12 +76,10 @@ chd_status_t chd_decoder_get_output_info(const chd_decoder_t *d, chd_output_info
 #define CHD_OPT_CHROMA_UPPER_SIDEBAND_HZ    "chroma_upper_sideband_hz"  /* f64, equiband_vsb only: upper-sideband room +X above fSC */
 #define CHD_OPT_TRANSFORM_THRESHOLD         "transform_threshold"       /* f64 */
 #define CHD_OPT_TRANSFORM_THRESHOLDS_FILE   "transform_thresholds_file" /* str */
-#define CHD_OPT_FIRST_ACTIVE_SAMPLE         "first_active_sample"       /* i32, inclusive */
-#define CHD_OPT_LAST_ACTIVE_SAMPLE          "last_active_sample"        /* i32, inclusive */
-#define CHD_OPT_FIRST_ACTIVE_FIELD_LINE     "first_active_field_line"   /* i32, inclusive */
-#define CHD_OPT_LAST_ACTIVE_FIELD_LINE      "last_active_field_line"    /* i32, inclusive */
-#define CHD_OPT_FIRST_ACTIVE_FRAME_LINE     "first_active_frame_line"   /* i32, inclusive */
-#define CHD_OPT_LAST_ACTIVE_FRAME_LINE      "last_active_frame_line"    /* i32, inclusive */
+#define CHD_OPT_FIRST_ACTIVE_SAMPLE         "first_active_sample"       /* i32, inclusive, 0-indexed */
+#define CHD_OPT_LAST_ACTIVE_SAMPLE          "last_active_sample"        /* i32, inclusive, 0-indexed */
+#define CHD_OPT_FIRST_ACTIVE_FRAME_LINE     "first_active_frame_line"   /* i32, inclusive, 0-indexed woven frame line */
+#define CHD_OPT_LAST_ACTIVE_FRAME_LINE      "last_active_frame_line"    /* i32, inclusive, 0-indexed woven frame line */
 #define CHD_OPT_NN_INPUT_MAGNITUDE_SCALE    "nn_input_magnitude_scale"  /* f64 (nnTransform3D only) */
 #define CHD_OPT_NN_CHROMA_BANDPASS          "nn_chroma_bandpass"        /* bool (ldzeug2_luma_sep only) */
 #define CHD_OPT_OUTPUT_FORMAT               "output_format"             /* str: "yuv444p16"|"yuv444ps"|"rgb48"|"rgbs"|"gray16"|"grays"|"yuv440p16"|"yuv440ps" */

@@ -50,6 +50,11 @@ public:
     virtual chd::format::SignalState     signalState()    const = 0;
     virtual chd::format::SampleEncoding  sampleEncoding() const = 0;
 
+    // Horizontal alignment of the stored rows (where 0H sits within a row),
+    // as served: the cut the burst/active windows in parameters() were built
+    // for. Drives the standard-sample <-> row-sample conversion in the C ABI.
+    virtual chd::format::HorizontalAlignment horizontalAlignment() const = 0;
+
     // Container addressing of the backing file(s). Every `.tbc` is a field
     // raster; CVBS sources report the layout resolved at open time.
     virtual chd::format::FrameLayout     frameLayout()    const = 0;

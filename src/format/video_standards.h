@@ -149,7 +149,7 @@ makeVideoParameters(const VideoStandardPreset &preset,
 // applies an optional `.meta` black_level override (in the Sample Encoding's
 // integer domain) over the preset default.
 // alignmentOverride replaces the derived horizontal alignment (field rasters
-// are sync-start unless the subcarrier-locked override marks an encoder-style
+// are sync-start unless the subcarrier-locked override marks a blanking-start
 // raster); frame-native sources pass the value resolved from the open-time 0H
 // measurement (resolveFrameNativeAlignment).
 chd::metadata::LdDecodeMetaData::VideoParameters

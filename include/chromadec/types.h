@@ -90,8 +90,12 @@ typedef struct chd_video_params {
 } chd_video_params_t;
 
 /* Source geometry and levels, reported by chd_video_get_info. The four
- * first_/last_ crop bounds are inclusive on both axes; sample bounds are row
- * positions within a stored row, whose origin depends on the source's
+ * first_/last_ crop bounds are inclusive on both axes. Frame lines are
+ * 0-indexed lines of the woven interlaced frame (field 1 on the even lines,
+ * field 2 on the odd); use chd_video_frame_line_to_signal_line /
+ * chd_video_signal_line_to_frame_line to convert to and from the analogue
+ * standards' field-sequential signal line numbers. Sample bounds are 0-indexed
+ * row positions within a stored row, whose origin depends on the source's
  * horizontal alignment and so need not match the sample numbering of EBU Tech
  * 3280 or SMPTE ST 244. */
 typedef struct chd_video_info {

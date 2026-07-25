@@ -99,8 +99,6 @@ void applyCropOverrides(chd::metadata::LdDecodeMetaData::VideoParameters &vp,
         auto it = o.i32.find(k);
         if (it != o.i32.end()) dst = it->second + bias;
     };
-    apply(CHD_OPT_FIRST_ACTIVE_FIELD_LINE, vp.firstActiveFieldLine);
-    apply(CHD_OPT_LAST_ACTIVE_FIELD_LINE,  vp.lastActiveFieldLine);
     apply(CHD_OPT_FIRST_ACTIVE_FRAME_LINE, vp.firstActiveFrameLine);
     apply(CHD_OPT_LAST_ACTIVE_FRAME_LINE,  vp.lastActiveFrameLine);
     apply(CHD_OPT_FIRST_ACTIVE_SAMPLE,     vp.activeVideoStart);
@@ -119,12 +117,16 @@ chd_status_t validateCrop(const chd::metadata::LdDecodeMetaData::VideoParameters
             "<= last_active_sample < field_width");
         return CHD_E_INVALID_ARG;
     }
+    // ComponentFrame stores (fieldHeight * 2) - 1 rows: the trailing line of the
+    // second field is padding and never allocated, so the last valid frame line
+    // is (fieldHeight * 2) - 2. Admitting the row above it would let the output
+    // and decode paths dereference one row past the buffer.
     if (vp.firstActiveFrameLine < 0
-        || vp.lastActiveFrameLine >= (vp.fieldHeight * 2)
+        || vp.lastActiveFrameLine >= (vp.fieldHeight * 2) - 1
         || vp.lastActiveFrameLine < vp.firstActiveFrameLine) {
         chd::detail::set_last_error(
             "chd_decoder_commit: active frame-line crop must satisfy 0 <= "
-            "first_active_frame_line <= last_active_frame_line < 2 * field_height");
+            "first_active_frame_line <= last_active_frame_line < (2 * field_height) - 1");
         return CHD_E_INVALID_ARG;
     }
     return CHD_OK;

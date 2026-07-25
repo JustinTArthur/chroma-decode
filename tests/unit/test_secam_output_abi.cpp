@@ -52,8 +52,6 @@ chd::metadata::LdDecodeMetaData::VideoParameters testParams() {
     vp.activeVideoEnd = 60;
     vp.firstActiveFrameLine = 2;
     vp.lastActiveFrameLine = 17;
-    vp.firstActiveFieldLine = 1;
-    vp.lastActiveFieldLine = 9;
     vp.isValid = true;
     return vp;
 }

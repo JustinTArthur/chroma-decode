@@ -92,7 +92,7 @@ SyntheticFrame buildSyntheticNtscFrame() {
 
 int testSingleSourceCorrection() {
     SyntheticFrame f = buildSyntheticNtscFrame();
-    const int32_t targetLine = (f.vp.firstActiveFieldLine + f.vp.lastActiveFieldLine) / 2;
+    const int32_t targetLine = (f.vp.firstActiveFieldLine() + f.vp.lastActiveFieldLine()) / 2;
     const int32_t dropoutStart = f.vp.activeVideoStart + 100;
     const int32_t dropoutEnd = f.vp.activeVideoStart + 200;
 
@@ -132,7 +132,7 @@ int testIntraFieldFallback() {
     // corrector should still find a same-field neighbour and the stats
     // should reflect a successful correction.
     SyntheticFrame f = buildSyntheticNtscFrame();
-    const int32_t targetLine = (f.vp.firstActiveFieldLine + f.vp.lastActiveFieldLine) / 2;
+    const int32_t targetLine = (f.vp.firstActiveFieldLine() + f.vp.lastActiveFieldLine()) / 2;
     const int32_t dropoutStart = f.vp.activeVideoStart + 50;
     const int32_t dropoutEnd = f.vp.activeVideoStart + 80;
 
@@ -183,7 +183,7 @@ int testMultiSourceCorrection() {
     // Distinguish the extra's sample values so we can verify the corrector
     // actually pulled from it.
     constexpr uint16_t kExtraMark = 0xABCD;
-    const int32_t targetLine = (primary.vp.firstActiveFieldLine + primary.vp.lastActiveFieldLine) / 2;
+    const int32_t targetLine = (primary.vp.firstActiveFieldLine() + primary.vp.lastActiveFieldLine()) / 2;
     const int32_t dropoutStart = primary.vp.activeVideoStart + 300;
     const int32_t dropoutEnd = primary.vp.activeVideoStart + 320;
     for (int32_t x = 0; x < primary.vp.fieldWidth; x++) {

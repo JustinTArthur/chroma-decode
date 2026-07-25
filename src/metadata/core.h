@@ -86,16 +86,17 @@ public:
         // Colour subcarrier frequency in Hz
         double fSC = -1.0;
 
-        // The range of active lines within a frame.
-        // This is the same information represented in two different ways, for
-        // field- and frame-based processing respectively; the field range
-        // should cover the active lines in both fields of a frame.
-        // These are half-open ranges, where lines are numbered sequentially
-        // from 1 within each field or interlaced frame.
-        int32_t firstActiveFieldLine = -1;
-        int32_t lastActiveFieldLine = -1;
+        // The range of active lines within an interlaced frame, 0-indexed and
+        // inclusive on both ends (the last value is the last active line, not
+        // one past it).
         int32_t firstActiveFrameLine = -1;
         int32_t lastActiveFrameLine = -1;
+
+        // The equivalent active line range within a single field, derived from
+        // the frame-line crop above so there is a single source of truth. The
+        // dropout corrector is the only consumer.
+        int32_t firstActiveFieldLine() const { return (firstActiveFrameLine + 1) / 2; }
+        int32_t lastActiveFieldLine()  const { return lastActiveFrameLine / 2; }
 
         // Flags if our data has been initialized yet
         bool isValid = false;
@@ -108,8 +109,6 @@ public:
     // Specification for customising the range of active lines in VideoParameters.
     // -1 for any of these means to use the default for the standard.
     struct LineParameters {
-        int32_t firstActiveFieldLine = -1;
-        int32_t lastActiveFieldLine = -1;
         int32_t firstActiveFrameLine = -1;
         int32_t lastActiveFrameLine = -1;
 

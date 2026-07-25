@@ -464,8 +464,8 @@ and re-declares the opened source SECAM, requiring a `PAL` preset when a
 `.meta` sidecar is present. The remaining three merge over sidecar metadata,
 because the CVBS
 `.meta` schema does not carry them: `layout` (`CHD_FRAME_LAYOUT_UNKNOWN`
-means auto-detect), `is_subcarrier_locked` (set to mark an encoder-style
-subcarrier-locked field raster; field rasters default to line-locked), and
+means auto-detect), `is_subcarrier_locked` (set to mark a subcarrier-locked,
+blanking-start field raster; field rasters default to line-locked), and
 `is_second_field_first` (set to declare a field-swapped capture, where the
 temporally-first field of each stored pair is not the interlace first field).
 
@@ -495,9 +495,14 @@ capture's own sync at open time.
 
 All four crop bounds are **inclusive**, and they name exactly the quantities the
 [`CHD_OPT_*_ACTIVE_*` options](#option-registry) set, so a bound read from this
-struct can be adjusted and set straight back with no off-by-one. Sample bounds
-are row positions in the source's own horizontal alignment, so they need not
-match the sample numbering of EBU Tech 3280-E or SMPTE ST 244 (see
+struct can be adjusted and set straight back with no off-by-one. Frame lines are
+**0-indexed** lines of the woven interlaced frame (field 1 on the even lines,
+field 2 on the odd); convert to and from the analogue standards' field-sequential
+signal line numbers with `chd_video_frame_line_to_signal_line` /
+`chd_video_signal_line_to_frame_line` (see [Video sources](#video-sources)).
+Sample bounds are **0-indexed** row positions in the source's own horizontal
+alignment, so they need not match the sample numbering of EBU Tech 3280-E or
+SMPTE ST 244 (see
 [active samples and the 4fsc standards](#active-samples-and-the-4fsc-standards)).
 
 ```c
@@ -532,29 +537,38 @@ their [`CHD_OPT_*_ACTIVE_SAMPLE` options](#option-registry) — are row position
 that count from **sample 0 = the first sampling instant at or after 0H**, where
 0H is the half-amplitude point of the falling edge of line sync. Sync and colour
 burst occupy the start of the row and the picture follows. This is the
-ld-decode/vhs-decode TBC convention, and it is the same origin for every input
-the library reads:
+ld-decode/vhs-decode TBC convention, and every input the library reads uses it
+except one:
 
-- **Line-locked field rasters** (`.tbc`, and CVBS field rasters): every row
-  starts at its own 0H.
+- **Line-locked field rasters** (ld-decode/vhs-decode `.tbc`, and CVBS field
+  rasters): every row starts at its own 0H.
 - **Frame-native CVBS files**: 0H-aligned per the CVBS spec. For orthogonal
   systems (NTSC, PAL-M) every row starts at 0H; for PAL the alignment is exact
   only at the frame's first line, and 0H then drifts by 4/625 of a sample per
   line across the frame (the non-orthogonal 4fsc lattice, stored on a uniform
   1135-sample row). The reader measures 0H from the sync edges at open and
   resolves such a capture to the same sync-start origin.
-- **Encoder-style (subcarrier-locked) cuts** are the one exception: their rows
-  begin at the first digital blanking sample instead of 0H, so sample 0 sits a
-  few samples ahead of 0H. The reader detects this and the reported crop
-  reflects it.
+- **Blanking-start (subcarrier-locked) cuts**, such as ld-chroma-encoder's
+  sc-locked output, are the one exception: their rows begin at the first
+  digital blanking sample instead of 0H, so sample 0 sits a few samples ahead
+  of 0H. A subcarrier-locked `.tbc` pair declares this
+  itself, since the sidecar's burst and crop windows already sit in its row
+  coordinates and are used as-is; a frame-native CVBS file with such rows is
+  caught by the open-time 0H measurement. Either way `chd_video_get_info`
+  reports the crop in the file's own row coordinates.
 
 This origin **differs from the 4fsc interface standards.** SMPTE ST 244 and EBU
 Tech 3280-E number a row from the start of the digital active line, with 0H
 falling *late* in the row (between samples 784 and 785 for NTSC; 957 and 958 for
 PAL). Translating a standard's sample number to ours is a fixed rotation — add
 125 (NTSC), 177 (PAL), or 124 (PAL-M) and wrap at the row width — so a region ST
-244 calls samples 0..767 is samples 125..892 here. Do not read a
-`first_active_sample` value as an ST 244 / EBU 3280 sample index.
+244 calls samples 0..767 is samples 125..892 here. Those constants are for
+sync-start rows; on a blanking-start raster the rotation is 142 (NTSC), 187
+(PAL), or 141 (PAL-M), putting the same region at samples 142..909.
+[`chd_video_standard_sample_to_row_sample`](#chd_video_standard_sample_to_row_sample--chd_video_row_sample_to_standard_sample)
+performs the right rotation for the opened source, so callers placing a
+standards-referenced window need not track the alignment themselves. Do not
+read a `first_active_sample` value as an ST 244 / EBU 3280 sample index.
 
 This origin describes source-row positions only. The `x_start` / `x_end` of a
 [`chd_dropout_span_t`](#chd_decoder_get_dropout_spans) are a different
@@ -568,7 +582,7 @@ line** of the interface standard: EBU Tech 3280-E's 948 samples for 625-line
 (PAL), SMPTE ST 244's 768 samples (its samples 0 to 767) for 525-line
 (NTSC/PAL-M). Those standards number a row from the start of the digital active
 line with 0H late in the row, while our rows start at 0H (line-locked) or at the
-first digital blanking sample (encoder-style), so the digital active line is
+first digital blanking sample (blanking-start), so the digital active line is
 walked round to where each alignment puts it. The synthesized default lands
 exactly on it:
 
@@ -735,6 +749,76 @@ Fill `*out` with the opened video's [info](#chd_video_info_t). Note that
 decoder's `reverse_field_order` option can change the decodable frame count
 (see the [option registry](#option-registry)).
 
+### chd_video_frame_line_to_signal_line / chd_video_signal_line_to_frame_line
+
+```c
+chd_status_t chd_video_frame_line_to_signal_line(const chd_video_t *v,
+                                                 int32_t frame_line, int32_t *out);
+chd_status_t chd_video_signal_line_to_frame_line(const chd_video_t *v,
+                                                 int32_t signal_line, int32_t *out);
+```
+
+Convert between a **frame line** — the 0-indexed inclusive woven-raster line
+that `first_active_frame_line` / `last_active_frame_line` and the
+`CHD_OPT_*_ACTIVE_FRAME_LINE` options use — and the **field-sequential signal
+line number** the analogue standards use (SMPTE ST 170 / ST 244, ITU-R
+BT.470 / BT.1700, EBU Tech 3280). Field 1 (the top field) is signal lines
+`1..field_height` on the even frame lines; field 2 is `field_height+1 ..
+(2*field_height)-1` on the odd frame lines — a bijection over the
+`(2*field_height)-1` raster lines.
+
+The numbering is **not monotonic** down the raster: adjacent frame lines belong
+to different fields and differ in signal number by about `field_height`, so a
+crop's `first_active_frame_line` can convert to a *higher* signal number than
+its `last` (the 525-line default region, frame lines 39..524, is signal lines
+283..263).
+
+`field_height` comes from `v`. Out-of-range input returns
+`CHD_E_OUT_OF_RANGE`: frame lines run `0..(2*field_height)-2`, signal lines
+`1..(2*field_height)-1`. These map the **source raster only** —
+[`chd_plane_info`](#chd_plane_info_t)'s `first_frame_row` and
+[`chd_dropout_span`](#dropout-correction)'s `y` are output rows in the cropped,
+padded frame and need the crop origin applied before they relate.
+
+### chd_video_standard_sample_to_row_sample / chd_video_row_sample_to_standard_sample
+
+```c
+chd_status_t chd_video_standard_sample_to_row_sample(const chd_video_t *v,
+                                                     int32_t standard_sample, int32_t *out);
+chd_status_t chd_video_row_sample_to_standard_sample(const chd_video_t *v,
+                                                     int32_t row_sample, int32_t *out);
+```
+
+The horizontal twin of the line converters above: convert between a **row
+sample**, the 0-indexed stored-row position that `first_active_sample` /
+`last_active_sample` and the `CHD_OPT_*_ACTIVE_SAMPLE` options use, and the
+**standard sample** numbering of the 4fsc interface standards (SMPTE ST 244
+for 525-line, EBU Tech 3280-E for 625-line), where sample 0 is the first
+sample of the digital active line and 0H falls late in the row. SECAM sources
+convert with the 625/50 (EBU 3280) geometry.
+
+The two numberings differ by a rotation that wraps at `field_width` and
+follows the source's [horizontal alignment](#sample-numbering): sync-start
+rows rotate standard sample 0 to row sample 125 (NTSC), 177 (PAL), or 124
+(PAL-M); blanking-start rows to 142, 187, or 141. The alignment is read from
+`v`, so the result matches the raster being decoded. Asking for ST 244's
+digital active line (standard samples 0..767) yields row samples 125..892 on
+a line-locked NTSC source and 142..909 on a subcarrier-locked one, ready to
+feed `CHD_OPT_FIRST/LAST_ACTIVE_SAMPLE` without caring which cut the file
+uses.
+
+The rotation uses the uniform-row convention. On subcarrier-locked PAL, 0H
+drifts by 4/625 of a sample per line across the frame, so a converted window
+is exact at the frame's first line and sub-sample off elsewhere (the
+standards' own uniform-row storage shares this property).
+
+Both numberings run `0..field_width-1`; out-of-range input returns
+`CHD_E_OUT_OF_RANGE`, and a source whose rows are not the standard 4fsc line
+width (910 / 1135 / 909 samples) returns `CHD_E_UNSUPPORTED`. Like the line
+converters, these map the **source raster only** —
+[`chd_dropout_span`](#dropout-correction)'s `x_start` / `x_end` are output
+columns.
+
 ### Extra sources for multi-source dropout
 
 ```c
@@ -877,12 +961,10 @@ and any decoder-kind restriction.
 | `CHD_OPT_CHROMA_CLICK_FREQ_OVERSHOOT` | f64 | Expert absolute override of the adaptive deviation-overshoot threshold (max-deviation multiples); needs `chroma_click_nr_level` > 0. |
 | `CHD_OPT_TRANSFORM_THRESHOLD`       | f64  | Transform-decoder threshold.                                                                                                 |
 | `CHD_OPT_TRANSFORM_THRESHOLDS_FILE` | str  | Per-bin thresholds file.                                                                                                     |
-| `CHD_OPT_FIRST_ACTIVE_SAMPLE`       | i32  | First active sample (inclusive).                                                                                             |
-| `CHD_OPT_LAST_ACTIVE_SAMPLE`        | i32  | Last active sample (inclusive).                                                                                              |
-| `CHD_OPT_FIRST_ACTIVE_FIELD_LINE`   | i32  | First active field line (inclusive).                                                                                         |
-| `CHD_OPT_LAST_ACTIVE_FIELD_LINE`    | i32  | Last active field line (inclusive).                                                                                          |
-| `CHD_OPT_FIRST_ACTIVE_FRAME_LINE`   | i32  | First active frame line (inclusive).                                                                                         |
-| `CHD_OPT_LAST_ACTIVE_FRAME_LINE`    | i32  | Last active frame line (inclusive — the line is included in the output).                                                     |
+| `CHD_OPT_FIRST_ACTIVE_SAMPLE`       | i32  | First active sample (inclusive, 0-indexed).                                                                                  |
+| `CHD_OPT_LAST_ACTIVE_SAMPLE`        | i32  | Last active sample (inclusive, 0-indexed).                                                                                   |
+| `CHD_OPT_FIRST_ACTIVE_FRAME_LINE`   | i32  | First active frame line (inclusive, 0-indexed woven frame line).                                                             |
+| `CHD_OPT_LAST_ACTIVE_FRAME_LINE`    | i32  | Last active frame line (inclusive, 0-indexed woven — the line is included in the output).                                    |
 | `CHD_OPT_NN_INPUT_MAGNITUDE_SCALE`  | f64  | nnTransform3D input magnitude scale.                                                                                         |
 | `CHD_OPT_NN_CHROMA_BANDPASS`        | bool | ldzeug2 luma-sep chroma bandpass.                                                                                            |
 | `CHD_OPT_OUTPUT_FORMAT`             | str  | `"yuv444p16"`, `"yuv444ps"`, `"rgb48"`, `"rgbs"`, `"gray16"`, `"grays"`, `"yuv440p16"`, or `"yuv440ps"` (the 4:4:0 pair is SECAM-only; see [4:4:0 output](#440-output)). |

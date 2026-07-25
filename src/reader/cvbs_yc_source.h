@@ -70,6 +70,7 @@ public:
     const chd::metadata::LdDecodeMetaData::VideoParameters &parameters() const override;
     chd::format::SignalState     signalState()    const override;
     chd::format::SampleEncoding  sampleEncoding() const override;
+    chd::format::HorizontalAlignment horizontalAlignment() const override;
     chd::format::FrameLayout     frameLayout()    const override;
 
     bool isSourceValid() const override;
@@ -95,6 +96,12 @@ private:
     int32_t numFields = 0;
 
     chd::format::FrameLayout layout = chd::format::FrameLayout::FIELD_RASTER;
+
+    // Horizontal alignment served by parameters(): declared for a field
+    // raster; for a frame-native file, measured once from early sync edges
+    // when open() reads the file.
+    chd::format::HorizontalAlignment rowAlignment = chd::format::HorizontalAlignment::SYNC_START;
+
     const chd::format::VideoStandardPreset *preset = nullptr;
     int32_t bytesPerSample = 2;
 

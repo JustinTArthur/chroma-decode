@@ -85,8 +85,6 @@ chd::metadata::LdDecodeMetaData::VideoParameters secamParams() {
     vp.colourBurstEnd = 138;
     vp.activeVideoStart = kActiveStart;
     vp.activeVideoEnd = kActiveEnd;
-    vp.firstActiveFieldLine = 22;
-    vp.lastActiveFieldLine = 307;
     vp.firstActiveFrameLine = 44;
     vp.lastActiveFrameLine = 619;
     vp.numberOfSequentialFields = 2;

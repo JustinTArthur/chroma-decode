@@ -83,6 +83,73 @@ impl Video {
         Ok(VideoInfo::from_raw(&raw))
     }
 
+    /// Converts a 0-indexed woven-raster frame line (the space
+    /// [`VideoInfo::first_active_frame_line`] lives in) to its field-sequential
+    /// signal line number, as used by SMPTE ST 170 / ST 244, ITU-R BT.470 /
+    /// BT.1700, and EBU Tech 3280. The mapping is not monotonic, so a crop's
+    /// first line can convert to a higher number than its last. Out-of-range
+    /// input is an error. See `chd_video_frame_line_to_signal_line`.
+    pub fn frame_line_to_signal_line(&self, frame_line: i32) -> Result<i32> {
+        let mut out = 0;
+        unsafe {
+            check(sys::chd_video_frame_line_to_signal_line(
+                self.raw.as_ptr(),
+                frame_line,
+                &mut out,
+            ))?;
+        }
+        Ok(out)
+    }
+
+    /// Converts a field-sequential signal line number back to its 0-indexed
+    /// woven-raster frame line. Inverse of [`Video::frame_line_to_signal_line`].
+    pub fn signal_line_to_frame_line(&self, signal_line: i32) -> Result<i32> {
+        let mut out = 0;
+        unsafe {
+            check(sys::chd_video_signal_line_to_frame_line(
+                self.raw.as_ptr(),
+                signal_line,
+                &mut out,
+            ))?;
+        }
+        Ok(out)
+    }
+
+    /// Converts a sample index in the 4fsc interface standard's numbering
+    /// (SMPTE ST 244 / EBU Tech 3280-E, where sample 0 is the first digital
+    /// active sample) to its 0-indexed stored-row position, the space
+    /// [`VideoInfo::first_active_sample`] lives in. The rotation follows the
+    /// source's horizontal alignment (sync-start vs blanking-start rows), so
+    /// the result matches the raster being decoded. Out-of-range input or a
+    /// source whose rows are not the standard 4fsc line width is an error.
+    /// See `chd_video_standard_sample_to_row_sample`.
+    pub fn standard_sample_to_row_sample(&self, standard_sample: i32) -> Result<i32> {
+        let mut out = 0;
+        unsafe {
+            check(sys::chd_video_standard_sample_to_row_sample(
+                self.raw.as_ptr(),
+                standard_sample,
+                &mut out,
+            ))?;
+        }
+        Ok(out)
+    }
+
+    /// Converts a 0-indexed stored-row sample position back to the interface
+    /// standard's numbering. Inverse of
+    /// [`Video::standard_sample_to_row_sample`].
+    pub fn row_sample_to_standard_sample(&self, row_sample: i32) -> Result<i32> {
+        let mut out = 0;
+        unsafe {
+            check(sys::chd_video_row_sample_to_standard_sample(
+                self.raw.as_ptr(),
+                row_sample,
+                &mut out,
+            ))?;
+        }
+        Ok(out)
+    }
+
     /// Adds an extra composite source for multi-source dropout correction.
     pub fn add_extra_source_composite(
         &mut self,

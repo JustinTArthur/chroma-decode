@@ -135,13 +135,14 @@ public:
 private:
     int32_t getLineOffset(int32_t line) const {
         assert(line >= 0);
-        assert(static_cast<size_t>(line) < yData.size());
+        assert(line < height);
         return line * width;
     }
 
     int32_t getLineOffsetUV(int32_t line) const {
         assert(line >= 0);
-        assert(static_cast<size_t>(line) < uData.size());
+        assert(line < height);
+        assert(!uData.empty());
         return line * width;
     }
 

@@ -33,8 +33,6 @@ struct VideoSystemDefaults {
     const char *name;
     double fSC;
     int32_t minActiveFrameLine;
-    int32_t firstActiveFieldLine;
-    int32_t lastActiveFieldLine;
     int32_t firstActiveFrameLine;
     int32_t lastActiveFrameLine;
 };
@@ -44,9 +42,8 @@ static constexpr VideoSystemDefaults palDefaults {
     "PAL",
     (283.75 * 15625) + 25,
     2,
-    // Active field and frame line ranges below are inclusive (the last value is
-    // the last line that is part of the active picture, not one past it).
-    22, 307,
+    // Active frame line range below is inclusive (the last value is the last
+    // line that is part of the active picture, not one past it).
     // Interlaced line 44 is PAL line 23 (the first active half-line)
     // Interlaced line 619 is PAL line 623 (the last active half-line)
     44, 619,
@@ -57,9 +54,8 @@ static constexpr VideoSystemDefaults ntscDefaults {
     "NTSC",
     315.0e6 / 88.0,
     1,
-    // Active field and frame line ranges below are inclusive (the last value is
-    // the last line that is part of the active picture, not one past it).
-    20, 262,
+    // Active frame line range below is inclusive (the last value is the last
+    // line that is part of the active picture, not one past it).
     // Interlaced line 39 is the first active half-line
     // Interlaced line 40 is NTSC line 21 (the closed-caption line)
     // Interlaced line 524 is NTSC line 263 (the last active half-line)
@@ -71,7 +67,6 @@ static constexpr VideoSystemDefaults palMDefaults {
     "PAL_M",
     5.0e6 * (63.0 / 88.0) * (909.0 / 910.0),
     ntscDefaults.minActiveFrameLine,
-    ntscDefaults.firstActiveFieldLine, ntscDefaults.lastActiveFieldLine,
     ntscDefaults.firstActiveFrameLine, ntscDefaults.lastActiveFrameLine,
 };
 
@@ -84,7 +79,6 @@ static constexpr VideoSystemDefaults secamDefaults {
     // BT.1700 Part C Table 4. Raster geometry is shared with PAL.
     4286000.0,
     palDefaults.minActiveFrameLine,
-    palDefaults.firstActiveFieldLine, palDefaults.lastActiveFieldLine,
     palDefaults.firstActiveFrameLine, palDefaults.lastActiveFrameLine,
 };
 
@@ -374,7 +368,6 @@ bool LdDecodeMetaData::readSqliteImpl(const std::string &fileName)
         int activeVideoStart, activeVideoEnd, fieldWidth, fieldHeight, numberOfSequentialFields;
         int colourBurstStart, colourBurstEnd, white16bIre, black16bIre, blanking16bIre;
         bool isMapped, isSubcarrierLocked, isWidescreen;
-        int sidecarFirstActiveFieldLine = -1, sidecarLastActiveFieldLine = -1;
         int sidecarFirstActiveFrameLine = -1, sidecarLastActiveFrameLine = -1;
 
         // Read capture metadata
@@ -384,7 +377,6 @@ bool LdDecodeMetaData::readSqliteImpl(const std::string &fileName)
                                        colourBurstStart, colourBurstEnd, isMapped,
                                        isSubcarrierLocked, isWidescreen, white16bIre,
                                        black16bIre, blanking16bIre, captureNotes,
-                                       sidecarFirstActiveFieldLine, sidecarLastActiveFieldLine,
                                        sidecarFirstActiveFrameLine, sidecarLastActiveFrameLine)) {
             chd::log::fail() << "Failed to read capture metadata from SQLite file";
             return false;
@@ -434,11 +426,8 @@ bool LdDecodeMetaData::readSqliteImpl(const std::string &fileName)
         // applied before we leave (-1s here = no override; standard defaults stay).
         initialiseVideoSystemParameters();
 
-        if (sidecarFirstActiveFieldLine >= 0 || sidecarLastActiveFieldLine >= 0 ||
-            sidecarFirstActiveFrameLine >= 0 || sidecarLastActiveFrameLine >= 0) {
+        if (sidecarFirstActiveFrameLine >= 0 || sidecarLastActiveFrameLine >= 0) {
             LineParameters sidecarLines;
-            sidecarLines.firstActiveFieldLine = sidecarFirstActiveFieldLine;
-            sidecarLines.lastActiveFieldLine  = sidecarLastActiveFieldLine;
             sidecarLines.firstActiveFrameLine = sidecarFirstActiveFrameLine;
             sidecarLines.lastActiveFrameLine  = sidecarLastActiveFrameLine;
             processLineParameters(sidecarLines);
@@ -472,7 +461,6 @@ bool LdDecodeMetaData::write(std::string fileName) const
             int existingNumberOfSequentialFields, existingColourBurstStart, existingColourBurstEnd;
             int existingWhite16bIre, existingBlack16bIre, existingBlanking16bIre;
             bool existingIsMapped, existingIsSubcarrierLocked, existingIsWidescreen;
-            int existingFirstActiveFieldLine, existingLastActiveFieldLine;
             int existingFirstActiveFrameLine, existingLastActiveFrameLine;
 
             if (reader.readCaptureMetadata(captureId, existingSystem, existingDecoder,
@@ -482,7 +470,6 @@ bool LdDecodeMetaData::write(std::string fileName) const
                                          existingColourBurstStart, existingColourBurstEnd,
                                          existingIsMapped, existingIsSubcarrierLocked, existingIsWidescreen,
                                          existingWhite16bIre, existingBlack16bIre, existingBlanking16bIre, existingCaptureNotes,
-                                         existingFirstActiveFieldLine, existingLastActiveFieldLine,
                                          existingFirstActiveFrameLine, existingLastActiveFrameLine)) {
                 chd::log::debug() << "Updating existing SQLite file with capture_id:" << captureId;
             } else {
@@ -776,8 +763,6 @@ void LdDecodeMetaData::overrideVideoSystem(VideoSystem system)
     videoParameters.fSC = getSystemDefaults(videoParameters).fSC;
 
     LineParameters lines;
-    lines.firstActiveFieldLine = videoParameters.firstActiveFieldLine;
-    lines.lastActiveFieldLine  = videoParameters.lastActiveFieldLine;
     lines.firstActiveFrameLine = videoParameters.firstActiveFrameLine;
     lines.lastActiveFrameLine  = videoParameters.lastActiveFrameLine;
     processLineParameters(lines);
@@ -786,43 +771,13 @@ void LdDecodeMetaData::overrideVideoSystem(VideoSystem system)
 // Validate and apply to a set of VideoParameters
 void LdDecodeMetaData::LineParameters::applyTo(LdDecodeMetaData::VideoParameters &videoParameters)
 {
-    const bool firstFieldLineExists = firstActiveFieldLine != -1;
-    const bool lastFieldLineExists = lastActiveFieldLine != -1;
     const bool firstFrameLineExists = firstActiveFrameLine != -1;
     const bool lastFrameLineExists = lastActiveFrameLine != -1;
 
     const VideoSystemDefaults &defaults = getSystemDefaults(videoParameters);
     const int32_t minFirstFrameLine = defaults.minActiveFrameLine;
-    const int32_t defaultFirstFieldLine = defaults.firstActiveFieldLine;
-    const int32_t defaultLastFieldLine = defaults.lastActiveFieldLine;
     const int32_t defaultFirstFrameLine = defaults.firstActiveFrameLine;
     const int32_t defaultLastFrameLine = defaults.lastActiveFrameLine;
-
-    // Validate and potentially fix the first active field line.
-    if (firstActiveFieldLine < 1 || firstActiveFieldLine > defaultLastFieldLine) {
-        if (firstFieldLineExists) {
-            chd::log::warn().nospace() << "Specified first active field line " << firstActiveFieldLine << " out of bounds (1 to "
-                              << defaultLastFieldLine << "), resetting to default (" << defaultFirstFieldLine << ").";
-        }
-        firstActiveFieldLine = defaultFirstFieldLine;
-    }
-
-    // Validate and potentially fix the last active field line.
-    if (lastActiveFieldLine < 1 || lastActiveFieldLine > defaultLastFieldLine) {
-        if (lastFieldLineExists) {
-            chd::log::warn().nospace() << "Specified last active field line " << lastActiveFieldLine << " out of bounds (1 to "
-                              << defaultLastFieldLine << "), resetting to default (" << defaultLastFieldLine << ").";
-        }
-        lastActiveFieldLine = defaultLastFieldLine;
-    }
-
-    // Range-check the first and last active field lines.
-    if (firstActiveFieldLine > lastActiveFieldLine) {
-       chd::log::warn().nospace() << "Specified last active field line " << lastActiveFieldLine << " is before specified first active field line "
-                         << firstActiveFieldLine << ", resetting to defaults (" << defaultFirstFieldLine << "-" << defaultLastFieldLine << ").";
-        firstActiveFieldLine = defaultFirstFieldLine;
-        lastActiveFieldLine = defaultLastFieldLine;
-    }
 
     // Validate and potentially fix the first active frame line.
     if (firstActiveFrameLine < minFirstFrameLine || firstActiveFrameLine > defaultLastFrameLine) {
@@ -851,8 +806,6 @@ void LdDecodeMetaData::LineParameters::applyTo(LdDecodeMetaData::VideoParameters
     }
 
     // Store the new values back into videoParameters
-    videoParameters.firstActiveFieldLine = firstActiveFieldLine;
-    videoParameters.lastActiveFieldLine = lastActiveFieldLine;
     videoParameters.firstActiveFrameLine = firstActiveFrameLine;
     videoParameters.lastActiveFrameLine = lastActiveFrameLine;
 }

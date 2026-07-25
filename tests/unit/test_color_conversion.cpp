@@ -164,8 +164,6 @@ chd::metadata::LdDecodeMetaData::VideoParameters ntscParams() {
     vp.colourBurstEnd = 110;
     vp.activeVideoStart = 134;
     vp.activeVideoEnd = 894;
-    vp.firstActiveFieldLine = 20;
-    vp.lastActiveFieldLine = 259;
     vp.firstActiveFrameLine = 39;
     vp.lastActiveFrameLine = 524;
     vp.numberOfSequentialFields = 4;

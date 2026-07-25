@@ -107,8 +107,6 @@ int testOverrideVideoSystem() {
     vp.black16bIre = 16384;
     vp.white16bIre = 54016;
     vp.blanking16bIre = 16384;
-    vp.firstActiveFieldLine = 22;
-    vp.lastActiveFieldLine = 307;
     vp.firstActiveFrameLine = 44;
     vp.lastActiveFrameLine = 619;
     meta.setVideoParameters(vp);
@@ -120,8 +118,8 @@ int testOverrideVideoSystem() {
     // SECAM shares the PAL raster, so the active-line ranges hold.
     REQUIRE(out.firstActiveFrameLine == 44);
     REQUIRE(out.lastActiveFrameLine == 619);
-    REQUIRE(out.firstActiveFieldLine == 22);
-    REQUIRE(out.lastActiveFieldLine == 307);
+    REQUIRE(out.firstActiveFieldLine() == 22);
+    REQUIRE(out.lastActiveFieldLine() == 309);
     return 0;
 }
 
