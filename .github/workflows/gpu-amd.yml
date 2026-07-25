@@ -18,7 +18,9 @@ env:
   INSTANCE_TYPE: g4ad.xlarge
   AMI_PARAM: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
   RUNNER_LABEL: chd-amd-${{ github.run_id }}
-  ROCM_DOCKER_IMAGE: rocm/migraphx:rocm7.2.3-latest
+  # Keep in sync with the amd-test job's `container.image` below: the job-level
+  # container key can't read the env context, so the tag is spelled twice.
+  ROCM_DOCKER_IMAGE: rocm/dev-ubuntu-22.04:7.2.3-complete
 
 jobs:
   launch-spot:
@@ -65,8 +67,8 @@ jobs:
           REPO_URL: https://github.com/${{ github.repository }}
         run: |
           # User-data: install amdgpu + Docker on stock Ubuntu, pre-pull the
-          # rocm/migraphx image so the test job starts fast, then launch the
-          # GH runner agent as a one-shot ephemeral runner.
+          # ROCm image so the test job starts fast, then launch the GH runner
+          # agent as a one-shot ephemeral runner.
           USER_DATA=$(cat <<EOF
           #!/bin/bash
           set -eux
@@ -94,8 +96,10 @@ jobs:
           apt-get install -y --no-install-recommends -qq docker.io
           systemctl enable --now docker
 
-          # Pre-pull the rocm/migraphx image so test-job startup is fast.
-          docker pull "${ROCM_DOCKER_IMAGE}" || true
+          # Pre-pull the ROCm image so test-job startup is fast. Best-effort:
+          # a failure here only costs time, since the job's own container
+          # init pulls it again and reports the real error.
+          docker pull "${ROCM_DOCKER_IMAGE}" || echo "WARNING: pre-pull of ${ROCM_DOCKER_IMAGE} failed"
 
           # Set up GH Actions runner under a non-root user, in the docker
           # group so jobs can talk to Docker without sudo.
@@ -142,8 +146,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_RUNNER_MGMT_TOKEN }}
         run: |
           # AMD bootstrap is longer than NVIDIA: amdgpu install, Docker
-          # install + image pull. Allow 20 minutes.
-          for i in $(seq 1 120); do
+          # install + image pull. The ROCm image is a 7 GB pull landing on top
+          # of the amdgpu-dkms build, so allow 30 minutes — still inside the
+          # 60-minute instance watchdog, with room for the test job after.
+          for i in $(seq 1 180); do
             if gh api repos/${{ github.repository }}/actions/runners --paginate \
                  --jq '.runners[] | select(.labels[].name == "'"${RUNNER_LABEL}"'") | .id' \
                  | grep -q .; then
@@ -152,7 +158,7 @@ jobs:
             fi
             sleep 10
           done
-          echo "Runner ${RUNNER_LABEL} did not register within 20 minutes."
+          echo "Runner ${RUNNER_LABEL} did not register within 30 minutes."
           aws ec2 terminate-instances --instance-ids "${{ steps.launch.outputs.instance_id }}" || true
           exit 1
 
@@ -160,10 +166,12 @@ jobs:
     needs: launch-spot
     runs-on: [self-hosted, "${{ needs.launch-spot.outputs.runner_label }}"]
     timeout-minutes: 30
-    # Run the build + test inside AMD's prebuilt rocm/migraphx image so we
-    # don't have to install MIGraphX on the host.
+    # Run the build + test inside AMD's ROCm image so we don't have to install
+    # ROCm on the host. The `-complete` tag carries rocm-dev + rocm-libs, which
+    # is hipcc and hipFFT for the build; MIGraphX is not in either metapackage
+    # and gets added by the deps step below.
     container:
-      image: rocm/migraphx:rocm7.2.3-latest
+      image: rocm/dev-ubuntu-22.04:7.2.3-complete
       options: >-
         --device=/dev/kfd
         --device=/dev/dri
@@ -185,11 +193,16 @@ jobs:
       # it does in build.yml. The ORT wheel below stays on the image's Python,
       # since it is a runtime dependency the build only points at, not tooling
       # the build runs.
-      - name: System deps (image has rocm; add chromadec build deps)
+      - name: System deps (image has rocm; add migraphx + chromadec build deps)
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -qq
+          # migraphx comes from the ROCm apt repo the image already registers.
+          # The ORT MIGraphX EP dlopens libmigraphx at session creation, so
+          # without it the EP attach fails and we'd silently validate the CPU
+          # path instead. Its heavy dependencies are already in rocm-libs.
           apt-get install -y --no-install-recommends -qq \
+            migraphx \
             ninja-build pkg-config cmake git file curl \
             libsqlite3-dev libfftw3-dev \
             build-essential python3-pip python3-venv

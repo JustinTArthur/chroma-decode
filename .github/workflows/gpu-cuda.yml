@@ -76,8 +76,12 @@ jobs:
           apt-get update -qq
           apt-get install -y --no-install-recommends -qq curl ca-certificates jq
 
-          # Set up GH Actions runner under a non-root user.
+          # Set up GH Actions runner under a non-root user. Its job steps
+          # apt-get the build dependencies, so it needs passwordless sudo;
+          # Ubuntu's own sudo group would still prompt for a password.
           useradd -m -s /bin/bash ghrunner
+          echo 'ghrunner ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/99-ghrunner
+          chmod 440 /etc/sudoers.d/99-ghrunner
           cd /home/ghrunner
           RUNNER_VERSION=2.335.1
           curl -sSL -o actions-runner.tar.gz \

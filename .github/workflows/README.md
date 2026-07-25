@@ -12,7 +12,7 @@
 | `release.yml` | On `v*` tags: packages relocatable binary archives with `chromadecConfig.cmake` + `chromadec.pc`, verifies layout and exports, smoke-tests a CMake consumer against each, then uploads to the release. Windows x64/arm64 (MSVC, `.zip`) and macOS arm64 (`.tar.xz`). `workflow_dispatch` runs everything but the upload | Active |
 | `rust.yml` | Builds libchromadec, then gates the first-party Rust bindings: `cargo fmt --check`, clippy with warnings as errors, and `cargo test` including the encode-orc-driven stream integration. Linux x86_64 only — the crate is platform-portable and the C library is matrix-tested in `build.yml` | Active |
 | `gpu-cuda.yml` | Nvidia GPU validation on AWS spot, manual only; CUDA + TensorRT EPs against `chroma_net` v2                                                         | Active (`workflow_dispatch`) |
-| `gpu-amd.yml` | AMD GPU validation on AWS spot market, running inside `rocm/migraphx` Docker, manual only; HIP/hipFFT pipeline + MIGraphX EP                        | Active (`workflow_dispatch`) |
+| `gpu-amd.yml` | AMD GPU validation on AWS spot market, running inside `rocm/dev-ubuntu-22.04` Docker, manual only; HIP/hipFFT pipeline + MIGraphX EP                        | Active (`workflow_dispatch`) |
 | ABI check | `abi-compliance-checker` against previous release `.so`                                                                                             | Not yet — added at first tagged release |
 
 ## Reusable actions
