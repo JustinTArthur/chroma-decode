@@ -86,7 +86,7 @@ jobs:
       - name: Configure
         run: |
           . .venv/bin/activate
-          meson setup build -Donnxruntime_root="${ORT_ROOT}"
+          meson setup build -Dwith_examples=true -Donnxruntime_root="${ORT_ROOT}"
 
       - name: Build
         run: |
@@ -376,6 +376,12 @@ jobs:
             # archive is the only one published for this arch.
             ort_arch: arm64
     runs-on: ${{ matrix.runner }}
+    env:
+      # Pinned rather than taken from the image: the x64 runner ships a vcpkg
+      # that moves whenever GitHub rebuilds the image, and a --depth 1 clone of
+      # master moves daily. Either way the two legs could resolve different
+      # port versions, and no binary cache key would stay valid.
+      VCPKG_REF: '2026.06.24'
     steps:
       - uses: actions/checkout@v7
 
@@ -384,18 +390,39 @@ jobs:
         with:
           arch: ${{ matrix.arch }}
 
-      - name: vcpkg deps (sqlite3 + fftw3)
+      # fftw3 is the only port left here. SQLite comes from the bundled
+      # amalgamation through subprojects/sqlite3.wrap, which is the same source
+      # the macOS release package already links, so vcpkg no longer builds a
+      # copy this build does not use. fftw3 itself costs ~2.5 min a leg because
+      # vcpkg builds it debug and release across three precisions, so its
+      # binary packages are cached rather than rebuilt every run.
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/vcpkg-bincache
+          # The port list is spelled into the key on purpose: change the
+          # install line below and this has to change with it.
+          key: vcpkg-${{ matrix.triplet }}-${{ env.VCPKG_REF }}-fftw3
+          # A stale cache still helps — vcpkg rebuilds only what its ABI hashes
+          # say is missing.
+          restore-keys: vcpkg-${{ matrix.triplet }}-
+
+      - name: vcpkg deps (fftw3)
         shell: pwsh
+        env:
+          VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}\vcpkg-bincache,readwrite'
         run: |
-          # The x64 image ships a preinstalled vcpkg; the arm64 image does not,
-          # so fall back to bootstrapping one in the workspace.
-          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
-          if (-not $vcpkgRoot -or -not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
-            git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:GITHUB_WORKSPACE\vcpkg"
-            & "$env:GITHUB_WORKSPACE\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
-            $vcpkgRoot = "$env:GITHUB_WORKSPACE\vcpkg"
-          }
-          & "$vcpkgRoot\vcpkg.exe" install "sqlite3:${{ matrix.triplet }}" "fftw3:${{ matrix.triplet }}"
+          $vcpkgRoot = "$env:GITHUB_WORKSPACE\vcpkg"
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\vcpkg-bincache" | Out-Null
+          # Fetch just the pinned commit rather than cloning the full history.
+          git init -q $vcpkgRoot
+          git -C $vcpkgRoot remote add origin https://github.com/microsoft/vcpkg.git
+          git -C $vcpkgRoot fetch -q --depth 1 origin $env:VCPKG_REF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C $vcpkgRoot checkout -q FETCH_HEAD
+          & "$vcpkgRoot\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$vcpkgRoot\vcpkg.exe" install "fftw3:${{ matrix.triplet }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $vcpkgInstalled = "$vcpkgRoot\installed\${{ matrix.triplet }}"
           "PKG_CONFIG_PATH=$vcpkgInstalled\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -424,9 +451,15 @@ jobs:
           "ORT_ROOT=$ortDir" | Out-File -FilePath $env:GITHUB_ENV -Append
           "$ortDir\lib" | Out-File -FilePath $env:GITHUB_PATH -Append
 
+      # force-fallback-for=sqlite3 states outright what dropping the vcpkg port
+      # would otherwise leave to chance: take the bundled amalgamation, whatever
+      # SQLite the runner image happens to expose. Mirrors the macOS release job.
       - name: Configure
         shell: pwsh
-        run: meson setup build "-Donnxruntime_root=$env:ORT_ROOT"
+        run: |
+          meson setup build `
+            --force-fallback-for=sqlite3 `
+            "-Donnxruntime_root=$env:ORT_ROOT"
 
       - name: Build
         shell: pwsh

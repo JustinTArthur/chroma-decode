@@ -47,6 +47,17 @@ namespace {
 
 #ifndef CHD_TEST_NO_ONNXRUNTIME
 
+// SessionOptions honouring CHD_TEST_NN_BACKEND, so a GPU job can validate the
+// execution provider it exists to prove rather than whatever the AUTO chain
+// reached first.
+chd::nn::SessionOptions testSessionOptions() {
+    chd::nn::SessionOptions opts;
+    if (const int b = chd_test::backendFromEnv(); b != 0) {
+        opts.requestedProvider = static_cast<chd_nn_backend_t>(b);
+    }
+    return opts;
+}
+
 // Real ldzeug2 weights, when available, are supplied via environment variables
 // — never hardcoded. Each lookup falls back to the committed synthetic fixture
 // so these tests run unconditionally:
@@ -96,7 +107,7 @@ int testColorCnnConfigure() {
     }
 
     // From a file path.
-    chd::nn::SessionOptions opts;
+    chd::nn::SessionOptions opts = testSessionOptions();
     std::shared_ptr<chd::nn::OrtSession> fileSession;
     try {
         fileSession = std::make_shared<chd::nn::OrtSession>(model, opts);
@@ -139,7 +150,7 @@ int testLumaSepConfigure() {
     }
 
     {
-        chd::nn::SessionOptions opts;
+        chd::nn::SessionOptions opts = testSessionOptions();
         auto session = std::make_shared<chd::nn::OrtSession>(fieldModel, opts);
         LdzeugLumaSepDecoder decoder;
         decoder.setNnModel(std::make_shared<chd::nn::OrtEngine>(session));
@@ -153,7 +164,7 @@ int testLumaSepConfigure() {
     }
 
     {
-        chd::nn::SessionOptions opts;
+        chd::nn::SessionOptions opts = testSessionOptions();
         auto session = std::make_shared<chd::nn::OrtSession>(frameModel, opts);
         LdzeugLumaSepDecoder decoder;
         decoder.setNnModel(std::make_shared<chd::nn::OrtEngine>(session));

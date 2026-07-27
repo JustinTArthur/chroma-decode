@@ -16,7 +16,7 @@ env:
   AWS_REGION: ap-northeast-2
   AWS_AZ: ap-northeast-2d
   INSTANCE_TYPE: g5.xlarge
-  AMI_PARAM: /aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id
+  AMI_PARAM: /aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-24.04/latest/ami-id
   RUNNER_LABEL: chd-cuda-${{ github.run_id }}
 
 jobs:
@@ -97,6 +97,7 @@ jobs:
               --labels "${RUNNER_LABEL},gpu,nvidia" \
               --ephemeral \
               --unattended \
+              --disableupdate \
               --replace
             ./run.sh
           '
@@ -148,9 +149,8 @@ jobs:
           nvidia-smi
           ls /usr/local/cuda*/lib64/libcudart* 2>/dev/null || true
 
-      # No apt `meson` here: the AMI is Ubuntu 22.04, whose packaged Meson is
-      # far below the project's floor. Meson comes from pip in a venv instead,
-      # as it does in build.yml.
+      # No apt `meson` here: the AMI's packaged Meson is below the project's
+      # floor. Meson comes from pip in a venv instead, as it does in build.yml.
       - name: System deps
         run: |
           sudo apt-get update -qq
@@ -167,16 +167,93 @@ jobs:
           python -m pip install --upgrade pip
           pip install meson
 
+      # The AMI carries several CUDA toolkits and points /usr/local/cuda at the
+      # newest, but the ORT below is the gpu_cuda12 build. Left alone, Meson
+      # resolves the 13.x tree and our kernels would link a different CUDA
+      # runtime than the one ORT loads. Pin both halves to 12.x: CUDA_PATH is
+      # what Meson's cuda dependency reads, PATH is where it finds nvcc for
+      # add_languages('cuda'), and nothing puts the toolkit's bin on PATH for
+      # this account.
+      - name: Pin the CUDA toolkit to 12.x
+        run: |
+          root=$(ls -d /usr/local/cuda-12.* 2>/dev/null | sort -V | tail -1)
+          if [ -z "$root" ] || [ ! -x "$root/bin/nvcc" ]; then
+            echo "no CUDA 12.x toolkit with nvcc under /usr/local" >&2
+            echo "toolkits present:" >&2
+            ls -d /usr/local/cuda* 2>/dev/null >&2 || true
+            echo "nvcc binaries present:" >&2
+            ls /usr/local/cuda*/bin/nvcc 2>/dev/null >&2 || echo "  (none)" >&2
+            exit 1
+          fi
+          libdir="$root/lib64"
+          [ -d "$libdir" ] || libdir="$root/targets/x86_64-linux/lib"
+          "$root/bin/nvcc" --version | tail -1
+          echo "CUDA_PATH=$root" >> "$GITHUB_ENV"
+          echo "CUDA_LIB_DIR=$libdir" >> "$GITHUB_ENV"
+          echo "$root/bin" >> "$GITHUB_PATH"
+
       - name: Download ONNX Runtime (Linux x64 GPU — bundles CUDA + TensorRT EPs)
         run: |
-          # The GPU build is published per CUDA major; cuda12 matches the CUDA
-          # the deep-learning base AMI carries.
+          # The GPU build is published per CUDA major; cuda12 pairs with the
+          # 12.x toolkit the step above pins. The AMI ships several toolkits
+          # and points /usr/local/cuda at the newest, which is not one of them.
+          #
+          # The archive's TensorRT provider goes unused: TensorRT is neither on
+          # the AMI nor bundled here, so it has no libnvinfer to load.
           ORT_VER=1.27.1
           curl -sSL -o ort.tgz \
             "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-x64-gpu_cuda12-${ORT_VER}.tgz"
           mkdir -p $HOME/ort
           tar -xzf ort.tgz -C $HOME/ort --strip-components=1
           echo "ORT_ROOT=$HOME/ort" >> $GITHUB_ENV
+
+      # ORT's CUDA provider links cuDNN 9. The DLAMI ships none, and the ORT
+      # archive bundles none either — its lib/ holds only ORT's own four
+      # objects. Without cuDNN the provider cannot load, the EP attach fails,
+      # and the auto chain falls through to CPU, so the whole suite passes
+      # having exercised no GPU at all. Constrained to the 9 series because the
+      # soname ORT looks for is libcudnn.so.9.
+      - name: cuDNN 9 (ORT CUDA provider dependency)
+        run: |
+          . .venv/bin/activate
+          pip install 'nvidia-cudnn-cu12>=9,<10'
+          CUDNN_LIB=$(python -c 'import nvidia.cudnn, os; print(os.path.join(list(nvidia.cudnn.__path__)[0], "lib"))')
+          test -e "$CUDNN_LIB/libcudnn.so.9" || {
+            echo "no libcudnn.so.9 under $CUDNN_LIB" >&2; exit 1; }
+          echo "CUDNN_LIB_DIR=$CUDNN_LIB" >> "$GITHUB_ENV"
+
+      # TensorRT is not on the DLAMI and the ORT archive bundles only its own
+      # objects, so the provider it ships has no libnvinfer to load without
+      # this. Two traps: ORT 1.27.x links the TensorRT *10* ABI
+      # (libnvinfer.so.10), while plain `tensorrt-cu12` now resolves to 11.x and
+      # would leave the provider unloadable; and the pypi.org package is
+      # sdist-only, so the wheels have to come from NVIDIA's index.
+      - name: TensorRT 10 (ORT TensorRT provider dependency)
+        run: |
+          . .venv/bin/activate
+          pip install --extra-index-url https://pypi.nvidia.com 'tensorrt-cu12==10.*'
+          TRT_LIB=$(python -c 'import tensorrt_libs, os; print(os.path.dirname(tensorrt_libs.__file__))')
+          test -e "$TRT_LIB/libnvinfer.so.10" || {
+            echo "no libnvinfer.so.10 under $TRT_LIB" >&2; exit 1; }
+          echo "TRT_LIB_DIR=$TRT_LIB" >> "$GITHUB_ENV"
+
+      # A missing dependency here is invisible at run time: ORT reports the
+      # provider as available (that list is compiled in), the attach throws,
+      # and the chain moves on to CPU. Fail the job instead.
+      - name: Verify the CUDA and TensorRT providers' dependencies resolve
+        env:
+          LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib:${{ env.CUDA_LIB_DIR }}:${{ env.CUDNN_LIB_DIR }}:${{ env.TRT_LIB_DIR }}
+        run: |
+          for ep in cuda tensorrt; do
+            so="$ORT_ROOT/lib/libonnxruntime_providers_${ep}.so"
+            missing=$(ldd "$so" | awk '/not found/ {print $1}')
+            if [ -n "$missing" ]; then
+              echo "$ep provider cannot load; the EP would fall back to CPU:" >&2
+              echo "$missing" >&2
+              exit 1
+            fi
+            echo "every $ep provider dependency resolves"
+          done
 
       - name: Configure (with_cuda=enabled)
         run: |
@@ -193,12 +270,36 @@ jobs:
       - name: Set up encode-orc (drives integration fixtures)
         uses: ./.github/actions/setup-encode-orc
 
+      # The pinned toolkit is not the one /usr/local/cuda points at, so its
+      # libcudart/libcufft are not necessarily on the loader's default path.
+      # ORT's CUDA provider wants the same 12.x libraries we linked against.
+      # The two backend variables are a pair: _NN_BACKEND asks for the provider
+      # (the Linux auto chain would stop at CUDA and never reach TensorRT), and
+      # _EXPECT_NN_BACKEND fails the test if anything else attached. Values are
+      # chd_nn_backend_t from include/chromadec/nn.h. Neither the ldd guard nor
+      # pass/fail alone can catch a provider that loads fine on a box whose GPU
+      # is absent or driverless.
       - name: Test (CUDA pipeline)
         env:
-          LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib
+          LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib:${{ env.CUDA_LIB_DIR }}:${{ env.CUDNN_LIB_DIR }}:${{ env.TRT_LIB_DIR }}
+          CHD_TEST_NN_BACKEND: "12"
+          CHD_TEST_EXPECT_NN_BACKEND: "12"
         run: |
           . .venv/bin/activate
           meson test -C build --print-errorlogs
+
+      # Only the NN suites are re-run: nothing else in the suite touches an
+      # execution provider, and TensorRT's first-inference engine build makes a
+      # full second pass poor value. The engine is cached under the default
+      # per-user directory, so a re-run of this job is cheaper than the first.
+      - name: Test again on the TensorRT EP (NN suites only)
+        env:
+          LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib:${{ env.CUDA_LIB_DIR }}:${{ env.CUDNN_LIB_DIR }}:${{ env.TRT_LIB_DIR }}
+          CHD_TEST_NN_BACKEND: "13"
+          CHD_TEST_EXPECT_NN_BACKEND: "13"
+        run: |
+          . .venv/bin/activate
+          meson test -C build --print-errorlogs nn_framework nntransform3d ldzeug
 
   cleanup:
     needs: [launch-spot, cuda-test]

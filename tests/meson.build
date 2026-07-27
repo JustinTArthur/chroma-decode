@@ -25,6 +25,14 @@ chromadec_internal_dep = declare_dependency(
   dependencies: [sqlite3_dep, threads_dep, fftw3_dep],
   compile_args: has_nn ? ['-DCHD_WITH_NN=1'] : [])
 
+# The public headers compiled as C, which no other translation unit in the
+# build does: the library itself is C++ and Objective-C++. Links the shared
+# object so the address-taking table also checks the export list.
+abi_smoke = executable('abi_smoke',
+  'unit/abi_smoke.c',
+  dependencies: chromadec_abi_dep)
+test('abi_smoke', abi_smoke)
+
 test_tbc_reader = executable('test_tbc_reader',
   'unit/test_tbc_reader.cpp',
   dependencies: [chromadec_abi_dep, sqlite3_dep])

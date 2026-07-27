@@ -173,9 +173,17 @@ int testLoadRealModel() {
         return 0;
     }
 
+    // Honour a pinned provider when CI asks for one; NULL opts (the AUTO chain)
+    // otherwise.
+    chd_nn_session_opts_t pinned{};
+    chd_nn_session_opts_default(&pinned);
+    const int wanted = chd_test::backendFromEnv();
+    if (wanted != 0) pinned.backend = static_cast<chd_nn_backend_t>(wanted);
+    const chd_nn_session_opts_t *opts = wanted != 0 ? &pinned : nullptr;
+
     // File loader.
     chd_nn_model_t *fileModel = nullptr;
-    REQUIRE(chd_nn_model_load_from_file(modelPath.c_str(), nullptr, &fileModel) == CHD_OK);
+    REQUIRE(chd_nn_model_load_from_file(modelPath.c_str(), opts, &fileModel) == CHD_OK);
     REQUIRE(fileModel != nullptr);
     chd_nn_backend_t fileBackend = CHD_NN_BACKEND_AUTO;
     REQUIRE(chd_nn_model_get_active_backend(fileModel, &fileBackend) == CHD_OK);
@@ -185,7 +193,7 @@ int testLoadRealModel() {
     REQUIRE(!bytes.empty());
 
     chd_nn_model_t *memModel = nullptr;
-    REQUIRE(chd_nn_model_load_from_memory(bytes.data(), bytes.size(), nullptr, &memModel)
+    REQUIRE(chd_nn_model_load_from_memory(bytes.data(), bytes.size(), opts, &memModel)
             == CHD_OK);
     REQUIRE(memModel != nullptr);
     chd_nn_backend_t memBackend = CHD_NN_BACKEND_AUTO;
@@ -194,6 +202,16 @@ int testLoadRealModel() {
     // Identical model + opts must resolve to the same backend regardless of
     // how the bytes were sourced.
     REQUIRE(memBackend == fileBackend);
+
+    // A GPU provider that fails to attach falls back to CPU with the suite
+    // still green, so pass/fail alone can't tell a GPU run from a silent CPU
+    // one. CI sets CHD_TEST_EXPECT_NN_BACKEND to the chd_nn_backend_t value
+    // the job exists to prove (12 ORT+CUDA, 13 ORT+TensorRT, 16 ORT+MIGraphX)
+    // and this turns the fallback into a failure.
+    if (const char *expect = std::getenv("CHD_TEST_EXPECT_NN_BACKEND");
+        expect != nullptr && *expect != '\0') {
+        REQUIRE(static_cast<int>(memBackend) == std::atoi(expect));
+    }
 
     chd_nn_model_free(memModel);
     chd_nn_model_free(fileModel);

@@ -16,11 +16,11 @@ env:
   AWS_REGION: us-east-2
   AWS_AZ: us-east-2c
   INSTANCE_TYPE: g4ad.xlarge
-  AMI_PARAM: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+  AMI_PARAM: /aws/service/canonical/ubuntu/server/noble/stable/current/amd64/hvm/ebs-gp3/ami-id
   RUNNER_LABEL: chd-amd-${{ github.run_id }}
   # Keep in sync with the amd-test job's `container.image` below: the job-level
   # container key can't read the env context, so the tag is spelled twice.
-  ROCM_DOCKER_IMAGE: rocm/dev-ubuntu-22.04:7.2.3-complete
+  ROCM_DOCKER_IMAGE: rocm/dev-ubuntu-24.04:7.2.3-complete
 
 jobs:
   launch-spot:
@@ -81,15 +81,42 @@ jobs:
             curl ca-certificates gnupg lsb-release jq
 
           # amdgpu kernel driver from AMD's apt repo. The AMI is stock Ubuntu
-          # 22.04 with no amdgpu module, so amdgpu-dkms builds one against the
+          # 24.04 with no amdgpu module, so amdgpu-dkms builds one against the
           # running kernel. That build and the image pre-pull below are why
           # the AMD watchdog gets 60 minutes to the CUDA side's 30.
           mkdir --parents --mode=0755 /etc/apt/keyrings
           curl https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor > /etc/apt/keyrings/rocm.gpg
-          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/latest/ubuntu jammy main" \\
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/latest/ubuntu noble main" \\
             > /etc/apt/sources.list.d/amdgpu.list
           apt-get update -qq
+          # amdgpu.ko links the kernel's DRM display helpers, which AMD's DKMS
+          # package does not ship. AWS-optimised kernels keep those in
+          # linux-modules-extra, absent from stock cloud images, so without this
+          # the module builds fine and then refuses to load on a pile of
+          # "Unknown symbol drm_dp_*" errors.
+          apt-get install -y --no-install-recommends -qq "linux-modules-extra-\$(uname -r)"
           apt-get install -y --no-install-recommends -qq amdgpu-dkms
+
+          # DKMS builds amdgpu.ko and installs it under /lib/modules, but does
+          # not load it, and this instance never reboots. Without the module
+          # there is no /dev/kfd and the ROCm container cannot start. Kept
+          # non-fatal on purpose: aborting here would leave the runner
+          # unregistered, and the job would die on a 30-minute registration
+          # timeout instead of docker's precise "no such file or directory
+          # /dev/kfd" a couple of minutes in.
+          # /dev/kfd alone is not proof of a working GPU: the KFD char device
+          # appears whenever the module loads, even when every IP block failed
+          # to init and no device attached. A render node under /dev/dri is
+          # what separates the two, so wait on both.
+          modprobe amdgpu || echo "WARNING: modprobe amdgpu failed"
+          for i in \$(seq 1 30); do
+            [ -e /dev/kfd ] && ls /dev/dri/renderD* >/dev/null 2>&1 && break
+            sleep 1
+          done
+          ls -l /dev/kfd /dev/dri \\
+            || echo "WARNING: no /dev/kfd; the ROCm container will fail to start"
+          ls /dev/dri/renderD* >/dev/null 2>&1 \\
+            || echo "WARNING: no render node; amdgpu loaded but bound no GPU"
 
           # Docker via the docker.io apt package (faster than the Docker
           # convenience script and adequate for our use).
@@ -119,6 +146,7 @@ jobs:
               --labels "${RUNNER_LABEL},gpu,amd" \\
               --ephemeral \\
               --unattended \\
+              --disableupdate \\
               --replace
             ./run.sh
           '
@@ -127,13 +155,15 @@ jobs:
           EOF
           )
 
+          # 150 GB root: the ROCm image alone unpacks to ~29 GB, and the
+          # checkout, build tree and encode-orc all land on top of it.
           INSTANCE_ID=$(aws ec2 run-instances \
             --instance-type "$INSTANCE_TYPE" \
             --image-id "${{ steps.ami.outputs.ami_id }}" \
             --placement "AvailabilityZone=${AWS_AZ}" \
             --instance-market-options 'MarketType=spot' \
             --instance-initiated-shutdown-behavior terminate \
-            --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":64,"VolumeType":"gp3"}}]' \
+            --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":150,"VolumeType":"gp3"}}]' \
             --user-data "$USER_DATA" \
             --tag-specifications "ResourceType=instance,Tags=[{Key=Project,Value=chroma-decode},{Key=Purpose,Value=ci-amd},{Key=RunId,Value=${{ github.run_id }}},{Key=RunnerLabel,Value=${RUNNER_LABEL}}]" \
             --query 'Instances[0].InstanceId' \
@@ -170,8 +200,12 @@ jobs:
     # ROCm on the host. The `-complete` tag carries rocm-dev + rocm-libs, which
     # is hipcc and hipFFT for the build; MIGraphX is not in either metapackage
     # and gets added by the deps step below.
+    #
+    # The 24.04 base is what makes the ORT pin below reachable: the wheel
+    # requires Python 3.11+, and the 22.04 image ships 3.10, which caps pip at
+    # ORT 1.24.2. It also matches the runner host's Ubuntu.
     container:
-      image: rocm/dev-ubuntu-22.04:7.2.3-complete
+      image: rocm/dev-ubuntu-24.04:7.2.3-complete
       options: >-
         --device=/dev/kfd
         --device=/dev/dri
@@ -190,9 +224,8 @@ jobs:
 
       # No apt `meson`: the packaged Meson in the ROCm image's Ubuntu base is
       # below the project's floor. Meson comes from pip in a venv instead, as
-      # it does in build.yml. The ORT wheel below stays on the image's Python,
-      # since it is a runtime dependency the build only points at, not tooling
-      # the build runs.
+      # it does in build.yml, and so does the ORT wheel below — everything
+      # Python lands in the same venv.
       - name: System deps (image has rocm; add migraphx + chromadec build deps)
         run: |
           export DEBIAN_FRONTEND=noninteractive
@@ -216,18 +249,69 @@ jobs:
 
       - name: Install AMD ORT-MIGraphX wheel
         run: |
-          # AMD publishes a separate ORT build with the MIGraphX EP.
-          # Match the ROCm version of the container image.
-          pip install --break-system-packages \
-            onnxruntime-rocm==1.23.2 \
-              -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2.3/
+          # onnxruntime-migraphx, not onnxruntime-rocm: AMD publishes both and
+          # they carry different execution providers. The rocm one has no
+          # MIGraphX EP, and it trails several releases behind besides.
+          #
+          # Straight from PyPI at the version every other platform in this
+          # project pins, so there is one ORT version everywhere and no second
+          # package index. The MIGraphX EP's ROCm coupling is just
+          # libmigraphx_c.so.3 + libamdhip64.so.7, which ROCm 7.2.3 satisfies.
+          #
+          # Into the venv, like every other Python dependency. On the image's
+          # own interpreter this needed --break-system-packages, and it mutated
+          # a root-owned site-packages to boot.
+          . .venv/bin/activate
+          pip install onnxruntime-migraphx==1.27.1
           python3 -c "import onnxruntime; print(onnxruntime.__version__); print(onnxruntime.get_available_providers())"
 
-      - name: Resolve ORT install root
+      # The wheel is the only C/C++-usable MIGraphX ORT that AMD publishes in
+      # any form (the ROCm apt repo and rocm/onnxruntime images carry no
+      # headers either), and it ships bare: capi/ holds the runtime objects,
+      # with no headers and no lib/ for the linker. Compose a conventional
+      # install root from Microsoft's release of the same version (headers)
+      # and the wheel (every .so). Under /opt because meson rejects an
+      # onnxruntime_root inside the source tree.
+      - name: Compose a linkable ORT root (MS headers + wheel libraries)
         run: |
-          ORT_ROOT=$(python3 -c "import onnxruntime, os; print(os.path.dirname(onnxruntime.__file__))")
+          . .venv/bin/activate
+          WHEEL_CAPI=$(python -c "import onnxruntime, os; print(os.path.join(os.path.dirname(onnxruntime.__file__), 'capi'))")
+          ORT_VER=$(python -c "import onnxruntime; print(onnxruntime.__version__)")
+          curl -sSL -o /tmp/ort-headers.tgz \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-x64-${ORT_VER}.tgz"
+          tar -xzf /tmp/ort-headers.tgz -C /tmp
+          ORT_ROOT=/opt/ort-migraphx
+          mkdir -p "$ORT_ROOT/lib"
+          cp -r "/tmp/onnxruntime-linux-x64-${ORT_VER}/include" "$ORT_ROOT/include"
+          cp "$WHEEL_CAPI"/libonnxruntime*.so* "$ORT_ROOT/lib/"
+          # Both symlinks are load-bearing: .so is how the linker finds the
+          # library, .so.1 is the DT_NEEDED name every test executable
+          # resolves at run time. The wheel ships neither, and with only the
+          # first, linking fails with an undefined OrtGetApiBase@VERS_<ver>.
+          ln -sf "libonnxruntime.so.${ORT_VER}" "$ORT_ROOT/lib/libonnxruntime.so"
+          ln -sf "libonnxruntime.so.${ORT_VER}" "$ORT_ROOT/lib/libonnxruntime.so.1"
           echo "ORT_ROOT=$ORT_ROOT" >> $GITHUB_ENV
-          ls "$ORT_ROOT"
+          ls -l "$ORT_ROOT/lib"
+
+      # The MIGraphX provider links libmigraphx_c, which the migraphx package
+      # installs under /opt/rocm/lib — a directory the image leaves off the
+      # loader's search path entirely (ldconfig knows nothing about it). An
+      # unresolved dependency here is invisible at run time: ORT lists the
+      # provider as available because that list is compiled in, the attach
+      # throws, and the chain falls through to CPU with the suite still green.
+      - name: Verify the MIGraphX provider's dependencies resolve
+        env:
+          LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib:/opt/rocm/lib
+        run: |
+          so="$ORT_ROOT/lib/libonnxruntime_providers_migraphx.so"
+          test -e "$so" || { echo "no MIGraphX provider at $so" >&2; exit 1; }
+          missing=$(ldd "$so" | awk '/not found/ {print $1}')
+          if [ -n "$missing" ]; then
+            echo "MIGraphX provider cannot load; the EP would fall back to CPU:" >&2
+            echo "$missing" >&2
+            exit 1
+          fi
+          echo "every MIGraphX provider dependency resolves"
 
       - name: Configure (with_rocm=enabled)
         run: |
@@ -244,9 +328,16 @@ jobs:
       - name: Set up encode-orc (drives integration fixtures)
         uses: ./.github/actions/setup-encode-orc
 
+      # libmigraphx_c sits in /opt/rocm/lib, which the image leaves off the
+      # loader path; without it next to ORT_ROOT/lib the MIGraphX EP cannot
+      # attach. The expected-backend value turns a silent CPU fallback into a
+      # test failure (16 is CHD_NN_ORT_MIGRAPHX in include/chromadec/nn.h);
+      # the ldd guard above cannot catch a provider that loads fine on a box
+      # whose GPU is absent or driverless.
       - name: Test (HIP / MIGraphX pipeline)
         env:
-          LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}
+          LD_LIBRARY_PATH: ${{ env.ORT_ROOT }}/lib:/opt/rocm/lib
+          CHD_TEST_EXPECT_NN_BACKEND: "16"
         run: |
           . .venv/bin/activate
           meson test -C build --print-errorlogs

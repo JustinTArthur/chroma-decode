@@ -11,8 +11,8 @@
 | `build.yml` → `version` | Gates the version copies that cannot read `VERSION.txt` themselves (Cargo manifests, and the release tag), via `scripts/check-version.sh` | Active |
 | `release.yml` | On `v*` tags: packages relocatable binary archives with `chromadecConfig.cmake` + `chromadec.pc`, verifies layout and exports, smoke-tests a CMake consumer against each, then uploads to the release. Windows x64/arm64 (MSVC, `.zip`) and macOS arm64 (`.tar.xz`). `workflow_dispatch` runs everything but the upload | Active |
 | `rust.yml` | Builds libchromadec, then gates the first-party Rust bindings: `cargo fmt --check`, clippy with warnings as errors, and `cargo test` including the encode-orc-driven stream integration. Linux x86_64 only — the crate is platform-portable and the C library is matrix-tested in `build.yml` | Active |
-| `gpu-cuda.yml` | Nvidia GPU validation on AWS spot, manual only; CUDA + TensorRT EPs against `chroma_net` v2                                                         | Active (`workflow_dispatch`) |
-| `gpu-amd.yml` | AMD GPU validation on AWS spot market, running inside `rocm/dev-ubuntu-22.04` Docker, manual only; HIP/hipFFT pipeline + MIGraphX EP                        | Active (`workflow_dispatch`) |
+| `gpu-cuda.yml` | Nvidia GPU validation on AWS spot, manual only; runs the suite pinned to the CUDA EP, then the NN suites again pinned to TensorRT | Active (`workflow_dispatch`) |
+| `gpu-amd.yml` | AMD GPU validation on AWS spot market, running inside `rocm/dev-ubuntu-24.04` Docker, manual only; HIP/hipFFT pipeline + MIGraphX EP                        | Active (`workflow_dispatch`) |
 | ABI check | `abi-compliance-checker` against previous release `.so`                                                                                             | Not yet — added at first tagged release |
 
 ## Reusable actions
@@ -86,13 +86,39 @@ Downloaded from Microsoft's official GitHub releases on every platform.
 | `release` (windows) | same per-arch zips as `windows` | 1.27.1 |
 | `release` (macos arm64) | `onnxruntime-osx-arm64-${VER}.tgz` | 1.27.1 |
 | `gpu-cuda` | `onnxruntime-linux-x64-gpu_cuda12-${VER}.tgz` | 1.27.1 |
-| `gpu-amd` | `onnxruntime-rocm` wheel from repo.radeon.com | 1.23.2 |
+| `gpu-amd` | `onnxruntime-migraphx` wheel from PyPI, headers from `onnxruntime-linux-x64` | 1.27.1 |
 
 The CPU artifact is what the hosted jobs need — GH-hosted runners have no GPU
-and `with_cuda=auto` falls back silently. CUDA / TensorRT require the GPU
-artifact and a self-hosted GPU runner. The GPU artifact is published per CUDA
-major (`gpu_cuda12` / `gpu_cuda13`); we take `gpu_cuda12`, matching the CUDA
+and `with_cuda=auto` falls back silently. CUDA requires the GPU artifact and a
+self-hosted GPU runner. The GPU artifact is published per CUDA major
+(`gpu_cuda12` / `gpu_cuda13`); we take `gpu_cuda12`, matching a CUDA 12 toolkit
 on the deep-learning base AMI.
+
+That archive also carries `libonnxruntime_providers_tensorrt.so`, which needs a
+`libnvinfer` the AMI does not have and the archive does not bundle, so the job
+installs TensorRT itself from NVIDIA's package index. Two traps there: ONNX
+Runtime links the TensorRT **10** ABI while a plain `tensorrt-cu12` now resolves
+to 11.x, and the pypi.org package is sdist-only, so the wheels have to come from
+`pypi.nvidia.com`.
+
+Because the Linux auto chain leads with TensorRT, asserting the provider that
+AUTO chose cannot distinguish the two EPs. The tests take
+`CHD_TEST_NN_BACKEND` to *request* one and `CHD_TEST_EXPECT_NN_BACKEND` to
+assert what attached, and the job runs the suite pinned to CUDA and then the NN
+suites pinned to TensorRT.
+
+AMD publishes no C/C++ ONNX Runtime build for MIGraphX in any form: the wheel
+carries only `capi/` runtime objects, with no headers and no linker symlinks,
+and neither the ROCm apt repo nor the `rocm/onnxruntime` images fill the gap.
+`gpu-amd.yml` therefore composes an install root at job time, taking headers
+from Microsoft's release of the same version, libraries from the wheel, and
+adding the `.so`/`.so.1` symlinks the wheel omits.
+
+The wheel comes straight from PyPI at the same version as every other platform.
+Reaching it is why the AMD job runs on the `24.04` ROCm image: the wheel requires
+Python 3.11+, and the `22.04` image ships 3.10, which caps pip at ORT 1.24.2.
+The MIGraphX EP's only ROCm coupling is `libmigraphx_c.so.3` and
+`libamdhip64.so.7`, both satisfied by ROCm 7.2.3.
 
 macOS releases include the CoreML execution provider. CI takes Microsoft's
 builds rather than a system package so every platform pins the same version

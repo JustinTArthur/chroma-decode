@@ -247,7 +247,7 @@ chromadec_dep = declare_dependency(
   include_directories: [public_inc, version_inc])
 meson.override_dependency('chromadec', chromadec_dep)
 
-if get_option('with_tests') and has_sqlite # tests need sqlite for fixture I/O
+if get_option('with_tests')
   subdir('tests')
 endif
 

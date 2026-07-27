@@ -61,6 +61,10 @@ jobs:
             triplet: arm64-windows
             ort_arch: arm64
     runs-on: ${{ matrix.runner }}
+    env:
+      # Keep in step with build.yml: a release should package the port versions
+      # the build workflow tested, not whatever master moved to since.
+      VCPKG_REF: '2026.06.24'
     steps:
       - uses: actions/checkout@v7
 
@@ -83,21 +87,35 @@ jobs:
         with:
           arch: ${{ matrix.arch }}
 
-      - name: vcpkg deps (sqlite3 + fftw3 + pkgconf)
+      # Mirrors the build workflow: vcpkg pinned, fftw3's binary packages
+      # cached, and no sqlite3 port — the bundled amalgamation supplies it, so
+      # the shipped DLL carries no SQLite import for the archive to satisfy.
+      # pkgconf stays: meson's dependency lookups and the packaged
+      # chromadecConfig.cmake both resolve through pkg-config.
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/vcpkg-bincache
+          # Spelled-out port list — keep it in step with the install below.
+          key: vcpkg-${{ matrix.triplet }}-${{ env.VCPKG_REF }}-fftw3-pkgconf
+          restore-keys: vcpkg-${{ matrix.triplet }}-
+
+      - name: vcpkg deps (fftw3 + pkgconf)
         shell: pwsh
+        env:
+          VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}\vcpkg-bincache,readwrite'
         run: |
-          # Mirrors the build workflow: the x64 image ships vcpkg, the arm64
-          # image does not. pkgconf is installed as a tool because both meson's
-          # dependency lookups and the packaged chromadecConfig.cmake resolve
-          # through pkg-config.
-          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
-          if (-not $vcpkgRoot -or -not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
-            git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:GITHUB_WORKSPACE\vcpkg"
-            & "$env:GITHUB_WORKSPACE\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
-            $vcpkgRoot = "$env:GITHUB_WORKSPACE\vcpkg"
-          }
+          $vcpkgRoot = "$env:GITHUB_WORKSPACE\vcpkg"
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\vcpkg-bincache" | Out-Null
+          git init -q $vcpkgRoot
+          git -C $vcpkgRoot remote add origin https://github.com/microsoft/vcpkg.git
+          git -C $vcpkgRoot fetch -q --depth 1 origin $env:VCPKG_REF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C $vcpkgRoot checkout -q FETCH_HEAD
+          & "$vcpkgRoot\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$vcpkgRoot\vcpkg.exe" install `
-            "sqlite3:${{ matrix.triplet }}" "fftw3:${{ matrix.triplet }}" "pkgconf:${{ matrix.triplet }}"
+            "fftw3:${{ matrix.triplet }}" "pkgconf:${{ matrix.triplet }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $vcpkgInstalled = "$vcpkgRoot\installed\${{ matrix.triplet }}"
           "PKG_CONFIG_PATH=$vcpkgInstalled\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -133,12 +151,17 @@ jobs:
       # pkgconfig.relocatable stays at the project default: prefix is derived
       # from the .pc file's own directory, which is exactly right for an
       # archive the consumer extracts wherever they like.
+      #
+      # force-fallback-for=sqlite3 folds the bundled amalgamation in with
+      # link_whole, as on macOS, so the archive owes nothing to a sqlite3.dll
+      # it does not ship.
       - name: Configure (release)
         shell: pwsh
         run: |
           meson setup build `
             --buildtype=release `
             --prefix="$env:GITHUB_WORKSPACE\stage" `
+            --force-fallback-for=sqlite3 `
             -Dwith_tests=false `
             -Dwith_examples=false `
             "-Donnxruntime_root=$env:ORT_ROOT"

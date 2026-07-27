@@ -45,6 +45,22 @@ inline std::string modelFromEnvOrFixture(const char *envVar) {
     return {};
 }
 
+// Execution provider a test should ask for, from CHD_TEST_NN_BACKEND (a
+// chd_nn_backend_t value). Returns 0 (CHD_NN_BACKEND_AUTO) when unset, which is
+// what every contributor and hosted runner gets.
+//
+// Asserting the provider that AUTO happened to pick is not enough for the GPU
+// jobs: the auto chain stops at the first one that attaches, so on a box with
+// several available EPs the later ones are never exercised. CI pins the one the
+// job exists to validate, and pairs this with CHD_TEST_EXPECT_NN_BACKEND to
+// assert it really attached.
+inline int backendFromEnv() {
+    if (const char *b = std::getenv("CHD_TEST_NN_BACKEND"); b && *b) {
+        return std::atoi(b);
+    }
+    return 0;
+}
+
 // Read an entire file into a byte buffer, for the in-memory model loaders.
 inline std::vector<char> readFileBytes(const std::string &path) {
     std::ifstream f(path, std::ios::binary);

@@ -3,6 +3,7 @@
 #include "provider_select.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <mutex>
 #include <regex>
 #include <sstream>
@@ -164,8 +165,13 @@ std::vector<ProviderPreference> buildAutoChain(ProviderPreference requested)
 #elif defined(__APPLE__)
     autoChain = { CHD_NN_ORT_COREML, CHD_NN_ORT_CPU };
 #else
-    // Linux + everything else
-    autoChain = { CHD_NN_ORT_CUDA, CHD_NN_ORT_MIGRAPHX, CHD_NN_ORT_CPU };
+    // Linux + everything else. TensorRT leads because it runs chroma_net far
+    // faster than the CUDA EP does — measured 6.3x on an A10G, same graph and
+    // same frames — at the cost of a one-time engine build per model and GPU
+    // architecture, which engine_cache_dir keeps to once per machine. Boxes
+    // without TensorRT are unaffected: a failed attach falls through to CUDA.
+    autoChain = { CHD_NN_ORT_TENSORRT, CHD_NN_ORT_CUDA, CHD_NN_ORT_MIGRAPHX,
+                  CHD_NN_ORT_CPU };
 #endif
 
     if (requested == CHD_NN_ORT_AUTO || requested == CHD_NN_BACKEND_AUTO) return autoChain;
@@ -472,6 +478,45 @@ bool attachMIGraphX(Ort::SessionOptions &options,
     (void)cache;
     if (outError) *outError = "MIGraphX execution provider is only available on Linux";
     return false;
+#endif
+}
+
+// ORT loads the MIGraphX EP by dlopening libonnxruntime_providers_migraphx.so
+// and dlcloses it again when the last OrtEnv is released. That unload cascades
+// through the whole MIGraphX/ROCm stack, but libmigraphx queues exit handlers
+// that survive the unload (a static vector of migraphx::dynamic_loader, whose
+// destructor libc still runs from exit()). In a with_rocm build our own link
+// against the HIP runtime keeps ROCm resident across that unload, so the
+// stack really is torn out from under the queued handler and the process
+// takes a SIGSEGV after main returns. Promoting the provider library to
+// RTLD_NODELETE turns ORT's dlclose into a refcount drop that never unmaps,
+// so the handlers run against live code at exit.
+void pinMIGraphXProviderLibrary()
+{
+#if defined(__linux__)
+    static std::once_flag onceFlag;
+    std::call_once(onceFlag, []() {
+        const char *soname = "libonnxruntime_providers_migraphx.so";
+        const int   flags  = RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE;
+        // The provider sits beside whichever libonnxruntime this process
+        // loaded; resolve that directory rather than trusting the search
+        // path to agree with ORT's own lookup.
+        Dl_info info{};
+        if (dladdr(reinterpret_cast<void *>(&OrtGetApiBase), &info) != 0 &&
+            info.dli_fname != nullptr) {
+            // Pin the ORT core on the same terms. The provider's registry
+            // holds pointers into the ORT instance that first loaded it, so
+            // the two have to stay mapped together: a host that unloads
+            // libchromadec and loads it again would otherwise reach a fresh
+            // ORT through the surviving provider and fault in
+            // InitializeRegistry against the previous ORT's dead state.
+            dlopen(info.dli_fname, flags);
+            const std::string path =
+                (std::filesystem::path(info.dli_fname).parent_path() / soname).string();
+            if (dlopen(path.c_str(), flags) != nullptr) return;
+        }
+        dlopen(soname, flags);
+    });
 #endif
 }
 

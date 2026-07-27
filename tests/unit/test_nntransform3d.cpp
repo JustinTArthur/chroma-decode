@@ -50,6 +50,17 @@ namespace {
 
 #ifndef CHD_TEST_NO_ONNXRUNTIME
 
+// SessionOptions honouring CHD_TEST_NN_BACKEND, so a GPU job can validate the
+// execution provider it exists to prove rather than whatever the AUTO chain
+// reached first.
+chd::nn::SessionOptions testSessionOptions() {
+    chd::nn::SessionOptions opts;
+    if (const int b = chd_test::backendFromEnv(); b != 0) {
+        opts.requestedProvider = static_cast<chd_nn_backend_t>(b);
+    }
+    return opts;
+}
+
 int testLookAheadBump() {
     using namespace chd::decoders::comb;
     Comb::Configuration cfg;
@@ -138,7 +149,7 @@ int testConfigureWithSession() {
         return 0;
     }
 
-    chd::nn::SessionOptions opts;
+    chd::nn::SessionOptions opts = testSessionOptions();
     std::shared_ptr<chd::nn::OrtSession> session;
     try {
         session = std::make_shared<chd::nn::OrtSession>(modelPath, opts);
@@ -168,7 +179,7 @@ int testConfigureWithMemorySession() {
     std::vector<char> bytes = chd_test::readFileBytes(modelPath);
     REQUIRE(!bytes.empty());
 
-    chd::nn::SessionOptions opts;
+    chd::nn::SessionOptions opts = testSessionOptions();
     std::shared_ptr<chd::nn::OrtSession> session;
     try {
         session = std::make_shared<chd::nn::OrtSession>(bytes.data(), bytes.size(), opts);

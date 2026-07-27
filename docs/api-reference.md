@@ -1751,8 +1751,8 @@ values with no `ORT_` infix (e.g. `CHD_NN_COREML`) are native, non-ORT backends.
   *artifact*: a `.onnx` loads through ONNX Runtime with the per-OS EP auto chain
   (`CHD_NN_ORT_AUTO`); a `.mlpackage`/`.mlmodelc` loads through `CHD_NN_COREML`.
 - `CHD_NN_ORT_AUTO` forces ONNX Runtime and walks its per-OS provider chain
-  (Windows: TensorRT → CUDA → DirectML → CPU; Linux: CUDA → MIGraphX → CPU;
-  macOS: CoreML → CPU), attaching the first that succeeds.
+  (Windows: TensorRT → CUDA → DirectML → CPU; Linux: TensorRT → CUDA →
+  MIGraphX → CPU; macOS: CoreML → CPU), attaching the first that succeeds.
 - A specific `CHD_NN_ORT_*` value pins that one EP (no fallback; load fails with
   `CHD_E_NN_BACKEND_UNAVAILABLE` if it can't attach).
 - `CHD_NN_COREML` forces the native CoreML backend (requires a `.mlpackage`).

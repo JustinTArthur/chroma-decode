@@ -49,7 +49,7 @@ and tries a platform-specific EP chain, using the first that loads:
 |---|---|
 | Windows | TensorRT, CUDA, DirectML, CPU |
 | macOS | CoreML, CPU |
-| Linux / other | CUDA, MIGraphX, CPU |
+| Linux / other | TensorRT, CUDA, MIGraphX, CPU |
 
 Pinning a specific `CHD_NN_ORT_*` provider tries only that one and returns
 `CHD_E_NN_BACKEND_UNAVAILABLE` if it is not present. Probe ahead of time with

@@ -19,8 +19,8 @@ option('with_tests',
        description: 'Build the test suite')
 
 option('with_examples',
-       type: 'boolean', value: true,
-       description: 'Build the plain-C example programs')
+       type: 'boolean', value: false,
+       description: 'Build the plain-C example programs (the test suite covers the C ABI on its own)')
 
 option('with_debug_overlay',
        type: 'boolean', value: false,

@@ -124,6 +124,11 @@ OrtSession::OrtSession(const std::string &modelPath, const SessionOptions &opts)
     } catch (const std::exception &e) {
         throw std::runtime_error(std::string("Ort::Session create: ") + e.what());
     }
+
+    // The MIGraphX provider library must never be unmapped once a session
+    // has used it (see pinMIGraphXProviderLibrary). Pin after creation, the
+    // first point where the provider is guaranteed loaded.
+    if (activeBackend_ == CHD_NN_ORT_MIGRAPHX) pinMIGraphXProviderLibrary();
 }
 
 OrtSession::OrtSession(const void *modelData, size_t modelSize, const SessionOptions &opts)
@@ -137,6 +142,8 @@ OrtSession::OrtSession(const void *modelData, size_t modelSize, const SessionOpt
     } catch (const std::exception &e) {
         throw std::runtime_error(std::string("Ort::Session create from memory: ") + e.what());
     }
+
+    if (activeBackend_ == CHD_NN_ORT_MIGRAPHX) pinMIGraphXProviderLibrary();
 }
 
 const std::vector<std::string> &OrtSession::inputNames()

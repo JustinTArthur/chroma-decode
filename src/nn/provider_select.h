@@ -11,7 +11,7 @@
 //
 // AUTO chains:
 //   Windows: TensorRT → CUDA → DirectML → CPU
-//   Linux:   CUDA → MIGraphX → CPU
+//   Linux:   TensorRT → CUDA → MIGraphX → CPU
 //   macOS:   CoreML → CPU
 //
 // Explicit (non-AUTO) requests try only that provider; if the attach fails,
@@ -92,6 +92,13 @@ bool attachTensorRT(Ort::SessionOptions &options,
 bool attachMIGraphX(Ort::SessionOptions &options,
                     const EngineCacheConfig &cache,
                     std::string *outError);
+
+// Pin the MIGraphX provider library, the ONNX Runtime core it is bound to,
+// and through their dependency graph the MIGraphX/ROCm stack, into the
+// process for the rest of its lifetime. Call after a session has been created
+// with the MIGraphX EP attached; both libraries are guaranteed loaded by
+// then. No-op off Linux and when no provider library is loaded. Idempotent.
+void pinMIGraphXProviderLibrary();
 
 }  // namespace chd::nn
 
