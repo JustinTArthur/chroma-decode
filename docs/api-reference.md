@@ -1000,15 +1000,19 @@ The porch measurement doubles as per-field carrier calibration: the decoder
 clusters the measured per-line reference carriers into the two undeviated
 subcarriers and discriminates against the measured pair, absorbing converter
 offsets (an ME-SECAM deck's free-running conversion arithmetic) without
-assuming absolute carrier positions. The calibration also recentres the
+assuming absolute carrier positions. The reference pair is measured on a
+bell-free band response: the inverse bell shapes noise asymmetrically around
+its centre and would bias the clustered medians toward each other. The calibration also recentres the
 chroma band and the inverse HF pre-correction bell on the measured pair:
 a converter offset arises after encoding and translates the whole FM block,
 bell shaping included, so an inverse left at nominal would sit on the wrong
 centre (measured on an ME-SECAM capture with carriers +108 kHz off nominal:
 colour-difference overshoot at large bar transitions drops from roughly
-twice the step to a few percent once the inverse follows the block). When
-the porch pair is unmeasurable, the nominal 4.25/4.40625 MHz subcarriers
-apply. Opening a 625-line capture
+twice the step to a few percent once the inverse follows the block). A field
+whose porch pair is unmeasurable reuses the last measured pair, since a
+converter offset is a property of the capture rather than the field; the
+nominal 4.25/4.40625 MHz subcarriers apply only until some field has
+measured. Opening a 625-line capture
 whose measured porch signature contradicts its declared standard (a PAL
 declaration over an alternating SECAM carrier pair, or the reverse) logs a
 warning; the declaration always wins.

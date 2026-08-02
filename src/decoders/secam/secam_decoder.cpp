@@ -171,10 +171,16 @@ bool SecamDecoder::configure(const chd::metadata::LdDecodeMetaData::VideoParamet
 
     const size_t fieldSamples = static_cast<size_t>(width) * height;
     analytic.assign(fieldSamples, {0.0, 0.0});
+    analyticRef.assign(fieldSamples, {0.0, 0.0});
     chromaRecon.assign(fieldSamples, 0.0);
     fInst.assign(fieldSamples, 0.0);
+    fInstRef.assign(fieldSamples, 0.0);
     demod.assign(fieldSamples, 0.0);
     deemph.assign(fieldSamples, 0.0);
+
+    lastGoodFob = 0.0;
+    lastGoodFor = 0.0;
+    haveLastGoodCalibration = false;
 
     configurationSet = true;
     return true;
@@ -198,13 +204,20 @@ void SecamDecoder::buildChromaMasks()
         const double fShifted = std::abs(f) - carrierOffset;
         maskChroma[k] = analyticFactor * bandGain(fShifted)
                         * inverseBell(std::abs(f), kBellCentre + carrierOffset);
-        maskBand[k] = bandGain(fShifted);
+        // Bell-free analytic band: its real part is the plain band-filtered
+        // signal (the analytic factor restores the Hermitian half exactly),
+        // and the complex signal is the calibration reference. Keeping the
+        // bell out of this path matters: the bell inverse shapes noise and
+        // switch transients asymmetrically around its centre, which biases
+        // the discriminated porch medians and ties them to the mask state.
+        maskBand[k] = analyticFactor * bandGain(fShifted);
     }
     mixFrequency = 0.5 * (kNominalFob + kNominalFor) + carrierOffset;
 }
 
 void SecamDecoder::filterRowAnalytic(const uint16_t *fieldData, int32_t numSamples,
                                      int32_t row, std::complex<double> *analyticRow,
+                                     std::complex<double> *analyticRefRow,
                                      double *chromaRow)
 {
     const int32_t base = row * width;
@@ -228,22 +241,30 @@ void SecamDecoder::filterRowAnalytic(const uint16_t *fieldData, int32_t numSampl
     // field: rows are contiguous in time, so the global sample index is the
     // time base).
     const double wMix = 2.0 * M_PI * mixFrequency / sampleRate;
-    std::complex<double> phasor =
+    const std::complex<double> phasor0 =
         std::polar(1.0, -std::fmod(wMix * base, 2.0 * M_PI));
     const std::complex<double> step = std::polar(1.0, -wMix);
+    std::complex<double> phasor = phasor0;
     for (int32_t x = 0; x < width; x++) {
         analyticRow[x] = std::complex<double>(fftOut[margin + x][0], fftOut[margin + x][1])
                          * scale * phasor;
         phasor *= step;
     }
 
+    // Bell-free band pass: the real part is the reconstituted chroma the
+    // luma path subtracts, the mixed-down complex signal is the reference
+    // the carrier calibration discriminates.
     for (int32_t k = 0; k < blockSize; k++) {
         fftWork[k][0] = fftFreq[k][0] * maskBand[k];
         fftWork[k][1] = fftFreq[k][1] * maskBand[k];
     }
     fftw_execute(inversePlan);
+    phasor = phasor0;
     for (int32_t x = 0; x < width; x++) {
-        chromaRow[x] = fftOut[margin + x][0] * scale;
+        const std::complex<double> v(fftOut[margin + x][0], fftOut[margin + x][1]);
+        chromaRow[x] = v.real() * scale;
+        analyticRefRow[x] = v * scale * phasor;
+        phasor *= step;
     }
 }
 
@@ -313,8 +334,8 @@ void SecamDecoder::decodeField(const SourceField &inputField,
 
     // Central-window per-row stats over the picture region: the reference
     // envelope scale for validity gating, and the frequency inputs the
-    // bottle/content mechanisms read. Reads whatever fInst/analytic hold at
-    // call time.
+    // bottle/content mechanisms read. Reads the bell-free reference buffers,
+    // whatever they hold at call time.
     const auto &vpEarly = config.videoParameters;
     const int32_t centreStart = vpEarly.activeVideoStart + 30;
     const int32_t centreEnd = std::max(centreStart + 64, vpEarly.activeVideoEnd - 30);
@@ -323,8 +344,8 @@ void SecamDecoder::decodeField(const SourceField &inputField,
         int32_t n = 0;
         for (int32_t x = centreStart; x < centreEnd && x < width; x++) {
             const size_t i = static_cast<size_t>(row) * width + x;
-            freqSum += fInst[i];
-            envSum += std::abs(analytic[i]);
+            freqSum += fInstRef[i];
+            envSum += std::abs(analyticRef[i]);
             n++;
         }
         freqOut = (n > 0) ? freqSum / n : 0.0;
@@ -344,25 +365,30 @@ void SecamDecoder::decodeField(const SourceField &inputField,
     // shows the FM block sits away from where the masks were built (VHS
     // colour-under converters translate the whole block, bell included),
     // recentre the masks on the measurement and redo the field once. The
-    // porch frequencies themselves are mask-independent (an LTI filter does
-    // not move a steady carrier), so one recentre settles it; later fields
-    // reuse the masks until the offset drifts past the threshold again.
+    // porch measurement runs on the bell-free band path, where a steady
+    // in-band carrier is untouched by mask recentring (only the distant band
+    // edges move), so one recentre settles it; later fields reuse the masks
+    // until the offset drifts past the threshold again.
     for (int32_t pass = 0; pass < 2; pass++) {
         for (int32_t row = 0; row < rows; row++) {
             filterRowAnalytic(data, numSamples, row,
                               analytic.data() + static_cast<size_t>(row) * width,
+                              analyticRef.data() + static_cast<size_t>(row) * width,
                               chromaRecon.data() + static_cast<size_t>(row) * width);
         }
         for (int32_t row = 0; row < rows; row++) {
             discriminateRow(analytic.data(), numSamples, row,
                             fInst.data() + static_cast<size_t>(row) * width);
+            discriminateRow(analyticRef.data(), numSamples, row,
+                            fInstRef.data() + static_cast<size_t>(row) * width);
         }
 
         // Back-porch reference measurement: per row, the median discriminated
-        // frequency and mean analytic envelope over the porch window. The
-        // median rides out FM clicks and window-edge transients on noisy
-        // tape. Using the same discriminator as the picture keeps carrier
-        // zeros and deviations on one response, so its residual bias cancels.
+        // frequency and mean analytic envelope over the porch window, both
+        // from the bell-free reference path. The median rides out FM clicks
+        // and window-edge transients on noisy tape; the flat band response
+        // keeps the noise around each carrier symmetric, so the median sits
+        // on the carrier instead of being dragged toward the bell centre.
         std::vector<double> windowFreqs;
         for (int32_t row = 0; row < rows; row++) {
             windowFreqs.clear();
@@ -370,8 +396,8 @@ void SecamDecoder::decodeField(const SourceField &inputField,
             int32_t n = 0;
             for (int32_t x = porchStart; x < porchEnd; x++) {
                 const size_t i = static_cast<size_t>(row) * width + x;
-                windowFreqs.push_back(fInst[i]);
-                envSum += std::abs(analytic[i]);
+                windowFreqs.push_back(fInstRef[i]);
+                envSum += std::abs(analyticRef[i]);
                 n++;
             }
             if (n > 0) {
@@ -415,9 +441,12 @@ void SecamDecoder::decodeField(const SourceField &inputField,
         // Carrier calibration: split the per-line porch frequencies into the
         // two undeviated carriers. The measured pair absorbs converter
         // offsets (ME-SECAM LO arithmetic), so absolute positions are never
-        // assumed.
-        fob = kNominalFob;
-        for_ = kNominalFor;
+        // assumed. A field whose pair fails the separation gate reuses the
+        // last good field's pair: the block shift is a property of the
+        // capture, not the field, so a stale measurement stays close while
+        // the nominal carriers can sit a full deviation away.
+        fob = haveLastGoodCalibration ? lastGoodFob : kNominalFob;
+        for_ = haveLastGoodCalibration ? lastGoodFor : kNominalFor;
         calibrated = false;
         if (validFreqs.size() >= 8) {
             std::sort(validFreqs.begin(), validFreqs.end());
@@ -452,7 +481,14 @@ void SecamDecoder::decodeField(const SourceField &inputField,
     const int32_t lastActive = std::min(inputField.getLastActiveLine(vp), rows);
     identOut.fob = fob;
     identOut.for_ = for_;
-    if (!calibrated && validFreqs.size() >= 8) {
+    if (calibrated) {
+        lastGoodFob = fob;
+        lastGoodFor = for_;
+        haveLastGoodCalibration = true;
+    } else if (haveLastGoodCalibration) {
+        chd::log::info() << "SecamDecoder: porch carrier pair not measurable;"
+                         << "reusing the last measured subcarriers";
+    } else {
         chd::log::warn() << "SecamDecoder: porch carrier pair not measurable;"
                          << "using nominal subcarriers";
     }

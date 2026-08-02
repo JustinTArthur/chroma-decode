@@ -7,7 +7,9 @@
 // block-FFT analytic signal with the closed-form inverse of the HF
 // pre-correction "bell" applied in the frequency domain, a designed
 // differentiating-FIR discriminator, per-field carrier calibration and
-// Db/Dr line identification from the back-porch reference carriers, exact
+// Db/Dr line identification from the back-porch reference carriers (measured
+// on a bell-free band response so the bell's noise shaping cannot bias the
+// carrier estimates), exact
 // inverse of the LF pre-correction, and colour-difference scaling to the
 // ComponentFrame's composite-domain U/V. Output is inherently 4:4:0: each
 // line yields one colour-difference component, recorded per row in the
@@ -68,7 +70,8 @@ public:
 private:
     // Per-field carrier calibration + line identification result.
     struct FieldIdent {
-        // Measured undeviated carriers (Hz); nominal when unmeasurable.
+        // Measured undeviated carriers (Hz); when unmeasurable, the last
+        // field's good measurement, or nominal before any field has one.
         double fob = 0.0;
         double for_ = 0.0;
         // Component of field line l is (l + anchor) & 1 (0 = Db, 1 = Dr).
@@ -103,7 +106,8 @@ private:
     // in time). Each processes one row of `width` samples with `margin`
     // context on both sides.
     void filterRowAnalytic(const uint16_t *fieldData, int32_t numSamples, int32_t row,
-                           std::complex<double> *analyticRow, double *chromaRow);
+                           std::complex<double> *analyticRow,
+                           std::complex<double> *analyticRefRow, double *chromaRow);
     void filterRowDeemphasis(const double *demod, int32_t numSamples, int32_t row,
                              double *deemphRow);
 
@@ -131,7 +135,7 @@ private:
 
     // Frequency-domain masks, one value per FFT bin.
     std::vector<std::complex<double>> maskChroma;  // analytic x band x inverse bell
-    std::vector<double> maskBand;                  // hermitian band (chroma reconstruction)
+    std::vector<double> maskBand;                  // analytic x band (bell-free reference)
     std::vector<std::complex<double>> maskDeemphasis;  // inverse LF pre-correction
 
     // Differentiating FIR taps (odd length, antisymmetric), applied to the
@@ -143,14 +147,26 @@ private:
     // the masks and mixFrequency are built for this offset.
     double carrierOffset = 0.0;
 
+    // Most recent field whose porch carrier pair passed the separation
+    // gate: fields that fail reuse it. A converter's block shift is a
+    // capture-wide property, so the previous field's measurement is a far
+    // better stand-in than the nominal carriers.
+    double lastGoodFob = 0.0;
+    double lastGoodFor = 0.0;
+    bool haveLastGoodCalibration = false;
+
     // Porch measurement window (sample positions within a row).
     int32_t porchStart = 0;
     int32_t porchEnd = 0;
 
-    // Per-field scratch, sized width*height.
+    // Per-field scratch, sized width*height. The `Ref` pair is the bell-free
+    // band path feeding carrier calibration and line identification; the
+    // bell-inverted pair feeds the picture demodulation.
     std::vector<std::complex<double>> analytic;
+    std::vector<std::complex<double>> analyticRef;
     std::vector<double> chromaRecon;
     std::vector<double> fInst;
+    std::vector<double> fInstRef;
     std::vector<double> demod;
     std::vector<double> deemph;
 };
